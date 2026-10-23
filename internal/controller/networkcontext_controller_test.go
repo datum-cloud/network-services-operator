@@ -168,6 +168,13 @@ func (s *networkContextScenario) publishedSubnet() *networkingv1alpha.Subnet {
 	return subnet
 }
 
+func (s *networkContextScenario) ipamClient() client.Client {
+	s.t.Helper()
+	cl, err := s.ipam.ClientForProject(testProject)
+	require.NoError(s.t, err)
+	return cl
+}
+
 func (s *networkContextScenario) storedClaims() []ipamv1alpha1.IPClaim {
 	s.t.Helper()
 	cl, err := s.ipam.ClientForProject(testProject)
@@ -390,6 +397,76 @@ func TestNetworkContextReportsASubnetItCannotYetRelease(t *testing.T) {
 	require.Empty(t, s.storedClaims(), "the subnet goes back once what was inside it does")
 	_, present := s.find()
 	require.False(t, present, "every finalizer must be released")
+}
+
+// A context deleted while workloads still hold addresses in its range can only
+// be removed by clearing its finalizer, which leaves its claim holding the
+// range. The context written back under the same name must take that range
+// over, with every address in it, rather than be refused it for good.
+func TestNetworkContextAdoptsTheRangeADeletedContextLeftHeld(t *testing.T) {
+	s := newNetworkContextScenario(t, newFakeIPAM(t))
+
+	first := s.createContext(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	before := s.publishedSubnet()
+
+	claimName := networkContextSubnetClaimName(first)
+	s.ipam.refuseRelease(claimName, apierrors.NewConflict(
+		ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(), claimName,
+		errors.New("ipam: range still has allocations inside it")))
+
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+
+	stuck := s.get()
+	controllerutil.RemoveFinalizer(stuck, networkContextSubnetFinalizer)
+	require.NoError(t, s.client.Update(s.ctx, stuck))
+	_, present := s.find()
+	require.False(t, present)
+
+	second := s.createContext(networkingv1alpha.IPv6Protocol)
+	require.NotEqual(t, first.UID, second.UID)
+	s.reconcile()
+
+	require.Len(t, s.storedClaims(), 1, "the replacement must not ask for a second range")
+	ref := subnetClaimRef(s.get())
+	require.NotNil(t, ref)
+	require.Equal(t, claimName, ref.ClaimName, "the replacement holds the range through the claim left behind")
+	require.Equal(t, metav1.ConditionTrue, s.readyCondition().Status)
+
+	after := s.publishedSubnet()
+	require.Equal(t, before.Spec.StartAddress, after.Spec.StartAddress)
+	require.Equal(t, before.Spec.PrefixLength, after.Spec.PrefixLength)
+
+	// The adopted claim is the one released when the replacement goes.
+	s.ipam.refuseRelease(claimName, nil)
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+	require.Empty(t, s.storedClaims())
+}
+
+// A claim whose context is still terminating belongs to that context, and is
+// not there to be adopted.
+func TestNetworkContextLeavesTheClaimOfALiveContextAlone(t *testing.T) {
+	s := newNetworkContextScenario(t, newFakeIPAM(t))
+
+	first := s.createContext(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	claimName := networkContextSubnetClaimName(first)
+
+	other := &networkingv1alpha.NetworkContext{}
+	other.Namespace = s.namespace
+	other.Name = "other-" + s.name
+	other.Spec = first.Spec
+	require.NoError(t, s.client.Create(s.ctx, other))
+
+	name, err := s.reconciler.subnetClaimName(s.ctx, s.client, s.ipamClient(), projectRouting{
+		project:          testProject,
+		projectNamespace: testProjectNS,
+	}, other)
+	require.NoError(t, err)
+	require.Equal(t, networkContextSubnetClaimName(other), name)
+	require.NotEqual(t, claimName, name)
 }
 
 // Exhaustion is a network running out of locations it can be addressed in,

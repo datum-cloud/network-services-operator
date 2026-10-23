@@ -553,6 +553,9 @@ func TestTerminatingContextReportsDNSNotReady(t *testing.T) {
 			condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonTerminating {
 			t.Fatalf("%s DNSReady = %#v, want False/Terminating", networkContext.Name, condition)
 		}
+		if want := "NetworkContext is being deleted; waiting on finalizers " + hold; condition.Message != want {
+			t.Fatalf("%s DNSReady message = %q, want %q", networkContext.Name, condition.Message, want)
+		}
 		if slices.Contains(current.Finalizers, internalDNSFinalizer) {
 			t.Fatalf("%s kept the internal DNS finalizer", networkContext.Name)
 		}

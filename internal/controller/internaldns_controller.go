@@ -220,11 +220,18 @@ func (r *InternalDNSProjectReconciler) reportTerminating(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 ) error {
+	message := "NetworkContext is being deleted"
+	waitingOn := slices.DeleteFunc(slices.Clone(networkContext.Finalizers), func(f string) bool {
+		return f == internalDNSFinalizer
+	})
+	if len(waitingOn) > 0 {
+		message += "; waiting on finalizers " + strings.Join(waitingOn, ", ")
+	}
 	if !apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
 		Type:               networkingv1alpha.NetworkContextDNSReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             networkingv1alpha.NetworkContextDNSReadyReasonTerminating,
-		Message:            "NetworkContext is being deleted",
+		Message:            message,
 		ObservedGeneration: networkContext.Generation,
 	}) {
 		return nil

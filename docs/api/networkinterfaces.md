@@ -497,6 +497,14 @@ compute.datumapis.com.<br/>
           name is the name of the referent.<br/>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>uid</b></td>
+        <td>string</td>
+        <td>
+          uid identifies the exact attachment incarnation. Probe consumers require
+this value so a recreated attachment cannot inherit the prior health.<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

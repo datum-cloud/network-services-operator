@@ -316,6 +316,11 @@ spec:
                     maxLength: 253
                     minLength: 1
                     type: string
+                  uid:
+                    description: |-
+                      uid identifies the exact attachment incarnation. Probe consumers require
+                      this value so a recreated attachment cannot inherit the prior health.
+                    type: string
                 required:
                 - apiGroup
                 - kind

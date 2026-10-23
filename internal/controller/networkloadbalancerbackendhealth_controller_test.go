@@ -18,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/nlbhealth"
@@ -304,4 +305,23 @@ func TestBackendHealthProbeDeadlineStartsAfterGlobalSlotAcquisition(t *testing.T
 	require.Len(t, probed, 1)
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(health), health))
 	require.Equal(t, "Warming", health.Status.Targets[0].Reason)
+}
+
+func TestBackendHealthStatusWriteDoesNotStartAnotherSweep(t *testing.T) {
+	filter := backendHealthEventFilter()
+	old := &networkingv1alpha.NetworkLoadBalancerBackendHealth{
+		ObjectMeta: metav1.ObjectMeta{Name: "health", Namespace: "default", Generation: 3, ResourceVersion: "10"},
+	}
+
+	statusOnly := old.DeepCopy()
+	statusOnly.ResourceVersion = "11"
+	statusOnly.Status.Conditions = []metav1.Condition{{Type: "ProbesEvaluated", Status: metav1.ConditionTrue, Reason: "Probed", LastTransitionTime: metav1.Now()}}
+	require.False(t, filter.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: statusOnly}))
+
+	specChange := old.DeepCopy()
+	specChange.ResourceVersion = "12"
+	specChange.Generation = 4
+	require.True(t, filter.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: specChange}))
+
+	require.True(t, filter.Create(event.CreateEvent{Object: old}))
 }

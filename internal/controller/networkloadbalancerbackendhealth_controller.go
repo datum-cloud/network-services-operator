@@ -16,8 +16,10 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -157,8 +159,12 @@ func takeProbeSlot(ctx context.Context, slots chan struct{}) error {
 func (r *NetworkLoadBalancerBackendHealthReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Client = mgr.GetClient()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkLoadBalancerBackendHealth{}).
+		For(&networkingv1alpha.NetworkLoadBalancerBackendHealth{}, builder.WithPredicates(backendHealthEventFilter())).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		Named("networkloadbalancerbackendhealth").
 		Complete(r)
+}
+
+func backendHealthEventFilter() predicate.Predicate {
+	return predicate.GenerationChangedPredicate{}
 }

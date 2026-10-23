@@ -66,6 +66,22 @@ internalDNS:
 - `resolvers` replaces `frontend` and `producerAttachmentSelector`; setting
   both is refused at startup. It holds at most three entries, with distinct
   frontends.
+- In the namespaces listed in the cell's `galactic.attachmentLabelNamespaces`,
+  an interface's `compute.datumapis.com/` labels are copied onto its
+  attachment and kept in sync with the interface. A resolver whose claims
+  compute creates can then be selected by labels on its Pod, such as
+  `compute.datumapis.com/internal-dns-tier: node-b`. Compute copies Pod labels
+  onto a claim when it creates or adopts the claim, so relabeling a running
+  Pod does not reach its attachment until the claim is recreated or
+  relabeled, and a key dropped from the Pod stays on a claim compute adopts.
+  An interface that is no longer bound, such as one kept by a `Retain`
+  policy, has these labels removed from its attachment so it stops matching.
+- List only platform namespaces: tenants can set these labels on their own
+  claims, and a selector matches attachments in every namespace. Anyone who
+  can edit Pods in a listed namespace controls which resolver its attachments
+  serve. Listing a namespace removes any hand-set `compute.datumapis.com/`
+  labels from its attachments; unlisting one leaves the last copied labels in
+  place until removed by hand.
 - Give each attachment labels that only one resolver's selector matches.
   Startup refuses a selector that is equal to or contained in another, but
   two different selectors that both match one attachment pass that check.

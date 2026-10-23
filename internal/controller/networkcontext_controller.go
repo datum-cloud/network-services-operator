@@ -316,14 +316,18 @@ func (r *NetworkContextReconciler) subnetClaimName(
 		return own, nil
 	}
 
-	// The claim is orphaned only if the context it was named for has gone. A
-	// context with that UID still terminating is still the claim's holder.
+	// The claim is orphaned only if no context holds it: neither the one it was
+	// named for, which may still be terminating, nor one that adopted it before.
 	var contexts networkingv1alpha.NetworkContextList
 	if err := cl.List(ctx, &contexts, client.InNamespace(networkContext.Namespace)); err != nil {
 		return "", fmt.Errorf("failed listing network contexts: %w", err)
 	}
 	for i := range contexts.Items {
-		if networkContextSubnetClaimName(&contexts.Items[i]) == orphan {
+		other := &contexts.Items[i]
+		if networkContextSubnetClaimName(other) == orphan {
+			return own, nil
+		}
+		if ref := subnetClaimRef(other); ref != nil && ref.ClaimName == orphan {
 			return own, nil
 		}
 	}

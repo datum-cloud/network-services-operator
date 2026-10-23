@@ -445,28 +445,42 @@ func TestNetworkContextAdoptsTheRangeADeletedContextLeftHeld(t *testing.T) {
 	require.Empty(t, s.storedClaims())
 }
 
-// A claim whose context is still terminating belongs to that context, and is
-// not there to be adopted.
-func TestNetworkContextLeavesTheClaimOfALiveContextAlone(t *testing.T) {
+// An adopted claim belongs to the context that adopted it. Another context on
+// the same network and location must not take it over too: two contexts on one
+// claim means deleting either gives the range back under the other.
+func TestNetworkContextLeavesAnAdoptedClaimToItsAdopter(t *testing.T) {
 	s := newNetworkContextScenario(t, newFakeIPAM(t))
 
 	first := s.createContext(networkingv1alpha.IPv6Protocol)
 	s.reconcile()
 	claimName := networkContextSubnetClaimName(first)
 
-	other := &networkingv1alpha.NetworkContext{}
-	other.Namespace = s.namespace
-	other.Name = "other-" + s.name
-	other.Spec = first.Spec
-	require.NoError(t, s.client.Create(s.ctx, other))
+	s.ipam.refuseRelease(claimName, apierrors.NewConflict(
+		ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(), claimName,
+		errors.New("ipam: range still has allocations inside it")))
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+	stuck := s.get()
+	controllerutil.RemoveFinalizer(stuck, networkContextSubnetFinalizer)
+	require.NoError(t, s.client.Update(s.ctx, stuck))
+
+	s.createContext(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	require.Equal(t, claimName, subnetClaimRef(s.get()).ClaimName)
+
+	sibling := &networkingv1alpha.NetworkContext{}
+	sibling.Namespace = s.namespace
+	sibling.Name = "sibling-" + s.name
+	sibling.Spec = first.Spec
+	require.NoError(t, s.client.Create(s.ctx, sibling))
 
 	name, err := s.reconciler.subnetClaimName(s.ctx, s.client, s.ipamClient(), projectRouting{
 		project:          testProject,
 		projectNamespace: testProjectNS,
-	}, other)
+	}, sibling)
 	require.NoError(t, err)
-	require.Equal(t, networkContextSubnetClaimName(other), name)
-	require.NotEqual(t, claimName, name)
+	require.Equal(t, networkContextSubnetClaimName(sibling), name,
+		"a claim another context already adopted is not there to be adopted again")
 }
 
 // Exhaustion is a network running out of locations it can be addressed in,

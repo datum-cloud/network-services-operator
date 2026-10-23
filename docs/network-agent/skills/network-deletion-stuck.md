@@ -1,7 +1,7 @@
 # Skill: deleting a network that does not finish
 
 Use when a network has been deleted but is still there, or reports
-`RangeOccupied`.
+`Terminating` or `RangeOccupied`.
 
 ## Before deleting
 
@@ -13,6 +13,12 @@ and any kept interfaces, and say what happens to each:
 - Kept interfaces hold addresses in the network; their addresses go with it.
 
 Then plan, show, agree, apply — like any other change.
+
+## `Terminating`
+
+The network is waiting to be removed from its locations. Its Ready message names
+each location it is waiting on and why. A location whose subnet still has an
+address in use is the same wait as `RangeOccupied` below, one location down.
 
 ## `RangeOccupied`
 

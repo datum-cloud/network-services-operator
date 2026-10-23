@@ -95,6 +95,10 @@ const (
 	// NetworkReadyReasonReady means the network is ready for use.
 	NetworkReadyReasonReady = "Ready"
 
+	// NetworkReadyReasonTerminating means the network is being deleted and is
+	// waiting on the locations it is attached to.
+	NetworkReadyReasonTerminating = "Terminating"
+
 	// NetworkReadyReasonIPv6Required means the network carries no IPv6. The
 	// platform addresses workloads over IPv6, so nothing placed on such a
 	// network can be given an address, and no amount of waiting changes that.

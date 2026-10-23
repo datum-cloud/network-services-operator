@@ -19,6 +19,7 @@ import (
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -582,4 +583,83 @@ func TestNetworkReadyIsUnknownBeforeTheControllerRuns(t *testing.T) {
 	require.NotNil(t, ready, "the API must seed a readiness answer with the network")
 	require.Equal(t, metav1.ConditionUnknown, ready.Status)
 	require.Equal(t, "Pending", ready.Reason)
+}
+
+// garbageCollectedNetworkContexts runs the real half of finalization, so a
+// scenario can hold a network open on a location that has not gone yet.
+type garbageCollectedNetworkContexts struct{ client client.Client }
+
+func (g garbageCollectedNetworkContexts) Finalize(ctx context.Context, obj client.Object) (finalizer.Result, error) {
+	return finalizeNetworkContexts(ctx, g.client, obj)
+}
+
+// A network waiting on its locations is being deleted and is not usable. The
+// Ready it reported at creation must not outlive that, and what it says has to
+// name the location holding it up and why.
+func TestNetworkWaitingOnALocationIsTerminating(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+	s.reconciler.finalizers = finalizer.NewFinalizers()
+	require.NoError(t, s.reconciler.finalizers.Register(networkControllerFinalizer,
+		garbageCollectedNetworkContexts{client: s.client}))
+
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	require.Equal(t, metav1.ConditionTrue, s.readyCondition().Status)
+
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = s.namespace
+	networkContext.Name = testNetworkName + "-" + testLocationName
+	networkContext.Finalizers = []string{networkContextSubnetFinalizer}
+	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
+		Network:    networkingv1alpha.LocalNetworkRef{Name: testNetworkName},
+		Location:   locationsv1alpha1.LocationReference{Name: testLocationName},
+		IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		MTU:        1440,
+	}
+	require.NoError(t, s.client.Create(s.ctx, networkContext))
+	apimeta.SetStatusCondition(&networkContext.Status.Conditions, metav1.Condition{
+		Type:    networkingv1alpha.NetworkContextIPAMAllocated,
+		Status:  metav1.ConditionFalse,
+		Reason:  networkingv1alpha.NetworkContextReasonRangeOccupied,
+		Message: "the location's subnet still has addresses allocated inside it",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, networkContext))
+
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+
+	ready := s.readyCondition()
+	require.Equal(t, metav1.ConditionFalse, ready.Status)
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonTerminating, ready.Reason)
+	require.Contains(t, ready.Message, "waiting on "+testLocationName)
+	require.Contains(t, ready.Message, "still has addresses allocated inside it")
+
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(networkContext), networkContext))
+	networkContext.Finalizers = nil
+	require.NoError(t, s.client.Update(s.ctx, networkContext))
+	s.reconcile()
+
+	_, present := s.find()
+	require.False(t, present, "the network goes once its locations do")
+}
+
+func TestTerminatingMessageNamesEachLocation(t *testing.T) {
+	occupied := networkingv1alpha.NetworkContext{}
+	occupied.Name = "vpc-us-central-1"
+	occupied.Spec.Location.Name = "us-central-1"
+	occupied.Status.Conditions = []metav1.Condition{{
+		Type:    networkingv1alpha.NetworkContextIPAMAllocated,
+		Status:  metav1.ConditionFalse,
+		Reason:  networkingv1alpha.NetworkContextReasonRangeOccupied,
+		Message: "its subnet still has an address in use",
+	}}
+
+	unlocated := networkingv1alpha.NetworkContext{}
+	unlocated.Name = "vpc-elsewhere"
+
+	require.Equal(t, "The network is being deleted", terminatingMessage(nil))
+	require.Equal(t,
+		"The network is being deleted and is waiting on us-central-1: its subnet still has an address in use; "+
+			"waiting on vpc-elsewhere: it is being removed",
+		terminatingMessage([]networkingv1alpha.NetworkContext{unlocated, occupied}))
 }

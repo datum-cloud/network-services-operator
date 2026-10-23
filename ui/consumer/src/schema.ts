@@ -51,6 +51,7 @@ const READY_REASON_COPY: Record<string, string> = {
   ProjectUnresolved: 'Project could not be resolved',
   RangeOccupied: 'Address range still in use',
   RangeUnsupported: 'Address range not supported',
+  Terminating: 'Deleting',
 };
 
 export function readyReasonToLabel(reason: string | undefined): string {

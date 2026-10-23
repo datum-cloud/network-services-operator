@@ -53,8 +53,8 @@ where their service runs.
 - Publish a TCP or UDP `NetworkService` through a named listener and separate
   route.
 - Actively check backend health and spread new connections and flows across
-  healthy endpoints within the ingress location, keeping each flow on one
-  endpoint.
+  healthy endpoints within the ingress location, keeping each flow on its
+  endpoint while the healthy set is unchanged.
 - Support opaque TLS over TCP initially, with an API shape for later SNI-based
   passthrough, TLS termination, and optional backend TLS.
 - Let a route refer to multiple `NetworkService` backends by named port,
@@ -138,8 +138,9 @@ endpoint label using the proxy format: two words and five hash-derived
 characters. The label is derived from the load balancer UID and request name;
 the hostname is `<location>.<generated-label>.<managed-zone>`. The label is
 reused across locations, does not expose the request name or IP, and stays
-stable while the request exists. NSO claims each generated hostname uniquely
-and retains existing names if the generation algorithm changes. Consumers can
+stable while the request exists. NSO will claim each generated hostname
+uniquely and retain existing names if the generation algorithm changes; the
+first release derives the name into status but does not yet claim it. Consumers can
 CNAME a name they own for that location to it. Datum publishes an A or AAAA
 record only when that family's address is allocated and announced in the
 location. The hostname stays assigned during temporary health loss, even when
@@ -197,6 +198,9 @@ releases its socket claim after serving intent is withdrawn.
 - **A `Backends` or `All` request can expand over time.** Expose each added
   location, hostname, and IP in status, and bound the number of locations and
   addresses per load balancer.
+- **A project could create unbounded load balancers.** Per-project quotas cap
+  the number of load balancers and routes; projects receive an allowance only
+  once a platform grant for those quotas is in place.
 - **DNS could direct users to an unannounced IP.** Publish A and AAAA records
   only after the corresponding VIP is announced; withdraw the DNS record when
   that announcement is withdrawn. Short TTLs limit stale answers; clients with
@@ -696,6 +700,9 @@ address that could not be allocated.
 - 2026-10-21: Kept long-term TLS and multi-backend fields in the consumer API
   proposal while defining temporary validation gates for unsupported traffic
   configurations.
+- 2026-10-23: Addressed review: used `ResolvedRefs` for network mismatches,
+  added backend trust checks, replaced round robin with consistent per-flow
+  selection, marked hostname claims as planned, and noted per-project quotas.
 
 ## Drawbacks
 

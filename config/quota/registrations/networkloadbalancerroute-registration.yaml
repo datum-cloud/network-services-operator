@@ -1,0 +1,24 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: networkloadbalancerroutes-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+    services.miloapis.com/owner: networking.datumapis.com
+  annotations:
+    kubernetes.io/display-name: "Network Load Balancer Routes"
+    kubernetes.io/description: "Maximum number of network load balancer routes in a project"
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  type: Entity
+  resourceType: networking.datumapis.com/networkloadbalancerroutes
+  description: "Maximum number of network load balancer routes in a project"
+  baseUnit: route
+  displayUnit: routes
+  unitConversionFactor: 1
+  claimingResources:
+    - apiGroup: networking.datumapis.com
+      kind: NetworkLoadBalancerRoute

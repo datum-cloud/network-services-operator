@@ -228,6 +228,20 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
+	// The hub is not the only place a presence is declared. A binding written
+	// straight into the project control plane resolves to the same context, and
+	// the binding controller stamps the same network UID on it, so the label alone
+	// cannot tell the two apart. Removing a context such a binding still uses
+	// leaves it pointed at an object that cannot finish deleting while its
+	// workloads hold addresses in it.
+	declared, err := declaredInProject(ctx, projectClient, &networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if declared {
+		return ctrl.Result{}, r.reclaim(ctx, projectClient, &networkContext)
+	}
+
 	remaining, err := r.grace(ctx, projectClient, &networkContext)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -242,6 +256,57 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// declaredInProject reports whether a binding in the project control plane
+// resolves to this context. Those bindings name the network's namespace or fall
+// back to their own, which is the rule the binding controller resolves the
+// context's namespace by.
+func declaredInProject(
+	ctx context.Context,
+	projectClient client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (bool, error) {
+	var bindings networkingv1alpha.NetworkBindingList
+	if err := projectClient.List(ctx, &bindings); err != nil {
+		return false, fmt.Errorf("failed listing network bindings in the project: %w", err)
+	}
+
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if !binding.DeletionTimestamp.IsZero() {
+			continue
+		}
+		namespace := binding.Spec.Network.Namespace
+		if namespace == "" {
+			namespace = binding.Namespace
+		}
+		if namespace == networkContext.Namespace && networkContextNameForBinding(binding) == networkContext.Name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// reclaim clears a wait that a declaration has since ended, so a presence that
+// goes unclaimed again later is given the whole wait rather than what is left
+// of an old one.
+func (r *NetworkPresenceReconciler) reclaim(
+	ctx context.Context,
+	projectClient client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if _, ok := networkContext.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation]; !ok {
+		return nil
+	}
+
+	patch := client.MergeFrom(networkContext.DeepCopy())
+	delete(networkContext.Annotations, networkingv1alpha.NetworkContextUnclaimedSinceAnnotation)
+	if err := projectClient.Patch(ctx, networkContext, patch); err != nil {
+		return fmt.Errorf("failed clearing the unclaimed-since stamp on network presence %q: %w",
+			networkContext.Name, err)
+	}
+	return nil
 }
 
 // grace reports how much longer a presence nothing declares is kept. The instant

@@ -43,6 +43,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"networkinterfaceclaim_types.go":            "an instance's interface; compute's surface",
 	"networkloadbalancer_types.go":              "its own Layer 4 product surface, not reached through an application load balancer",
 	"networkloadbalancerbackendhealth_types.go": "cell-local probe state, not an application load balancer customer surface",
+	"networkloadbalancercellintent_types.go":    "internal cell validation request; no customer-facing condition reasons",
 	"networkloadbalancerroute_types.go":         "its own Layer 4 routing surface, not reached through an application load balancer",
 	"networkpolicy_types.go":                    "its own product surface, not reached through a load balancer",
 	"subnet_types.go":                           "address management below a network",

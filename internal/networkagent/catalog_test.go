@@ -38,6 +38,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"locationbinding_types.go":                  "which locations a project is offered; surfaces here only as LocationNotAvailable",
 	"networkloadbalancer_types.go":              "Network Load Balancer has its own product status, separate from networks and network services",
 	"networkloadbalancerbackendhealth_types.go": "cell-local NLB probe status, not a network-agent customer API",
+	"networkloadbalancercellintent_types.go":    "hub-side NLB serving intent, not a network-agent customer API",
 	"networkloadbalancerroute_types.go":         "Network Load Balancer route status belongs to the load balancer product",
 	"networkpolicy_types.go":                    "declares no status reasons",
 	"trafficprotectionpolicy_types.go":          "load balancer protection; the ALB agent's",

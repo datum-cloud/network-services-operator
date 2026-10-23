@@ -50,6 +50,7 @@ import (
 	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
 	"go.datum.net/network-services-operator/internal/logging"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
@@ -181,7 +182,6 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				"buildDate", build.BuildDate,
 			)
 
-			var serverConfig config.NetworkServicesOperator
 			var configData []byte
 			if len(serverConfigFile) > 0 {
 				var err error
@@ -192,23 +192,16 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
-			if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
-				setupLog.Error(err, "unable to decode server config")
+			serverConfig, err := decodeConfig(configData)
+			if err != nil {
+				setupLog.Error(err, "unable to load server config")
 				os.Exit(1)
 			}
-
-			// Allow overriding Redis URL at runtime via env var.
-			if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
-				serverConfig.Redis.URL = redisURL
+			if os.Getenv("REDIS_URL") != "" {
 				setupLog.Info("overriding redis.url from REDIS_URL")
 			}
 
 			setupLog.Info("server config", "config", serverConfig)
-
-			if err := serverConfig.Validate(); err != nil {
-				setupLog.Error(err, "invalid server config")
-				os.Exit(1)
-			}
 
 			if leaderElectionID == "" {
 				leaderElectionID = defaultLeaderElectionID
@@ -526,6 +519,19 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				})
 			}
 
+			if serverConfigFile != "" {
+				watcher := &configwatch.Watcher{
+					Path:   serverConfigFile,
+					Loaded: configData,
+					Validate: func(data []byte) error {
+						_, err := decodeConfig(data)
+						return err
+					},
+					Log: setupLog,
+				}
+				g.Go(func() error { return watcher.Start(ctx) })
+			}
+
 			setupLog.Info("starting multicluster manager")
 			g.Go(func() error {
 				return ignoreCanceled(mgr.Start(ctx))
@@ -539,6 +545,9 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 
 			if err := g.Wait(); err != nil {
+				if errors.Is(err, configwatch.ErrChanged) {
+					return nil
+				}
 				setupLog.Error(err, "unable to start")
 				os.Exit(1)
 			}
@@ -912,4 +921,20 @@ func ControllerNames() []string {
 		names = append(names, registration.name)
 	}
 	return names
+}
+
+func decodeConfig(data []byte) (config.NetworkServicesOperator, error) {
+	var serverConfig config.NetworkServicesOperator
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), data, &serverConfig); err != nil {
+		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)
+	}
+
+	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
+		serverConfig.Redis.URL = redisURL
+	}
+
+	if err := serverConfig.Validate(); err != nil {
+		return serverConfig, fmt.Errorf("invalid server config: %w", err)
+	}
+	return serverConfig, nil
 }

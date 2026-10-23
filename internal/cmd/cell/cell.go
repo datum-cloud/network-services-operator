@@ -29,6 +29,7 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
 	galacticcontroller "go.datum.net/network-services-operator/internal/galactic/controller"
 	"go.datum.net/network-services-operator/internal/logging"
@@ -83,7 +84,7 @@ func NewCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			ctrl.SetLogger(logging.New(&opts))
 
-			serverConfig, err := loadConfig(serverConfigFile)
+			serverConfig, configData, err := loadConfig(serverConfigFile)
 			if err != nil {
 				setupLog.Error(err, "unable to load server config")
 				os.Exit(1)
@@ -200,12 +201,28 @@ func NewCommand() *cobra.Command {
 				})
 			}
 
+			if serverConfigFile != "" {
+				watcher := &configwatch.Watcher{
+					Path:   serverConfigFile,
+					Loaded: configData,
+					Validate: func(data []byte) error {
+						_, err := decodeConfig(data)
+						return err
+					},
+					Log: setupLog,
+				}
+				g.Go(func() error { return watcher.Start(ctx) })
+			}
+
 			setupLog.Info("starting cell controller manager")
 			g.Go(func() error {
 				return ignoreCanceled(mgr.Start(ctx))
 			})
 
 			if err := g.Wait(); err != nil {
+				if errors.Is(err, configwatch.ErrChanged) {
+					return nil
+				}
 				setupLog.Error(err, "unable to start")
 				os.Exit(1)
 			}
@@ -231,17 +248,22 @@ func ignoreCanceled(err error) error {
 	return err
 }
 
-func loadConfig(path string) (config.CellControllerManager, error) {
-	var serverConfig config.CellControllerManager
-
+func loadConfig(path string) (config.CellControllerManager, []byte, error) {
 	var data []byte
 	if len(path) > 0 {
 		var err error
 		data, err = os.ReadFile(path)
 		if err != nil {
-			return serverConfig, fmt.Errorf("unable to read server config from %q: %w", path, err)
+			return config.CellControllerManager{}, nil, fmt.Errorf("unable to read server config from %q: %w", path, err)
 		}
 	}
+
+	serverConfig, err := decodeConfig(data)
+	return serverConfig, data, err
+}
+
+func decodeConfig(data []byte) (config.CellControllerManager, error) {
+	var serverConfig config.CellControllerManager
 
 	if err := runtime.DecodeInto(codecs.UniversalDecoder(), data, &serverConfig); err != nil {
 		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)

@@ -1,0 +1,729 @@
+---
+status: provisional
+stage: alpha
+latest-milestone: "v0.x"
+---
+
+# Network Load Balancers
+
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+- [Proposal](#proposal)
+  - [User Stories](#user-stories)
+  - [Risks and Mitigations](#risks-and-mitigations)
+- [Design Details](#design-details)
+  - [IPv4 Ingress Data Plane](#ipv4-ingress-data-plane)
+  - [Backend Health](#backend-health)
+  - [Backend Trust](#backend-trust)
+  - [TLS](#tls)
+  - [Initial Delivery and Capability Gates](#initial-delivery-and-capability-gates)
+  - [Gateway API L4 Compatibility](#gateway-api-l4-compatibility)
+  - [Route Controls](#route-controls)
+- [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
+- [Implementation History](#implementation-history)
+- [Drawbacks](#drawbacks)
+- [Alternatives](#alternatives)
+- [Infrastructure Needed](#infrastructure-needed)
+
+## Summary
+
+A project can publish a `NetworkService` on a public TCP or UDP port through a
+`NetworkLoadBalancer`. The load balancer owns listeners and public address
+requests; a separate `NetworkLoadBalancerRoute` connects a listener to the
+service. Each selected location receives an IP per requested family and a
+generated hostname users can target with a CNAME. Status shows the hostname,
+allocated IPs, and announcement state for each location. By default, those
+locations follow the network interfaces selected by the backend services.
+Active health checks keep failed backends out of rotation. The API also models
+TLS passthrough and termination so consumers need not replace their NLBs when
+a proxy-capable data plane becomes available. The first delivery carries only
+opaque TLS over TCP; it rejects TLS listeners until that data plane is ready.
+
+## Motivation
+
+`NetworkService` identifies workloads and their ports, but does not give them a
+public Layer 4 entry point. Consumers need a stable address and port without
+managing Galactic resources. They also need stable addresses in the locations
+where their service runs.
+
+### Goals
+
+- Publish a TCP or UDP `NetworkService` through a named listener and separate
+  route.
+- Actively check backend health and spread new connections and flows across
+  healthy endpoints within the ingress location, keeping each flow on its
+  endpoint while the healthy set is unchanged.
+- Support opaque TLS over TCP initially, with an API shape for later SNI-based
+  passthrough, TLS termination, and optional backend TLS.
+- Let a route refer to multiple `NetworkService` backends by named port,
+  including backends that use different port numbers. Allow one backend socket
+  to be reused behind distinct NLBs once Galactic supports it.
+- Allocate a distinct public address in every backend location by default,
+  including locations added after the address request is created.
+- Issue a stable, platform-managed hostname in each selected location so users
+  can point a DNS CNAME at that location's NLB endpoint.
+- Show allocated addresses and serving locations without releasing an address
+  when its backends are temporarily unavailable.
+- Use an address request shape that can later serve Application Load Balancers.
+- Allow a future Gateway API adapter to translate unweighted TCPRoute and
+  UDPRoute behavior, and later TLSRoute when TLS listeners are served.
+  Document unsupported optional features.
+- Leave room for common L4 traffic controls without requiring them in the first
+  release.
+
+### Non-Goals
+
+- HTTP routing or changing the current `HTTPProxy` API.
+- Source-based matches or cross-location backend fallback in the first release.
+- Anycast or another single public IP shared across locations. A future Global
+  Services Load Balancer will own global entry points and cross-location
+  service behavior.
+- Requiring consumers to create Gateway API or Galactic resources.
+- Per-backend traffic weights.
+- Serving SNI-based routing, TLS termination, backend TLS re-encryption, or
+  TLSRoute in the first delivery. These need a proxy-capable data plane.
+
+## Proposal
+
+A `NetworkLoadBalancer` names an NSO `Network`, requests addresses, and defines
+TCP, UDP, or TLS listeners. Each listener names the address requests on which
+it serves. A `NetworkLoadBalancerRoute` attaches to a named listener and points to
+named ports on `NetworkService` backends. TCP and UDP listeners have one
+effective catch-all route each. If several attach, the oldest wins, breaking
+timestamp ties by namespace/name; all attachments remain Accepted, and native
+status identifies the effective route. Each route selects a healthy endpoint
+in the ingress location for each new TCP connection or UDP flow using round
+robin.
+
+`spec.networkRef` is required and immutable. It names the NSO `Network` whose
+backends this NLB exposes; the platform resolves that network to its fabric
+VPC in each serving location. The public IP is an edge address, not a VPC
+address. A stable network reference lets users create the NLB before any
+backend exists and prevents changing service membership from silently moving
+its traffic to another network. Every effective route backend must resolve to
+interfaces on that network. A backend with no members cannot serve until
+members appear. One resolving to a different network sets
+`ResolvedRefs=False` with reason `NetworkMismatch` and invalidates its
+route. Existing public IP allocations are retained; listener readiness still
+controls announcements. Cross-network backends would need an explicit future
+forwarding and authorization design.
+
+A TCP listener can forward TLS bytes unchanged to its selected backend, which
+owns the certificate and TLS handshake. A TLS listener adds `tls.mode` for
+`Passthrough` or `Terminate`, with route `sniHostnames` and an explicit backend
+transport for termination. These fields describe the intended long-term
+consumer API; the first delivery rejects TLS listeners with a specific
+unsupported-capability error rather than treating them as TCP.
+
+Each selected location receives one IP per requested family. Multiple edge
+nodes may announce each IP within the location. An address request sets
+`families` to one or both of `IPv4` and `IPv6`. The list is required, unique,
+and order-independent, so enabling IPv4 later never changes an existing
+request implicitly. The listener references
+the request once for both families. Omitting `locations` defaults to
+`locations.from: Backends`: an address request follows the locations of the
+`NetworkService` backends on listeners using that address. `All` explicitly
+selects every platform location whose `Ready` condition is `True` for its
+current generation; `Names` selects only listed
+locations. Adding a backend location creates an IP for each family without
+changing existing location addresses. Separate requests remain available when
+families need different location selections or independent listener attachment.
+
+Each address request produces one stable generated hostname per selected
+location, reported as `status.endpoints[].canonicalHostname` and shared by
+its IPv4 and IPv6 addresses. Datum assigns each address request an opaque
+endpoint label using the proxy format: two words and five hash-derived
+characters. The label is derived from the load balancer UID and request name;
+the hostname is `<location>.<generated-label>.<managed-zone>`. The label is
+reused across locations, does not expose the request name or IP, and stays
+stable while the request exists. NSO will claim each generated hostname
+uniquely and retain existing names if the generation algorithm changes; the
+first release derives the name into status but does not yet claim it. Consumers can
+CNAME a name they own for that location to it. Datum publishes an A or AAAA
+record only when that family's address is allocated and announced in the
+location. The hostname stays assigned during temporary health loss, even when
+it has no address records. Different requests in the same location receive
+different hostnames.
+DNS names do not carry a port; clients still connect to the listener's port.
+
+For one effective listener, `Backends` selects the union of locations with a
+selected, bound interface in any of its backend services. A backend absent
+from one selected location contributes no endpoints there; that location can
+still serve through another backend. Interface presence selects locations;
+health and programming determine announcement. With no attached route,
+placement is pending and no location IP is allocated.
+
+For a future address shared by several listeners, placement must be decided
+across all listeners using that address, and announcement requires every
+listener to be ready in the location. Sharing an address across listeners and
+selecting multiple address requests on one listener are capability-gated in
+the first release, while the API retains both shapes for later support.
+
+A route without an allocated IPv6 VIP in a location owns no Galactic backend
+socket there. Once a VIP is allocated, an effective route with resolved
+backends may claim each endpoint socket in that location. Claims are assigned
+in route creation order, with a stable name tie-break; a route blocked by an
+older owner claims nothing and cannot block a later route. Route status and
+cell intent use the same ownership decision. A withdrawn or unavailable VIP
+releases its socket claim after serving intent is withdrawn.
+
+### User Stories
+
+- A game operator publishes the same UDP port on a different IP in each region
+  where the game service has members, so clients can choose a region without
+  maintaining a location list.
+- The operator adds a new region while existing regional client endpoints keep
+  their addresses.
+- The operator CNAMEs `us.game.example.com` to the generated hostname for the
+  US location and `eu.game.example.com` to the EU location.
+- If a region loses its serving backends, its IP remains allocated while its
+  announcement is withdrawn.
+- An operator exposes a TLS application through a TCP listener; the backend
+  retains its certificate and the load balancer forwards the encrypted stream.
+- Once TLS listeners are enabled, an operator routes different SNI names on
+  one port to different services without replacing the NLB.
+- Once termination is enabled, an operator references a TLS Secret so a
+  non-HTTP backend can receive plain TCP or validated TLS.
+
+### Risks and Mitigations
+
+- **An announced IP without serving backends drops traffic.** Announce a
+  location only after its rule is programmed with healthy backends; withdraw it
+  when the last healthy backend disappears. Workload readiness alone does not
+  prove the application answers on its port.
+- **Reusing a public IP for another load balancer misroutes traffic.** Allocate
+  every location address from a globally unique public pool.
+- **A `Backends` or `All` request can expand over time.** Expose each added
+  location, hostname, and IP in status, and bound the number of locations and
+  addresses per load balancer.
+- **A project could create unbounded load balancers.** Per-project quotas cap
+  the number of load balancers and routes; projects receive an allowance only
+  once a platform grant for those quotas is in place.
+- **DNS could direct users to an unannounced IP.** Publish A and AAAA records
+  only after the corresponding VIP is announced; withdraw the DNS record when
+  that announcement is withdrawn. Short TTLs limit stale answers; clients with
+  cached IPs can still fail after withdrawal.
+- **Overlapping routes could select different backends for the same flow.** Use
+  Gateway API precedence for overlapping route attachments and report the
+  effective route in native status.
+- **A forged or stale backend record could send traffic to the wrong
+  workload.** The serving location re-verifies every backend against live
+  state before programming it; see [Backend Trust](#backend-trust).
+- **Probe failure can withdraw a healthy location.** Report probe errors
+  separately from an unhealthy backend and avoid making one probe runner a
+  single point of failure.
+- **A TLS hostname could be served with the wrong certificate or backend once
+  TLS listeners are enabled.** Require certificate coverage, enforce Secret
+  reference permissions, and apply deterministic SNI precedence before
+  lifting the TLS capability gate.
+- **One unready listener can affect other ports on its IP.** BGP announces an
+  address, not a port. Announce an address from a location only when all of its
+  listeners are ready there; use separate address requests for independent
+  failure domains.
+
+## Design Details
+
+The consumer-facing shape is:
+
+```yaml
+apiVersion: networking.datumapis.com/v1alpha
+kind: NetworkService
+metadata:
+  name: game
+spec:
+  networkInterfaces:
+    selector:
+      matchLabels:
+        compute.datumapis.com/workload-name: game
+  ports:
+    - name: game
+      port: 27015
+      protocol: UDP
+    - name: health
+      port: 8080
+      protocol: TCP
+---
+apiVersion: networking.datumapis.com/v1alpha
+kind: NetworkLoadBalancer
+metadata:
+  name: game
+spec:
+  networkRef:
+    name: default
+  exposure:
+    addresses:
+      - name: regional
+        families: [IPv6]
+  listeners:
+    - name: game
+      protocol: UDP
+      port: 27015
+      addressRefs: [regional]
+---
+apiVersion: networking.datumapis.com/v1alpha
+kind: NetworkLoadBalancerRoute
+metadata:
+  name: game
+spec:
+  parentRefs:
+    - name: game
+      listener: game
+  backends:
+    - networkService:
+        name: game
+        port: game
+      healthCheck:
+        protocol: HTTP
+        port: health
+        path: /healthz
+```
+
+The address request omits `locations`, so it follows the `game` service's
+selected interfaces. `locations: {from: Backends}` expresses the same choice
+explicitly. Once IPv4 ingress is available, changing the request to
+`families: [IPv4, IPv6]` publishes both families on the same listener and
+route.
+
+`backends` accepts multiple entries without traffic weights. In each serving
+location, the route combines their healthy endpoints into one set and assigns
+new TCP connections or UDP flows to those endpoints with a consistent per-flow
+hash (Galactic's Maglev selection). Each healthy endpoint receives an equal
+share, so a service with more healthy endpoints receives more connections or
+flows. Every gateway node in a location computes the same choice, so a flow
+keeps its endpoint when it lands on a different node, and adding or removing an
+endpoint moves only a small share of flows. A backend with no healthy endpoints
+contributes none; the route is unready in that location only when no healthy
+endpoint remains across all its backends. Failed health probes remove
+individual endpoints from the rotation. Status distinguishes resolution,
+endpoint availability, and health.
+An existing connection or flow must keep its chosen endpoint rather than
+rotate on every packet.
+
+Each backend entry resolves its named `NetworkService` port independently.
+The consumer API does not require all entries to resolve to the same numeric
+port: future Galactic intent must allow an independently configured destination
+port for each endpoint. Likewise, one `NetworkService` may back several
+listeners or NLBs; consumers do not duplicate it to fit Galactic's current
+one-port rule. NSO materializes cell-local forwarding intent for each effective
+listener, address request, and location. A single Galactic `NetworkService` can
+carry the IPv4 and IPv6 VIPs for one such intent when both families are enabled.
+The number of internal objects is not a consumer API constraint.
+
+The load balancer reports one endpoint per address request and location. Each
+endpoint groups its generated hostname and addresses by family. This example
+shows the status shape once dual-stack requests are enabled:
+
+```yaml
+status:
+  addressRequests:
+    - name: regional
+      locationSource: Backends
+      resolvedLocations: [us-central-1, eu-west-1]
+  endpoints:
+    - requestName: regional
+      location: us-central-1
+      canonicalHostname: us-central-1.crown-raven-m7p6g.datumproxy.net
+      addresses:
+        - family: IPv4
+          value: 192.0.2.10
+          announced: true
+          dnsPublished: true
+        - family: IPv6
+          value: 2001:db8:100::10
+          announced: true
+          dnsPublished: true
+    - requestName: regional
+      location: eu-west-1
+      canonicalHostname: eu-west-1.crown-raven-m7p6g.datumproxy.net
+      addresses:
+        - family: IPv4
+          value: 198.51.100.11
+          announced: true
+          dnsPublished: true
+        - family: IPv6
+          value: 2001:db8:200::11
+          announced: true
+          dnsPublished: true
+```
+
+These names and IPs are illustrative. Endpoint identity is the address request
+and location; each requested family has an address entry even while allocation
+is pending. An absent `value` means allocation is pending; `announced` and
+`dnsPublished` report the two later steps separately. A non-ready family can
+include a short `reason` and `message` for its unmet step. Full Kubernetes
+conditions remain on the load balancer and routes, not on every family address.
+A missing IPv4 allocation does not hide a
+working IPv6 address, but the request reports partial readiness until both
+are available. Galactic can serve IPv4 VIPs over IPv6 backends when its IPv4
+VIP feature is enabled. NSO may still begin with `families: [IPv6]`; a request
+containing IPv4 remains rejected until the serving cells have the required
+Galactic version, feature gate, bindings, and public IPv4 pool. The cell intent
+carries the public VIP family and each backend address family separately. An
+allocation remains in status when a route or backend is unavailable; its
+announcement state changes instead.
+Load balancer conditions distinguish network reference resolution, allocation,
+programming, and DNS publication. Route conditions report attachment, backend
+resolution, and programming. `Ready` means at least one selected location has
+a serving IP published under its generated hostname; location status identifies
+any that do not. An address is announced from a location only when every
+listener using it is ready there. Status reports the resolved locations for each address
+request and shows `Backends` as the source when `locations` is omitted. Health loss
+withdraws an announcement and its DNS record without releasing its IP; after
+the last selected interface leaves a location, withdraw its DNS records and
+announcement before releasing its IP.
+
+NSO resolves service membership, allocates IPs, selects eligible locations,
+and reports status. Cell controllers translate resolved intent into Galactic
+`NetworkService` objects and their generated `ServiceVIPBinding` objects. The
+initial route uses healthy backends in the ingress location. The control plane
+allocates one IP per selected location and shares that location's IP among its
+serving cells. It
+resolves `Backends` from actual membership, not the capped
+`NetworkService.status.locations` display list. Route backend validation also
+uses actual interfaces rather than inferring network identity from display
+status. NSO creates a `NetworkBinding` for the referenced network in each
+selected location before programming its cell resources.
+
+For UDP, packets in the same client flow keep the endpoint chosen when that
+flow began while the gateway retains its flow assignment. A backend change or
+gateway failover may move that flow; the first release offers no UDP session
+or draining guarantee.
+
+### IPv4 Ingress Data Plane
+
+An IPv4 public VIP can front IPv6 workload addresses through Galactic's
+existing direct-server-return path. With `GALACTIC_GATEWAY_IPV4_VIPS` enabled,
+the gateway accepts IPv4 TCP/UDP, encapsulates the original packet toward an
+IPv6 backend, and advertises the IPv4 VIP only after a matching backend
+`ServiceVIPBinding` is Bound. The backend node translates the client's IPv4
+address into `64:ff9b::/96` for the workload and translates the reply back to
+IPv4 from the VIP. This path does not require a stateful L4 proxy. The ingress
+and backend address families remain separate properties of cell intent.
+
+Galactic currently limits an IPv4 VIP to one per service and each backend
+socket to one VIP per address family. If two NLBs reuse the same backend socket
+behind different VIPs, Galactic must first support those independent reply
+translations; otherwise NSO rejects the conflicting placement. IPv4 VIPs
+receive distinct per-location /32 announcements, gated by healthy backends
+and successful programming.
+Withdrawal completes before IPAM releases an address. A location reports
+IPv4 and IPv6 programming and announcement independently.
+
+NSO still needs a public IPv4 pool, family-aware cell intent, rollout of the
+Galactic IPv4 feature gate and backend bindings, and a capability signal from
+every serving gateway in a location. CI must exercise IPv4 TCP and UDP ingress
+to IPv6 backends and replies, backend health changes, and announcement
+withdrawal. Only then should admission accept `families` containing IPv4 and
+allow one address request to publish both families on a listener.
+
+### Backend Health
+
+Health checks are configured per route backend. A TCP backend defaults to a
+TCP connect probe on its serving port; it may instead name a TCP, HTTP, or
+HTTPS probe on another `NetworkService` port. A UDP backend must name a TCP,
+HTTP, or HTTPS health endpoint that reports whether the UDP application can
+serve. There is no generic UDP probe with reliable success semantics. Probe
+interval, timeout, and healthy and unhealthy thresholds have platform defaults.
+The fields remain in the consumer API, but explicit values are rejected until
+the cell contract and runner can honor them.
+
+The first cell runner admits at most 64 targets per health object, evaluates
+at most eight probes concurrently, and gives each probe a two-second timeout
+after it gets a slot. A full 64-target sweep can require eight waves, or 16
+seconds. The next sweep begins five seconds after completion; five seconds is
+not a per-target interval at this capacity. Health status is published after
+each full sweep. To keep an early successful result eligible until the next
+bounded sweep publishes, its freshness window covers two maximum sweeps plus
+the pause and one probe timeout of scheduling slack (39 seconds). A delayed
+runner beyond that bound expires health closed.
+
+An endpoint serves only when its workload reports `HolderAvailable` and its
+active probe passes. Probes run from each serving location. The cell publishes
+one healthy endpoint set for all gateway nodes in that location so they share
+the same endpoint eligibility. A location with no healthy backends withdraws its
+announcement but keeps its IP allocation. Status reports healthy backend
+counts and probe failures by location.
+
+### Backend Trust
+
+The project control plane resolves route backends from copies of cell network
+interfaces, but those copies are hints, not authorization. Each copy carries
+the UID of the cell interface it came from; the route counts only copies that
+carry it, so a deleted and recreated interface with the same name and address
+is never mistaken for the old one.
+
+Before programming an endpoint, the serving cell reads the live network
+interface and requires its UID, network, location, address and availability to
+match the intent. It then reads that interface's VPC attachment and requires
+the interface, owner, VPC and address to match, and checks that the source
+namespace belongs to the project in the intent. Matching an address alone is
+not enough, because different VPCs can reuse the same address. Any missing or
+changed field removes that endpoint from the set; the cell reports which
+endpoints it verified.
+
+### TLS
+
+A TCP listener forwards TLS bytes unchanged to a backend that owns its
+certificate. The NLB does not inspect SNI, validate that certificate, or
+report TLS-specific readiness for this mode. A CNAME to the generated location
+hostname changes DNS resolution, not the client's TLS SNI; the backend must
+present a certificate covering the name the client uses.
+
+The consumer API also has a TLS listener with two modes:
+
+- **Passthrough:** Inspect the ClientHello SNI to choose a route, then forward
+  the encrypted stream. The backend owns its certificate.
+- **Terminate:** Select a certificate from a referenced TLS Secret and end
+  client TLS at the load balancer. The route explicitly selects plain TCP or
+  re-encrypted TLS for the backend connection.
+
+The proposed TLS-specific fields are:
+
+```yaml
+# NetworkLoadBalancer spec fragment
+spec:
+  listeners:
+    - name: secure
+      protocol: TLS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRef:
+          name: services-tls
+---
+# NetworkLoadBalancerRoute spec fragment
+spec:
+  parentRefs:
+    - name: services
+      listener: secure
+  sniHostnames: [db.example.com]
+  backends:
+    - networkService:
+        name: database
+        port: database
+      transport:
+        protocol: TCP
+```
+
+`sniHostnames` is valid only on a TLS listener. Exact and `*.` wildcard DNS
+names use Gateway API hostname intersection and precedence rules with the
+listener's optional `hostname`. A route without an SNI match is the default
+for clients without a matching visible name; without a default, the listener
+rejects those connections. Terminate mode requires a certificate covering
+each served hostname, and status reports certificate readiness separately
+from VIP allocation. Cross-namespace Secret references require a grant.
+Backend `transport: TLS` requires a server name and certificate validation
+using system roots or a referenced CA bundle. Passthrough omits the listener
+certificate and backend transport; the backend performs the TLS handshake.
+
+Galactic's current XDP direct-server-return gateway has no ClientHello
+inspection, certificate handling, or TLS proxy. TLS listeners are therefore
+rejected until a proxy-capable edge path is deployed with certificate
+distribution, validation, source-IP, and return-path contracts. Opaque TLS
+through a TCP listener is the only TLS behavior in the first delivery. HTTP
+routing and termination remain with `HTTPProxy`.
+
+### Initial Delivery and Capability Gates
+
+The API fields above describe the long-term consumer contract. Galactic's
+current one-protocol, one-VIP-port, one-backend-port `NetworkService` is
+an internal programming unit, not a limit on the public `NetworkService` or
+`NetworkLoadBalancerRoute` schema. NSO may create several Galactic resources
+for one NLB. It must not silently alter route selection or drop a backend to
+fit a current datapath limit. The published CRD schema keeps `TLS` in the
+listener protocol enum and keeps `backends` as a list of independently named
+ports; it does not encode temporary one-backend or one-port limits. Admission
+and programming checks enforce the capabilities available in serving cells.
+
+The first rollout enforces these temporary restrictions in validation and
+programming until the required capabilities are available, while retaining
+the broader field shapes:
+
+| Consumer request | Initial behavior | Required to lift the restriction |
+| --- | --- | --- |
+| TLS listener, SNI match, or backend TLS transport | Reject with `UnsupportedCapability`; opaque TLS on a TCP listener remains valid. | Proxy-capable edge path, certificate lifecycle, and TLS route programming. |
+| More than one backend entry on a route, including entries with different resolved port numbers | Reject until the cell can program the complete set. Keep `backends` as a list of named-port references. | Galactic intent that represents every selected endpoint and its destination port, plus health and selection behavior. |
+| Reuse one backend address, port, and protocol in multiple forwarding rules of the same address family | Reject a conflicting attachment or report `BackendClaimConflict` if changing membership creates it later. | Galactic backend return-path support for multiple rules and VIPs on one socket. |
+| One address request shared by multiple listeners | Reject until announcements can be gated on every listener's readiness in the location. | Aggregate VIP readiness and coordinated advertisement. |
+| IPv4 in `families` | Reject where the public pool, backend bindings, or Galactic IPv4 feature gate is unavailable. | Capability reported by every serving cell in the location. |
+
+Validation returns the unsupported field and reason when a consumer submits
+an unsupported spec. A previously valid route that becomes unprogrammable
+after membership or location changes reports a condition, keeps its allocated
+address, and withdraws affected announcements. An unsupported route is not
+partially programmed; health-driven exclusion of individual endpoints remains
+valid. Consistent per-flow selection and flow affinity across gateway nodes are
+required before any NLB listener serves traffic.
+
+### Gateway API L4 Compatibility
+
+The Datum API is the primary consumer experience. A future Gateway API adapter
+can translate unweighted
+[TCPRoute](https://gateway-api.sigs.k8s.io/guides/user-guides/tcp/) and
+[UDPRoute](https://gateway-api.sigs.k8s.io/guides/user-guides/udp/) objects into
+the same internal intent. It must report unsupported optional features instead
+of silently changing their behavior. TLSRoute translation is deferred until
+the TLS listener and SNI behavior above are actually served. Claim only Gateway
+API features that pass the relevant conformance tests, and document any
+implementation-specific backend mapping.
+
+| Gateway API capability | Datum API behavior |
+| --- | --- |
+| Gateway addresses, named TCP/UDP/TLS listeners and ports | `NetworkLoadBalancer.exposure.addresses` and `listeners`; Datum additionally selects locations and allocates one address in each. TLS listeners are gated initially. |
+| TCPRoute and UDPRoute, listener attachment and backendRefs | `NetworkLoadBalancerRoute.parentRefs` and unweighted `backends`; one effective catch-all per TCP/UDP listener, with Gateway API precedence. Weighted backendRefs are unsupported. |
+| TLSRoute SNI hostnames and TLS certificates | TLS listener `hostname`, `tls.mode`, and certificate reference, plus route `sniHostnames`; adapter support waits for the proxy-capable data plane. |
+| AllowedRoutes, parentRefs, cross-namespace ReferenceGrant and status | Explicit attachment policy and backend grants; report Accepted, ResolvedRefs and programming per attachment, plus listener conflicts and readiness. |
+| ListenerSet and multiple parent attachments | Adapter expands these into listeners and route attachments while preserving ownership, conflict resolution and status for each source object. |
+
+The native route needs multiple `parentRefs` so one route can attach to several
+listeners or load balancers, with optional listener name or port selection.
+Listener attachment policy defaults to the same namespace; cross-namespace
+attachment and backend references require grants. The adapter maps Kubernetes
+Services and their numbered ports to resolved backends;
+`NetworkService` remains the native backend type. The adapter reports
+unsupported weighted backendRefs; it must preserve Gateway API rules for
+conflicting listeners and routes, and per-parent status. TCP and UDP may share
+a port. Datum-only source-CIDR and locality policies cannot change the behavior
+of a Gateway API
+resource unless explicitly configured through a Datum extension.
+
+The first delivery may expose a smaller native feature set. It must not
+claim support for any Gateway API L4 feature until the adapter passes that
+feature's conformance tests. TLSRoute and BackendTLSPolicy are deferred until
+their corresponding TLS behavior is served. Full Extended-feature
+compatibility, including weighted backendRefs, is outside this proposal.
+Track the supported feature set against a pinned Gateway API
+release; the upstream API can evolve independently.
+
+### Route Controls
+
+The listener selects destination IP, protocol, and port. The route selects a
+backend for each TCP connection or UDP flow. The following controls are
+candidates for later releases beyond the initial NLB scope:
+
+- **Priority failover:** Use a standby backend when the preferred one lacks
+  enough healthy members, with an explicit threshold.
+- **Backend locality:** Select `LocalOnly`, `PreferLocal`, or `Global` backends
+  relative to the ingress location. This does not change which locations
+  announce the VIP. Cross-location forwarding needs a verified DSR return path.
+- **Source CIDR match:** Steer client networks to different backends. Multiple
+  routes on one listener need a default and unambiguous precedence. This is
+  traffic selection, not an access-control substitute.
+- **Client affinity:** Keep new flows from one client on a consistent
+  backend when needed. Clients sharing a NAT IP can create uneven load.
+
+Connection draining, source-IP preservation, and PROXY protocol are delivery
+settings rather than route matches; they need their own data plane contracts.
+Endpoint selection uses Galactic's deterministic Maglev hash, which gives an
+even spread and keeps a flow on its endpoint even when anycast moves it to
+another gateway node. Strict round robin is not offered: per-node counters
+cannot preserve a flow's endpoint across nodes. Route matches and priority
+policy need implementation before the API accepts them.
+
+## Production Readiness Review Questionnaire
+
+### Feature Enablement and Rollback
+
+Enable the feature only in locations with a capable Galactic gateway and IP
+pool. Disabling reconciliation alone must not strand announced IPs: rollback
+needs an ordered withdrawal and release path that preserves allocations until
+advertisements are gone.
+
+### Rollout, Upgrade and Rollback Planning
+
+Start with single-location TCP and UDP using consistent per-flow selection
+across healthy endpoints and active probes, then test multi-location operation
+with distinct addresses. Exercise route updates, even flow spread, affinity
+during a flow, gateway failover, probe failures, loss of the last backend,
+location removal, opaque TLS over a TCP listener, CNAME resolution, A/AAAA
+publication, IP replacement without hostname change, and withdrawal before IP release.
+Existing `NetworkService` and `HTTPProxy` behavior should be unaffected.
+Expand the rollout to multiple backend entries and shared backend sockets only
+after their Galactic contracts are verified. Enable SNI passthrough and then
+Secret-backed TLS termination as separate capability-gated steps.
+
+### Monitoring Requirements
+
+Operators need counts of allocated VIPs, programmed rules, healthy backends,
+announced locations, and published DNS records, plus failures to allocate,
+probe, program, publish DNS, or withdraw. Consumers read load balancer and route
+conditions, backend health, generated location hostnames, and per-address
+announcement and DNS status.
+When TLS listeners are enabled, add certificate readiness and rotation failure
+signals per listener and location.
+
+### Dependencies
+
+IPAM must provide globally unique public IPv6 VIPs, one for each selected
+location. NSO must allow UDP `NetworkService` ports (tracked in
+[PR #683](https://github.com/datum-cloud/network-services-operator/pull/683)) and require the route
+listener and backend port protocols to match; `HTTPProxy` must continue to
+reject UDP backends. Selected cells need a health probe runner, Galactic
+gateways, backend VIP bindings, consistent per-flow selection that survives
+gateway failover, and a way to report programming and announcement state.
+IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
+Galactic's existing IPv4 feature enabled with backend bindings, and a serving
+capability gate before API admission is enabled.
+NSO needs a managed DNS zone and per-location A/AAAA record lifecycle tied to
+VIP allocation and announcement; hostname assignment must remain stable across
+IP replacement and temporary health loss.
+Gateway API support also needs an attachment/grant model, Service backend
+translation, per-parent status, and conformance tests against a
+pinned upstream release. Weighted backendRefs remain unsupported.
+Serving TLS listeners additionally needs an edge proxy tier, secure Secret
+distribution, SNI routing, and backend TLS validation.
+
+### Scalability
+
+Bound listeners, routes, address requests, and selected locations. A dynamic
+`Backends` or `All` request adds an allocation and cell configuration when a new
+location qualifies; reconciliation must handle those additions without
+changing existing IPs.
+
+### Troubleshooting
+
+Report failures at the affected route, address request, and location. In
+particular, distinguish an address that is allocated but not announced from an
+address that could not be allocated.
+
+## Implementation History
+
+- 2026-10-11: Initial proposal.
+- 2026-10-12: Scoped NLB addresses to one IP per selected location; deferred
+  global entry points to a separate Global Services Load Balancer concept.
+- 2026-10-21: Scoped TLS to opaque forwarding through a TCP listener; deferred
+  SNI routing, TLS termination, and backend re-encryption to a separate proxy
+  design; aligned IPv4 dependencies with Galactic's existing gated IPv4 VIP
+  path.
+- 2026-10-21: Kept long-term TLS and multi-backend fields in the consumer API
+  proposal while defining temporary validation gates for unsupported traffic
+  configurations.
+- 2026-10-23: Addressed review: used `ResolvedRefs` for network mismatches,
+  added backend trust checks, replaced round robin with consistent per-flow
+  selection, marked hostname claims as planned, and noted per-project quotas.
+
+## Drawbacks
+
+Separate routes add an object to a simple single-backend setup. Serving many
+locations consumes one public IP in each, and each IP requires coordinated
+withdrawal across the cells serving its location.
+
+## Alternatives
+
+- **Put exposure and backends on `NetworkService`.** This ties workload
+  membership to public address and listener lifecycle.
+- **Put the backend on each listener.** This is compact for one backend but
+  leaves no independent route lifecycle or place for future route policy.
+- **Infer the NLB network from backend membership.** This avoids a reference on
+  the NLB but makes its network identity depend on changing workload membership
+  and leaves it undefined before backends exist.
+- **Expose Gateway API directly.** It adds concepts consumers do not need for
+  this use case and does not express Datum's location and address policies.
+  Offer an adapter for portability while retaining the Datum API.
+
+## Infrastructure Needed
+
+Public VIP pools, cell-level programming and status propagation, and a
+multi-location traffic test environment are required before rollout.

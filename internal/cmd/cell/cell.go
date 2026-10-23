@@ -10,6 +10,7 @@ import (
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -132,15 +133,16 @@ func NewCommand() *cobra.Command {
 			retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
 
 			mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
-				Scheme:                  scheme,
-				Metrics:                 serverConfig.MetricsServer.Options(ctx, deploymentCluster.GetClient()),
-				HealthProbeBindAddress:  probeAddr,
-				LeaderElection:          enableLeaderElection,
-				LeaderElectionID:        leaderElectionIDOverride,
-				LeaderElectionNamespace: leaderElectionNamespace,
-				LeaseDuration:           &leaseDuration,
-				RenewDeadline:           &renewDeadline,
-				RetryPeriod:             &retryPeriod,
+				Scheme:                        scheme,
+				Metrics:                       serverConfig.MetricsServer.Options(ctx, deploymentCluster.GetClient()),
+				HealthProbeBindAddress:        probeAddr,
+				LeaderElection:                enableLeaderElection,
+				LeaderElectionID:              leaderElectionIDOverride,
+				LeaderElectionNamespace:       leaderElectionNamespace,
+				LeaderElectionReleaseOnCancel: true,
+				LeaseDuration:                 &leaseDuration,
+				RenewDeadline:                 &renewDeadline,
+				RetryPeriod:                   &retryPeriod,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to start manager")
@@ -205,9 +207,15 @@ func NewCommand() *cobra.Command {
 				watcher := &configwatch.Watcher{
 					Path:   serverConfigFile,
 					Loaded: configData,
-					Validate: func(data []byte) error {
-						_, err := decodeConfig(data)
-						return err
+					Changed: func(data []byte) (bool, error) {
+						next, err := decodeConfig(data)
+						if err != nil {
+							return false, err
+						}
+						if err := checkConfigFiles(next); err != nil {
+							return false, err
+						}
+						return !equality.Semantic.DeepEqual(next, serverConfig), nil
 					},
 					Log: setupLog,
 				}
@@ -260,6 +268,16 @@ func loadConfig(path string) (config.CellControllerManager, []byte, error) {
 
 	serverConfig, err := decodeConfig(data)
 	return serverConfig, data, err
+}
+
+func checkConfigFiles(serverConfig config.CellControllerManager) error {
+	if _, err := serverConfig.IPAM.RestConfig(); err != nil {
+		return fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
+	}
+	if _, err := serverConfig.Federation.RestConfig(); err != nil {
+		return fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)
+	}
+	return nil
 }
 
 func decodeConfig(data []byte) (config.CellControllerManager, error) {

@@ -8,16 +8,29 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 const DefaultInterval = 10 * time.Second
 
 var ErrChanged = errors.New("server config changed")
 
+var rejected = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "nso_server_config_rejected",
+	Help: "1 while the server config file cannot be read or holds a config this process refuses to load, so the process keeps running on the config it started with.",
+})
+
+func init() {
+	ctrlmetrics.Registry.MustRegister(rejected)
+}
+
 type Watcher struct {
-	Path     string
-	Loaded   []byte
-	Validate func([]byte) error
+	Path   string
+	Loaded []byte
+	// Changed reports whether data loads to a config that differs from the
+	// running one. An error rejects data and keeps the running config.
+	Changed  func(data []byte) (bool, error)
 	Interval time.Duration
 	Log      logr.Logger
 }
@@ -30,7 +43,8 @@ func (w *Watcher) Start(ctx context.Context) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var rejected []byte
+	seen := w.Loaded
+	readFailing := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -40,18 +54,32 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 		data, err := os.ReadFile(w.Path)
 		if err != nil {
-			w.Log.Error(err, "unable to read server config, keeping the current config", "path", w.Path)
-			continue
-		}
-		if bytes.Equal(data, w.Loaded) || (rejected != nil && bytes.Equal(data, rejected)) {
-			continue
-		}
-		if w.Validate != nil {
-			if err := w.Validate(data); err != nil {
-				w.Log.Error(err, "server config changed but is invalid, keeping the current config", "path", w.Path)
-				rejected = data
-				continue
+			if !readFailing {
+				w.Log.Error(err, "unable to read server config, keeping the running config", "path", w.Path)
 			}
+			readFailing = true
+			rejected.Set(1)
+			continue
+		}
+		if readFailing {
+			readFailing = false
+			seen = nil
+		}
+		if seen != nil && bytes.Equal(data, seen) {
+			continue
+		}
+		seen = data
+
+		changed, err := w.Changed(data)
+		if err != nil {
+			w.Log.Error(err, "server config changed but cannot be loaded, keeping the running config", "path", w.Path)
+			rejected.Set(1)
+			continue
+		}
+		rejected.Set(0)
+		if !changed {
+			w.Log.Info("server config file changed with no effect on the running config", "path", w.Path)
+			continue
 		}
 		w.Log.Info("server config changed, stopping so the new config takes effect", "path", w.Path)
 		return ErrChanged

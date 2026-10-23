@@ -5,3 +5,4 @@ resources:
   - gateways.yaml
   - controller-health.yaml
   - trafficprotectionpolicies.yaml
+  - server-config.yaml

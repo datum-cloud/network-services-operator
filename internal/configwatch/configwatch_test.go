@@ -3,21 +3,46 @@ package configwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 const testInterval = 5 * time.Millisecond
 
-func startWatcher(t *testing.T, path string, loaded []byte, validate func([]byte) error) (context.CancelFunc, <-chan error) {
+var configs = map[string]string{
+	"a: 1\n":        "1",
+	"a: 1 # note\n": "1",
+	"a: 2\n":        "2",
+}
+
+func changedFrom(running string) func([]byte) (bool, error) {
+	return func(data []byte) (bool, error) {
+		value, ok := configs[string(data)]
+		if !ok {
+			return false, fmt.Errorf("invalid config %q", data)
+		}
+		return value != configs[running], nil
+	}
+}
+
+func startWatcher(t *testing.T, path, running string) (context.CancelFunc, <-chan error) {
 	t.Helper()
+	rejected.Set(0)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	w := &Watcher{Path: path, Loaded: loaded, Validate: validate, Interval: testInterval, Log: logr.Discard()}
+	w := &Watcher{
+		Path:     path,
+		Loaded:   []byte(running),
+		Changed:  changedFrom(running),
+		Interval: testInterval,
+		Log:      logr.Discard(),
+	}
 	done := make(chan error, 1)
 	go func() { done <- w.Start(ctx) }()
 	return cancel, done
@@ -44,9 +69,20 @@ func expectResult(t *testing.T, done <-chan error, want error) {
 	}
 }
 
+func expectRejected(t *testing.T, want float64) {
+	t.Helper()
+	if got := testutil.ToFloat64(rejected); got != want {
+		t.Fatalf("nso_server_config_rejected = %v, want %v", got, want)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -55,7 +91,7 @@ func TestUnchangedConfigKeepsRunning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, path, "a: 1\n")
 
-	cancel, done := startWatcher(t, path, []byte("a: 1\n"), nil)
+	cancel, done := startWatcher(t, path, "a: 1\n")
 	expectRunning(t, done)
 	cancel()
 	expectResult(t, done, nil)
@@ -65,7 +101,7 @@ func TestChangedConfigStops(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, path, "a: 1\n")
 
-	_, done := startWatcher(t, path, []byte("a: 1\n"), nil)
+	_, done := startWatcher(t, path, "a: 1\n")
 	expectRunning(t, done)
 	writeFile(t, path, "a: 2\n")
 	expectResult(t, done, ErrChanged)
@@ -75,45 +111,69 @@ func TestChangeBeforeWatchStartsStops(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, path, "a: 2\n")
 
-	_, done := startWatcher(t, path, []byte("a: 1\n"), nil)
+	_, done := startWatcher(t, path, "a: 1\n")
+	expectResult(t, done, ErrChanged)
+}
+
+func TestRewriteWithoutEffectKeepsRunning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, path, "a: 1\n")
+
+	_, done := startWatcher(t, path, "a: 1\n")
+	writeFile(t, path, "a: 1 # note\n")
+	expectRunning(t, done)
+	writeFile(t, path, "a: 2\n")
 	expectResult(t, done, ErrChanged)
 }
 
 func TestInvalidChangeKeepsRunningUntilFixed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	writeFile(t, path, "a: 1\n")
-	validate := func(data []byte) error {
-		if string(data) == "bad\n" {
-			return errors.New("invalid")
-		}
-		return nil
-	}
 
-	_, done := startWatcher(t, path, []byte("a: 1\n"), validate)
+	_, done := startWatcher(t, path, "a: 1\n")
 	writeFile(t, path, "bad\n")
 	expectRunning(t, done)
+	expectRejected(t, 1)
 	writeFile(t, path, "a: 2\n")
 	expectResult(t, done, ErrChanged)
+	expectRejected(t, 0)
+}
+
+func TestInvalidChangeRevertedClearsRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, path, "a: 1\n")
+
+	_, done := startWatcher(t, path, "a: 1\n")
+	writeFile(t, path, "bad\n")
+	expectRunning(t, done)
+	expectRejected(t, 1)
+	writeFile(t, path, "a: 1\n")
+	expectRunning(t, done)
+	expectRejected(t, 0)
 }
 
 func TestUnreadableConfigKeepsRunning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 
-	_, done := startWatcher(t, path, []byte("a: 1\n"), nil)
+	_, done := startWatcher(t, path, "a: 1\n")
 	expectRunning(t, done)
+	expectRejected(t, 1)
+	writeFile(t, path, "a: 1\n")
+	expectRunning(t, done)
+	expectRejected(t, 0)
 	writeFile(t, path, "a: 2\n")
 	expectResult(t, done, ErrChanged)
 }
 
 func TestConfigMapVolumeSwapStops(t *testing.T) {
 	dir := t.TempDir()
-	mustMkdir := func(name, content string) {
+	version := func(name, content string) {
 		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		writeFile(t, filepath.Join(dir, name, "config.yaml"), content)
 	}
-	mustMkdir("..v1", "a: 1\n")
+	version("..v1", "a: 1\n")
 	if err := os.Symlink("..v1", filepath.Join(dir, "..data")); err != nil {
 		t.Fatal(err)
 	}
@@ -122,10 +182,10 @@ func TestConfigMapVolumeSwapStops(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, done := startWatcher(t, path, []byte("a: 1\n"), nil)
+	_, done := startWatcher(t, path, "a: 1\n")
 	expectRunning(t, done)
 
-	mustMkdir("..v2", "a: 2\n")
+	version("..v2", "a: 2\n")
 	if err := os.Symlink("..v2", filepath.Join(dir, "..data_tmp")); err != nil {
 		t.Fatal(err)
 	}

@@ -79,7 +79,13 @@ func testRouteMember(name string, available bool, address string) *networkingv1a
 	return &networkingv1alpha.NetworkInterface{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "test", Name: name,
-			Labels: map[string]string{"app": "storefront", networkingv1alpha.NetworkInterfaceLocationLabel: "dfw"},
+			Labels: map[string]string{
+				"app": "storefront",
+				networkingv1alpha.NetworkInterfaceLocationLabel:        "dfw",
+				networkingv1alpha.NetworkInterfaceProjectionLabel:      "true",
+				networkingv1alpha.NetworkInterfaceSourceNamespaceLabel: "cell-test",
+				networkingv1alpha.NetworkInterfaceSourceUIDLabel:       "source-" + name,
+			},
 		},
 		Spec: networkingv1alpha.NetworkInterfaceSpec{
 			Network:   networkingv1alpha.LocalNetworkRef{Name: "default"},
@@ -511,6 +517,8 @@ func TestNetworkLoadBalancerRouteEndpointResolution(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, endpoints, 1)
 	assert.Equal(t, "fd00::1", endpoints[0].Address)
+	assert.Equal(t, "cell-test", endpoints[0].SourceNamespace)
+	assert.Equal(t, "source-ready-v6", endpoints[0].SourceUID)
 	assert.Equal(t, "dfw", endpoints[0].Location)
 
 	parent.Spec.Exposure.Addresses[0].Locations = &networkingv1alpha.NetworkLoadBalancerLocationSelection{
@@ -524,6 +532,13 @@ func TestNetworkLoadBalancerRouteEndpointResolution(t *testing.T) {
 	endpoints, err = resolveNetworkLoadBalancerRouteBackends(ctx, cl, route, parent, &parent.Spec.Listeners[0])
 	require.NoError(t, err)
 	require.Len(t, endpoints, 1, "omitted locations must follow backend membership")
+
+	member := testRouteMember("missing-source-uid", true, "fd00::3/128")
+	delete(member.Labels, networkingv1alpha.NetworkInterfaceSourceUIDLabel)
+	cl = fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(service, member).Build()
+	endpoints, err = resolveNetworkLoadBalancerRouteBackends(ctx, cl, route, parent, &parent.Spec.Listeners[0])
+	require.NoError(t, err)
+	assert.Empty(t, endpoints)
 }
 
 func TestNetworkLoadBalancerRouteUDPRequiresTCPProbe(t *testing.T) {

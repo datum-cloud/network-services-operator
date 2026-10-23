@@ -61,6 +61,9 @@ func projectionLabels(source *networkingv1alpha.NetworkInterface, location strin
 
 	labels[networkingv1alpha.NetworkInterfaceProjectionLabel] = "true"
 	labels[networkingv1alpha.NetworkInterfaceSourceNamespaceLabel] = source.Namespace
+	if source.UID != "" {
+		labels[networkingv1alpha.NetworkInterfaceSourceUIDLabel] = string(source.UID)
+	}
 
 	if location != "" {
 		labels[networkingv1alpha.NetworkInterfaceLocationLabel] = location

@@ -761,6 +761,50 @@ func TestNetworkPresenceIsTornDownOnceTheGraceExpires(t *testing.T) {
 	require.False(t, ok, "nothing has declared this presence for longer than the wait")
 }
 
+// A binding written straight into the project control plane uses the same
+// context a hub binding does, and holds addresses in it. The last hub consumer
+// going away must not take the context from under it, however long the wait.
+func TestNetworkPresenceKeepsAContextAProjectPlaneBindingStillUses(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	hubBinding := s.createBinding("consumer-a")
+	s.reconcile()
+
+	before, ok := s.networkContext()
+	require.True(t, ok)
+
+	projectBinding := &networkingv1alpha.NetworkBinding{}
+	projectBinding.Namespace = s.projectNamespace
+	projectBinding.Name = "project-plane-binding"
+	projectBinding.Spec.Network = networkingv1alpha.NetworkRef{Name: s.networkName}
+	projectBinding.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
+	require.NoError(t, s.hub.Create(s.ctx, projectBinding))
+
+	// A stamp left from an earlier gap must not count down to a teardown either.
+	if before.Annotations == nil {
+		before.Annotations = map[string]string{}
+	}
+	before.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation] =
+		time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339)
+	require.NoError(t, s.hub.Update(s.ctx, before))
+
+	require.NoError(t, s.hub.Delete(s.ctx, hubBinding))
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter, "a declared presence has no teardown to come back for")
+
+	after, ok := s.networkContext()
+	require.True(t, ok, "a presence a project-plane binding still uses must not be torn down")
+	require.Equal(t, before.UID, after.UID)
+	require.True(t, after.DeletionTimestamp.IsZero())
+	require.Empty(t, after.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation],
+		"a presence the project still declares is not waiting to be torn down")
+
+	require.NoError(t, s.hub.Delete(s.ctx, projectBinding))
+	result, err = s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter, "once nothing declares it, the usual wait applies")
+}
+
 func projectedLocation(name string) *locationsv1alpha1.Location {
 	location := &locationsv1alpha1.Location{}
 	location.Name = name

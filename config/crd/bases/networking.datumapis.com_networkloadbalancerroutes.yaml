@@ -1,0 +1,279 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: networkloadbalancerroutes.networking.datumapis.com
+spec:
+  group: networking.datumapis.com
+  names:
+    kind: NetworkLoadBalancerRoute
+    listKind: NetworkLoadBalancerRouteList
+    plural: networkloadbalancerroutes
+    singular: networkloadbalancerroute
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetworkLoadBalancerRoute connects load balancer listeners to NetworkService
+          backends. References are restricted to the route's namespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: NetworkLoadBalancerRouteSpec attaches backends to named listeners.
+            properties:
+              backends:
+                items:
+                  description: |-
+                    NetworkLoadBalancerRouteBackend forwards new connections or flows to a
+                    named NetworkService port.
+                  properties:
+                    healthCheck:
+                      description: |-
+                        NetworkLoadBalancerHealthCheck checks an individual backend endpoint. UDP
+                        backends require a separate TCP, HTTP, or HTTPS health endpoint.
+                      properties:
+                        healthyThreshold:
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        intervalSeconds:
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        path:
+                          pattern: ^/.*$
+                          type: string
+                        port:
+                          description: |-
+                            Name of the probe port on the referenced NetworkService. When omitted,
+                            TCP probes use the backend's serving port.
+                          type: string
+                        protocol:
+                          enum:
+                          - TCP
+                          - HTTP
+                          - HTTPS
+                          type: string
+                        timeoutSeconds:
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        unhealthyThreshold:
+                          format: int32
+                          minimum: 1
+                          type: integer
+                      required:
+                      - protocol
+                      type: object
+                      x-kubernetes-validations:
+                      - message: path is only valid for HTTP and HTTPS probes
+                        rule: 'has(self.path) ? self.protocol in [''HTTP'', ''HTTPS'']
+                          : true'
+                      - message: HTTP and HTTPS probes require a port
+                        rule: self.protocol == 'TCP' || has(self.port)
+                    networkService:
+                      description: |-
+                        NetworkLoadBalancerNetworkServiceRef names a backend service and one of its
+                        named ports in the route's namespace.
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        port:
+                          type: string
+                      required:
+                      - name
+                      - port
+                      type: object
+                    transport:
+                      description: Backend TLS requires a proxy-capable serving path.
+                      properties:
+                        caBundleRef:
+                          properties:
+                            name:
+                              description: Name identifies a Secret in the listener's
+                                namespace.
+                              type: string
+                            namespace:
+                              description: Cross-namespace access is capability-gated
+                                until grants are supported.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        protocol:
+                          enum:
+                          - TCP
+                          - TLS
+                          type: string
+                        serverName:
+                          type: string
+                      required:
+                      - protocol
+                      type: object
+                  required:
+                  - networkService
+                  type: object
+                maxItems: 16
+                minItems: 1
+                type: array
+              parentRefs:
+                items:
+                  description: |-
+                    NetworkLoadBalancerRouteParentRef attaches a route to a listener. Cross-
+                    namespace references are capability-gated initially. Either listener name or
+                    port selects a listener; status always reports its resolved name.
+                  properties:
+                    listener:
+                      description: One of listener or port selects the parent listener.
+                      type: string
+                    name:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      type: string
+                    port:
+                      format: int32
+                      type: integer
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of listener or port is required
+                    rule: has(self.listener) != has(self.port)
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+              sniHostnames:
+                description: SNI routing is capability-gated until TLS listeners are
+                  served.
+                items:
+                  type: string
+                type: array
+            required:
+            - backends
+            - parentRefs
+            type: object
+          status:
+            properties:
+              parents:
+                items:
+                  description: |-
+                    NetworkLoadBalancerRouteParentStatus reports attachment and effectiveness
+                    for one parent listener. The oldest accepted catch-all route is effective.
+                  properties:
+                    conditions:
+                      description: |-
+                        Conditions include Accepted, ResolvedRefs, and Programmed with
+                        observedGeneration.
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - type
+                      x-kubernetes-list-type: map
+                    effective:
+                      type: boolean
+                    listener:
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - effective
+                  - listener
+                  - name
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                - listener
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

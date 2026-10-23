@@ -30,15 +30,17 @@ var inScopeAPIFiles = []string{
 }
 
 var outOfScopeAPIFiles = map[string]string{
-	"domain_types.go":                  "load balancer hostnames; the ALB agent's",
-	"edgereachability_types.go":        "hub-side record with no customer-facing status",
-	"groupversion_info.go":             "scheme registration, no reasons",
-	"httpproxy_types.go":               "load balancers; the ALB agent's",
-	"internaldns_types.go":             "internal DNS service configuration, no status reasons",
-	"locationbinding_types.go":         "which locations a project is offered; surfaces here only as LocationNotAvailable",
-	"networkpolicy_types.go":           "declares no status reasons",
-	"trafficprotectionpolicy_types.go": "load balancer protection; the ALB agent's",
-	"zz_generated.deepcopy.go":         "generated",
+	"domain_types.go":                   "load balancer hostnames; the ALB agent's",
+	"edgereachability_types.go":         "hub-side record with no customer-facing status",
+	"groupversion_info.go":              "scheme registration, no reasons",
+	"httpproxy_types.go":                "load balancers; the ALB agent's",
+	"internaldns_types.go":              "internal DNS service configuration, no status reasons",
+	"locationbinding_types.go":          "which locations a project is offered; surfaces here only as LocationNotAvailable",
+	"networkloadbalancer_types.go":      "Network Load Balancer has its own product status, separate from networks and network services",
+	"networkloadbalancerroute_types.go": "Network Load Balancer route status belongs to the load balancer product",
+	"networkpolicy_types.go":            "declares no status reasons",
+	"trafficprotectionpolicy_types.go":  "load balancer protection; the ALB agent's",
+	"zz_generated.deepcopy.go":          "generated",
 }
 
 var controllerFiles = []string{

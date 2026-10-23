@@ -271,6 +271,9 @@ func loadConfig(path string) (config.CellControllerManager, []byte, error) {
 }
 
 func checkConfigFiles(serverConfig config.CellControllerManager) error {
+	if err := clusterdiscovery.CheckRestConfigs(serverConfig.Discovery); err != nil {
+		return err
+	}
 	if _, err := serverConfig.IPAM.RestConfig(); err != nil {
 		return fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
 	}

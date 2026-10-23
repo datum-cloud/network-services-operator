@@ -939,6 +939,9 @@ func decodeConfig(data []byte) (config.NetworkServicesOperator, error) {
 }
 
 func checkConfigFiles(serverConfig config.NetworkServicesOperator) error {
+	if err := clusterdiscovery.CheckRestConfigs(serverConfig.Discovery); err != nil {
+		return err
+	}
 	if _, err := serverConfig.DownstreamResourceManagement.RestConfig(); err != nil {
 		return fmt.Errorf("unable to load control plane kubeconfig: %w", err)
 	}

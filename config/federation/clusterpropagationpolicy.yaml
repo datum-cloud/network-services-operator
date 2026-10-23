@@ -154,3 +154,9 @@ spec:
       matchExpressions:
       - key: meta.datumapis.com/upstream-cluster-name
         operator: Exists
+  - apiVersion: networking.datumapis.com/v1alpha
+    kind: NetworkLoadBalancerCellIntent
+    labelSelector:
+      matchExpressions:
+      - key: meta.datumapis.com/upstream-cluster-name
+        operator: Exists

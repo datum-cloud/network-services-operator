@@ -72,6 +72,7 @@ var reconcilerControllerNames = map[string]string{
 	"NetworkServiceReconciler":                     "networkservice",
 	"NetworkLoadBalancerRouteReconciler":           "networkloadbalancerroute",
 	"NetworkLoadBalancerBackendHealthReconciler":   "networkloadbalancerbackendhealth",
+	"NetworkLoadBalancerCellIntentReconciler":      "networkloadbalancercellintent",
 	"SubnetClaimReconciler":                        "subnetclaim",
 	"SubnetReconciler":                             "subnet",
 	"TrafficProtectionPolicyReconciler":            "trafficprotectionpolicy",

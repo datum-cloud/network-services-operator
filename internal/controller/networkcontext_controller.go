@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -220,7 +221,12 @@ func (r *NetworkContextReconciler) reconcileSubnet(
 		}
 	}
 
-	subnet, err := r.claimSubnet(ctx, ipamClient, routing, networkContext)
+	claimName, err := r.subnetClaimName(ctx, cl, ipamClient, routing, networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	subnet, err := r.claimSubnet(ctx, ipamClient, routing, networkContext, claimName)
 	if err != nil {
 		var refused *bindingRefused
 		if errors.As(err, &refused) {
@@ -238,7 +244,7 @@ func (r *NetworkContextReconciler) reconcileSubnet(
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.publishSubnet(ctx, cl, networkContext, routing, subnet, subnetName)
+	return ctrl.Result{}, r.publishSubnet(ctx, cl, networkContext, routing, claimName, subnet, subnetName)
 }
 
 func (r *NetworkContextReconciler) claimSubnet(
@@ -246,10 +252,11 @@ func (r *NetworkContextReconciler) claimSubnet(
 	ipamClient client.Client,
 	routing projectRouting,
 	networkContext *networkingv1alpha.NetworkContext,
+	claimName string,
 ) (scopeRange, error) {
 	return holdScopeRange(ctx, ipamClient, routing, scopeRangeRequest{
 		className: r.SubnetClass,
-		claimName: networkContextSubnetClaimName(networkContext),
+		claimName: claimName,
 		namespace: routing.projectNamespace,
 		scope: map[string]ipamv1alpha1.ScopeRef{
 			ipamScopeRoleNetwork: {
@@ -267,6 +274,84 @@ func (r *NetworkContextReconciler) claimSubnet(
 		namespaceNotFoundReason: networkingv1alpha.NetworkContextReasonProjectNamespaceNotFound,
 		rangeUnsupportedReason:  networkingv1alpha.NetworkContextReasonRangeUnsupported,
 	})
+}
+
+// subnetClaimName names the claim this context holds its range through.
+//
+// The range for a (network, location) is one pool, and IPAM binds it to a
+// single claim. A context deleted while its workloads still held addresses in
+// the range can only be removed by clearing its finalizer, which leaves its
+// claim holding the range. The context written back under the same name has a
+// new UID, so a claim derived from that UID would be refused the range for good.
+// The orphaned claim is adopted instead: the range, and every address inside
+// it, carries over to the context that replaces the one that went.
+func (r *NetworkContextReconciler) subnetClaimName(
+	ctx context.Context,
+	cl client.Client,
+	ipamClient client.Client,
+	routing projectRouting,
+	networkContext *networkingv1alpha.NetworkContext,
+) (string, error) {
+	if ref := subnetClaimRef(networkContext); ref != nil {
+		return ref.ClaimName, nil
+	}
+	own := networkContextSubnetClaimName(networkContext)
+
+	var claims ipamv1alpha1.IPClaimList
+	if err := ipamClient.List(ctx, &claims, client.InNamespace(routing.projectNamespace)); err != nil {
+		return "", fmt.Errorf("failed listing IPClaims: %w", err)
+	}
+
+	var orphan string
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Name == own {
+			return own, nil
+		}
+		if orphan == "" && r.isOrphanedSubnetClaim(claim, networkContext) {
+			orphan = claim.Name
+		}
+	}
+	if orphan == "" {
+		return own, nil
+	}
+
+	// The claim is orphaned only if no context holds it: neither the one it was
+	// named for, which may still be terminating, nor one that adopted it before.
+	var contexts networkingv1alpha.NetworkContextList
+	if err := cl.List(ctx, &contexts, client.InNamespace(networkContext.Namespace)); err != nil {
+		return "", fmt.Errorf("failed listing network contexts: %w", err)
+	}
+	for i := range contexts.Items {
+		other := &contexts.Items[i]
+		if networkContextSubnetClaimName(other) == orphan {
+			return own, nil
+		}
+		if ref := subnetClaimRef(other); ref != nil && ref.ClaimName == orphan {
+			return own, nil
+		}
+	}
+
+	log.FromContext(ctx).Info("adopting the subnet claim a deleted network context left holding this location's range",
+		"claim", orphan)
+	return orphan, nil
+}
+
+// isOrphanedSubnetClaim reports whether a claim was written by this controller
+// for another context on the same network and location.
+func (r *NetworkContextReconciler) isOrphanedSubnetClaim(
+	claim *ipamv1alpha1.IPClaim,
+	networkContext *networkingv1alpha.NetworkContext,
+) bool {
+	if !strings.HasPrefix(claim.Name, "networkcontext-") || !claim.DeletionTimestamp.IsZero() {
+		return false
+	}
+	if claim.Spec.Target != ipamv1alpha1.TargetScopeRange || claim.Spec.ClassName != r.SubnetClass {
+		return false
+	}
+	network, location := claim.Spec.Scope[ipamScopeRoleNetwork], claim.Spec.Scope[ipamScopeRoleLocation]
+	return network.Kind == "Network" && network.Name == networkContext.Spec.Network.Name &&
+		location.Kind == "Location" && location.Name == networkContext.Spec.Location.Name
 }
 
 // publishSubnetObject writes the allocation onto the Subnet this location is
@@ -321,6 +406,7 @@ func (r *NetworkContextReconciler) publishSubnet(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 	routing projectRouting,
+	claimName string,
 	held scopeRange,
 	subnetName string,
 ) error {
@@ -329,7 +415,7 @@ func (r *NetworkContextReconciler) publishSubnet(
 		IPv6ClaimRef: &networkingv1alpha.NetworkPrefixRef{
 			Project:   routing.project,
 			Namespace: routing.projectNamespace,
-			ClaimName: networkContextSubnetClaimName(networkContext),
+			ClaimName: claimName,
 			PoolName:  held.poolName,
 		},
 	}

@@ -605,6 +605,12 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 		{"Network", true, func() error {
 			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr)
 		}},
+		{"NetworkLoadBalancer", true, func() error {
+			return networkingv1alphawebhooks.SetupNetworkLoadBalancerWebhookWithManager(mgr)
+		}},
+		{"NetworkLoadBalancerRoute", true, func() error {
+			return networkingv1alphawebhooks.SetupNetworkLoadBalancerRouteWebhookWithManager(mgr)
+		}},
 		{"BackendTrafficPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)
 		}},

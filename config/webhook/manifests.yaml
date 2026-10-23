@@ -196,6 +196,46 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-networking-datumapis-com-v1alpha-networkloadbalancer
+  failurePolicy: Fail
+  name: vnetworkloadbalancer-v1alpha.kb.io
+  rules:
+  - apiGroups:
+    - networking.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - networkloadbalancers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-networking-datumapis-com-v1alpha-networkloadbalancerroute
+  failurePolicy: Fail
+  name: vnetworkloadbalancerroute-v1alpha.kb.io
+  rules:
+  - apiGroups:
+    - networking.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - networkloadbalancerroutes
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-networking-datumapis-com-v1alpha-trafficprotectionpolicy
   failurePolicy: Fail
   name: vtrafficprotectionpolicy-v1alpha.kb.io

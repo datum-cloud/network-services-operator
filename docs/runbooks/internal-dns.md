@@ -66,6 +66,11 @@ internalDNS:
 - `resolvers` replaces `frontend` and `producerAttachmentSelector`; setting
   both is refused at startup. It holds at most three entries, with distinct
   frontends.
+- Producer attachments created for a network interface carry the
+  `compute.datumapis.com/` labels of the claim behind it, kept in sync. A
+  resolver whose claims compute creates can be selected by labels set on its
+  Pod, such as `compute.datumapis.com/internal-dns-tier: node-b`, instead of
+  labels set by hand on the attachment.
 - Give each attachment labels that only one resolver's selector matches.
   Startup refuses a selector that is equal to or contained in another, but
   two different selectors that both match one attachment pass that check.

@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
@@ -62,6 +63,8 @@ const (
 	// Unlike Programmed, which only becomes true at CNI ADD, it is safe to gate
 	// Pod creation on. network-services-operator is adding the type in parallel.
 	ConditionTypePrepared = "Prepared"
+
+	consumerLabelPrefix = "compute.datumapis.com/"
 )
 
 // maxIdentifierAttempts bounds the retry loop that draws an unused identifier.
@@ -167,6 +170,7 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 		ObjectMeta: metav1.ObjectMeta{Name: networkInterface.Name, Namespace: networkInterface.Namespace},
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
+		attachment.Labels = withConsumerLabels(attachment.Labels, networkInterface.Labels)
 		attachment.Spec.VPC = cloudv1alpha1.VPCRef{Name: vpc.Name}
 		attachment.Spec.InterfaceRef = &cloudv1alpha1.NetworkInterfaceRef{Name: networkInterface.Name}
 		attachment.Spec.Interface.Name = networkInterface.Spec.InterfaceName
@@ -177,6 +181,24 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 		return nil, fmt.Errorf("reconcile VPC attachment %s: %w", attachment.Name, err)
 	}
 	return attachment, nil
+}
+
+func withConsumerLabels(current, source map[string]string) map[string]string {
+	updated := map[string]string{}
+	for key, value := range current {
+		if !strings.HasPrefix(key, consumerLabelPrefix) {
+			updated[key] = value
+		}
+	}
+	for key, value := range source {
+		if strings.HasPrefix(key, consumerLabelPrefix) {
+			updated[key] = value
+		}
+	}
+	if len(updated) == 0 {
+		return nil
+	}
+	return updated
 }
 
 // reconcileNAD creates or updates the NAD the attachment owns.

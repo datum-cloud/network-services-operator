@@ -27,8 +27,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -76,7 +78,7 @@ func TestReconcileAttachmentSyncsConsumerLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	existing := &cloudv1alpha1.VPCAttachment{ObjectMeta: metav1.ObjectMeta{
-		Name: "nic", Namespace: "tenant",
+		Name: "nic", Namespace: "platform",
 		Labels: map[string]string{
 			"networking.datumapis.com/internal-dns-vpc-uid": "vpc-uid",
 			"internal-dns.datum.net/tier":                   "node",
@@ -85,9 +87,9 @@ func TestReconcileAttachmentSyncsConsumerLabels(t *testing.T) {
 		},
 	}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
-	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"tenant"}}
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"platform"}}
 	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
-		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
+		Name: "nic", Namespace: "platform", UID: types.UID("iface"),
 		Labels: map[string]string{
 			"compute.datumapis.com/tier":          "node-b",
 			"compute.datumapis.com/workload-name": "resolver",
@@ -95,7 +97,7 @@ func TestReconcileAttachmentSyncsConsumerLabels(t *testing.T) {
 			"app":                                 "resolver",
 		},
 	}}
-	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "tenant"}}
+	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "platform"}}
 	if _, err := r.reconcileAttachment(context.Background(), iface, vpc); err != nil {
 		t.Fatal(err)
 	}
@@ -124,12 +126,12 @@ func TestReconcileAttachmentCreatesWithConsumerLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"tenant"}}
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"platform"}}
 	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
-		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
+		Name: "nic", Namespace: "platform", UID: types.UID("iface"),
 		Labels: map[string]string{"compute.datumapis.com/tier": "node"},
 	}}
-	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "tenant"}}
+	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "platform"}}
 	got, err := r.reconcileAttachment(context.Background(), iface, vpc)
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +154,7 @@ func TestReconcileAttachmentLeavesLabelsOutsideLabeledNamespaces(t *testing.T) {
 		Labels: map[string]string{"compute.datumapis.com/tier": "node"},
 	}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
-	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"internal-dns"}}
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"platform"}}
 	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
 		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
 		Labels: map[string]string{"compute.datumapis.com/internal-dns-tier": "node-b"},
@@ -163,6 +165,45 @@ func TestReconcileAttachmentLeavesLabelsOutsideLabeledNamespaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{"compute.datumapis.com/tier": "node"}
+	if !maps.Equal(got.Labels, want) {
+		t.Fatalf("labels = %v, want %v", got.Labels, want)
+	}
+}
+
+func TestReconcileClearsConsumerLabelsOfAReleasedInterface(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
+		Name: "nic", Namespace: "platform", UID: types.UID("iface"),
+		Labels: map[string]string{"compute.datumapis.com/internal-dns-tier": "node-b"},
+	}}
+	iface.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
+	attachment := &cloudv1alpha1.VPCAttachment{ObjectMeta: metav1.ObjectMeta{
+		Name: "nic", Namespace: "platform",
+		Labels: map[string]string{
+			"compute.datumapis.com/internal-dns-tier":       "node-b",
+			"networking.datumapis.com/internal-dns-vpc-uid": "vpc-uid",
+		},
+	}}
+	if err := controllerutil.SetControllerReference(iface, attachment, scheme); err != nil {
+		t.Fatal(err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment).Build()
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme, LabeledNamespaces: []string{"platform"}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(iface)}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got cloudv1alpha1.VPCAttachment
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(attachment), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"networking.datumapis.com/internal-dns-vpc-uid": "vpc-uid"}
 	if !maps.Equal(got.Labels, want) {
 		t.Fatalf("labels = %v, want %v", got.Labels, want)
 	}

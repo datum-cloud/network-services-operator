@@ -119,7 +119,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 	if !claimFulfilled(&networkInterface) {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.clearConsumerLabels(ctx, &networkInterface)
 	}
 
 	var vpc cloudv1alpha1.VPC
@@ -190,6 +190,36 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 		return nil, fmt.Errorf("reconcile VPC attachment %s: %w", attachment.Name, err)
 	}
 	return attachment, nil
+}
+
+// clearConsumerLabels deselects the attachment of an interface no claim holds,
+// such as one a Retain policy kept after its Pod went away. Otherwise a
+// replacement Pod's attachment and the retained one would both match the same
+// producer selector on one node.
+func (r *NetworkInterfaceReconciler) clearConsumerLabels(
+	ctx context.Context, networkInterface *networkingv1alpha.NetworkInterface,
+) error {
+	if networkInterface.Status.Phase == networkingv1alpha.NetworkInterfacePhaseBound ||
+		!slices.Contains(r.LabeledNamespaces, networkInterface.Namespace) {
+		return nil
+	}
+	var attachment cloudv1alpha1.VPCAttachment
+	if err := r.Get(ctx, client.ObjectKeyFromObject(networkInterface), &attachment); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(&attachment, networkInterface) {
+		return nil
+	}
+	cleared := withConsumerLabels(attachment.Labels, nil)
+	if len(cleared) == len(attachment.Labels) {
+		return nil
+	}
+	patch := client.MergeFrom(attachment.DeepCopy())
+	attachment.Labels = cleared
+	if err := r.Patch(ctx, &attachment, patch); err != nil {
+		return fmt.Errorf("clear consumer labels on VPC attachment %s: %w", attachment.Name, err)
+	}
+	return nil
 }
 
 func withConsumerLabels(current, source map[string]string) map[string]string {

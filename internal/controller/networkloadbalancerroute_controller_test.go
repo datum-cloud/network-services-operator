@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -556,4 +559,111 @@ func TestNetworkLoadBalancerRouteRejectsForeignNetwork(t *testing.T) {
 	var referenceErr *networkLoadBalancerRouteReferenceError
 	require.ErrorAs(t, err, &referenceErr)
 	assert.Equal(t, nlbRouteReasonNetworkMismatch, referenceErr.reason)
+}
+
+func TestNetworkLoadBalancerRouteSocketCheckScalesWithRouteCount(t *testing.T) {
+	ctx := context.Background()
+	const routes = 32
+	objects := make([]client.Object, 0, routes*4)
+	for index := range routes {
+		name := fmt.Sprintf("r%02d", index)
+		route := testLoadBalancerRoute(name, time.Unix(int64(index+1), 0))
+		parent := testRouteLoadBalancer()
+		parent.Name = "edge-" + name
+		route.Spec.ParentRefs[0].Name = parent.Name
+		service := testRouteNetworkService()
+		service.Name = "service-" + name
+		service.Spec.NetworkInterfaces.Selector.MatchLabels = map[string]string{name: "yes"}
+		route.Spec.Backends[0].NetworkService.Name = service.Name
+		member := testRouteMember("member-"+name, true, fmt.Sprintf("fd00::%x/128", index+1))
+		member.Labels[name] = "yes"
+		objects = append(objects, route, parent, service, member)
+	}
+	var interfaceLists atomic.Int64
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(objects...).
+		WithStatusSubresource(&networkingv1alpha.NetworkLoadBalancerRoute{}).
+		WithInterceptorFuncs(interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*networkingv1alpha.NetworkInterfaceList); ok {
+				interfaceLists.Add(1)
+			}
+			return c.List(ctx, list, opts...)
+		}}).Build()
+
+	newest := client.ObjectKey{Namespace: "test", Name: fmt.Sprintf("r%02d", routes-1)}
+	require.NoError(t, (&NetworkLoadBalancerRouteReconciler{}).reconcileRoute(ctx, cl, newest))
+	assert.LessOrEqual(t, interfaceLists.Load(), int64(routes*2), "socket ownership must resolve each route's backends once per reconcile")
+
+	var got networkingv1alpha.NetworkLoadBalancerRoute
+	require.NoError(t, cl.Get(ctx, newest, &got))
+	assert.Equal(t, nlbRouteReasonResolved,
+		apimeta.FindStatusCondition(got.Status.Parents[0].Conditions, networkingv1alpha.NetworkLoadBalancerRouteResolvedRefs).Reason)
+}
+
+func TestNetworkLoadBalancerRouteListenerOwnerTieBreaksByName(t *testing.T) {
+	ctx := context.Background()
+	created := time.Unix(10, 0)
+	first := testLoadBalancerRoute("a", created)
+	second := testLoadBalancerRoute("b", created)
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(second, first, testRouteLoadBalancer(), testRouteNetworkService(), testRouteMember("member", true, "fd00::1/128")).
+		WithStatusSubresource(first, second).Build()
+	r := &NetworkLoadBalancerRouteReconciler{}
+	for _, route := range []*networkingv1alpha.NetworkLoadBalancerRoute{second, first} {
+		require.NoError(t, r.reconcileRoute(ctx, cl, client.ObjectKeyFromObject(route)))
+	}
+	for name, effective := range map[string]bool{"a": true, "b": false} {
+		var got networkingv1alpha.NetworkLoadBalancerRoute
+		require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: "test", Name: name}, &got))
+		assert.Equal(t, effective, got.Status.Parents[0].Effective, name)
+	}
+}
+
+func TestNetworkLoadBalancerRouteSocketOwnerTieBreaksByName(t *testing.T) {
+	ctx := context.Background()
+	created := time.Unix(10, 0)
+	first := testLoadBalancerRoute("a", created)
+	second := testLoadBalancerRoute("b", created)
+	second.Spec.ParentRefs[0].Name = "edge-2"
+	secondParent := testRouteLoadBalancer()
+	secondParent.Name = "edge-2"
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(second, first, testRouteLoadBalancer(), secondParent, testRouteNetworkService(), testRouteMember("member", true, "fd00::1/128")).
+		WithStatusSubresource(first, second).Build()
+	r := &NetworkLoadBalancerRouteReconciler{}
+	for _, route := range []*networkingv1alpha.NetworkLoadBalancerRoute{second, first} {
+		require.NoError(t, r.reconcileRoute(ctx, cl, client.ObjectKeyFromObject(route)))
+	}
+	for name, reason := range map[string]string{"a": nlbRouteReasonResolved, "b": nlbRouteReasonBackendClaimConflict} {
+		var got networkingv1alpha.NetworkLoadBalancerRoute
+		require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: "test", Name: name}, &got))
+		assert.Equal(t, reason, apimeta.FindStatusCondition(got.Status.Parents[0].Conditions, networkingv1alpha.NetworkLoadBalancerRouteResolvedRefs).Reason, name)
+	}
+}
+
+func TestNetworkLoadBalancerRouteSocketClaimsAreScopedToOneNetwork(t *testing.T) {
+	ctx := context.Background()
+	older := testLoadBalancerRoute("older", time.Unix(10, 0))
+	newer := testLoadBalancerRoute("newer", time.Unix(20, 0))
+	newer.Spec.ParentRefs[0].Name = "edge-2"
+	newer.Spec.Backends[0].NetworkService.Name = "storefront-2"
+	secondParent := testRouteLoadBalancer()
+	secondParent.Name = "edge-2"
+	secondParent.Spec.NetworkRef.Name = "other"
+	secondService := testRouteNetworkService()
+	secondService.Name = "storefront-2"
+	secondService.Spec.NetworkInterfaces.Selector.MatchLabels = map[string]string{"app": "storefront-2"}
+	secondMember := testRouteMember("member-2", true, "fd00::1/128")
+	secondMember.Labels["app"] = "storefront-2"
+	secondMember.Spec.Network.Name = "other"
+	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(older, newer, testRouteLoadBalancer(), secondParent, testRouteNetworkService(), secondService,
+			testRouteMember("member", true, "fd00::1/128"), secondMember).
+		WithStatusSubresource(older, newer).Build()
+	r := &NetworkLoadBalancerRouteReconciler{}
+	require.NoError(t, r.reconcileRoute(ctx, cl, client.ObjectKeyFromObject(older)))
+	require.NoError(t, r.reconcileRoute(ctx, cl, client.ObjectKeyFromObject(newer)))
+	var got networkingv1alpha.NetworkLoadBalancerRoute
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(newer), &got))
+	assert.Equal(t, nlbRouteReasonResolved,
+		apimeta.FindStatusCondition(got.Status.Parents[0].Conditions, networkingv1alpha.NetworkLoadBalancerRouteResolvedRefs).Reason)
 }

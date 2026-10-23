@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -202,7 +203,7 @@ func reconcileRouteParent(
 				metav1.ConditionFalse, nlbRouteReasonBackendClaimConflict, message)
 			return status, nil
 		}
-		owner, err := olderRouteClaimingBackend(ctx, cl, route, &parent, listener, endpoints, peers)
+		owner, err := olderRouteClaimingBackend(ctx, cl, route, &parent, listener, endpoints, peers, newBackendClaimCache())
 		if err != nil {
 			return status, err
 		}
@@ -252,6 +253,27 @@ func olderRouteClaimingBackend(ctx context.Context, cl client.Client,
 	listener *networkingv1alpha.NetworkLoadBalancerListener,
 	endpoints []networkLoadBalancerRouteEndpoint,
 	peers []networkingv1alpha.NetworkLoadBalancerRoute,
+	cache *backendClaimCache,
+) (string, error) {
+	key := backendClaimKey{route: route.UID, parent: parent.Name, listener: listener.Name}
+	if owner, done := cache.blocked[key]; done {
+		return owner, nil
+	}
+	owner, err := findOlderRouteClaimingBackend(ctx, cl, route, parent, listener, endpoints, peers, cache)
+	if err != nil {
+		return "", err
+	}
+	cache.blocked[key] = owner
+	return owner, nil
+}
+
+func findOlderRouteClaimingBackend(ctx context.Context, cl client.Client,
+	route *networkingv1alpha.NetworkLoadBalancerRoute,
+	parent *networkingv1alpha.NetworkLoadBalancer,
+	listener *networkingv1alpha.NetworkLoadBalancerListener,
+	endpoints []networkLoadBalancerRouteEndpoint,
+	peers []networkingv1alpha.NetworkLoadBalancerRoute,
+	cache *backendClaimCache,
 ) (string, error) {
 	// A listener cannot reserve return-path sockets before it has a usable
 	// address. In particular, a stalled allocation must not block a peer NLB.
@@ -302,23 +324,17 @@ func olderRouteClaimingBackend(ctx context.Context, cl client.Client,
 					continue
 				}
 			}
-			otherEndpoints, err := resolveNetworkLoadBalancerRouteBackends(ctx, cl, peer, &otherParent, otherListener)
-			if _, unresolved := err.(*networkLoadBalancerRouteReferenceError); unresolved {
-				continue
-			}
+			otherEndpoints, err := cache.claimedEndpoints(ctx, cl, peer, &otherParent, otherListener)
 			if err != nil {
 				return "", err
 			}
-			otherEndpoints = slices.DeleteFunc(otherEndpoints, func(endpoint networkLoadBalancerRouteEndpoint) bool {
-				return !listenerHasAllocatedVIP(&otherParent, otherListener, endpoint.Location)
-			})
 			if len(otherEndpoints) == 0 {
 				continue
 			}
 			// An older candidate that lost a conflict claims nothing. This makes
 			// socket ownership transitive: A blocking B does not let B block C.
 			if peer.UID != route.UID {
-				blockedBy, err := olderRouteClaimingBackend(ctx, cl, peer, &otherParent, otherListener, otherEndpoints, peers)
+				blockedBy, err := olderRouteClaimingBackend(ctx, cl, peer, &otherParent, otherListener, otherEndpoints, peers, cache)
 				if err != nil {
 					return "", err
 				}
@@ -336,6 +352,47 @@ func olderRouteClaimingBackend(ctx context.Context, cl client.Client,
 		}
 	}
 	return "", nil
+}
+
+type backendClaimKey struct {
+	route    types.UID
+	parent   string
+	listener string
+}
+
+type backendClaimCache struct {
+	blocked   map[backendClaimKey]string
+	endpoints map[backendClaimKey][]networkLoadBalancerRouteEndpoint
+}
+
+func newBackendClaimCache() *backendClaimCache {
+	return &backendClaimCache{
+		blocked:   map[backendClaimKey]string{},
+		endpoints: map[backendClaimKey][]networkLoadBalancerRouteEndpoint{},
+	}
+}
+
+func (c *backendClaimCache) claimedEndpoints(ctx context.Context, cl client.Client,
+	route *networkingv1alpha.NetworkLoadBalancerRoute,
+	parent *networkingv1alpha.NetworkLoadBalancer,
+	listener *networkingv1alpha.NetworkLoadBalancerListener,
+) ([]networkLoadBalancerRouteEndpoint, error) {
+	key := backendClaimKey{route: route.UID, parent: parent.Name, listener: listener.Name}
+	if endpoints, done := c.endpoints[key]; done {
+		return endpoints, nil
+	}
+	endpoints, err := resolveNetworkLoadBalancerRouteBackends(ctx, cl, route, parent, listener)
+	if _, unresolved := err.(*networkLoadBalancerRouteReferenceError); unresolved {
+		endpoints, err = nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	endpoints = slices.DeleteFunc(endpoints, func(endpoint networkLoadBalancerRouteEndpoint) bool {
+		return !listenerHasAllocatedVIP(parent, listener, endpoint.Location)
+	})
+	c.endpoints[key] = endpoints
+	return endpoints, nil
 }
 
 func listenerHasAllocatedVIP(parent *networkingv1alpha.NetworkLoadBalancer, listener *networkingv1alpha.NetworkLoadBalancerListener, location string) bool {

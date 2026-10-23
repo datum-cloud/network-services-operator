@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nso-server-config
+  namespace: nso-slo
+spec:
+  groups:
+  - name: nso-server-config
+    interval: 30s
+    rules:
+    - alert: ServerConfigRejected
+      expr: max by (cluster, namespace, pod) (nso_server_config_rejected) == 1
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "{{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace }} is ignoring its config file"
+        description: "Pod '{{ $labels.pod }}' in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' cannot read its server config file, or the file holds a config it refuses to load. It keeps running on the config it started with, so the change has not taken effect, and the pod will fail to start the next time it restarts. Check the pod's logs for 'keeping the running config'."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/server-config.md#serverconfigrejected"

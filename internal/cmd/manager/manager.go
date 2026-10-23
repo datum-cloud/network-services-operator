@@ -20,6 +20,7 @@ import (
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -50,6 +51,7 @@ import (
 	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
 	"go.datum.net/network-services-operator/internal/logging"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
@@ -181,7 +183,6 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				"buildDate", build.BuildDate,
 			)
 
-			var serverConfig config.NetworkServicesOperator
 			var configData []byte
 			if len(serverConfigFile) > 0 {
 				var err error
@@ -192,23 +193,16 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 			}
 
-			if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
-				setupLog.Error(err, "unable to decode server config")
+			serverConfig, err := decodeConfig(configData)
+			if err != nil {
+				setupLog.Error(err, "unable to load server config")
 				os.Exit(1)
 			}
-
-			// Allow overriding Redis URL at runtime via env var.
-			if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
-				serverConfig.Redis.URL = redisURL
+			if strings.TrimSpace(os.Getenv("REDIS_URL")) != "" {
 				setupLog.Info("overriding redis.url from REDIS_URL")
 			}
 
 			setupLog.Info("server config", "config", serverConfig)
-
-			if err := serverConfig.Validate(); err != nil {
-				setupLog.Error(err, "invalid server config")
-				os.Exit(1)
-			}
 
 			if leaderElectionID == "" {
 				leaderElectionID = defaultLeaderElectionID
@@ -297,27 +291,17 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 
 			mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
-				Scheme:                  scheme,
-				Metrics:                 metricsServerOptions,
-				WebhookServer:           webhookServer,
-				HealthProbeBindAddress:  probeAddr,
-				LeaderElection:          primaryManagerLeaderElection,
-				LeaderElectionID:        leaderElectionID,
-				LeaderElectionNamespace: leaderElectionNamespace,
-				LeaseDuration:           &leaseDuration,
-				RenewDeadline:           &renewDeadline,
-				RetryPeriod:             &retryPeriod,
-				// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-				// when the Manager ends. This requires the binary to immediately end when the
-				// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-				// speeds up voluntary leader transitions as the new leader don't have to wait
-				// LeaseDuration time first.
-				//
-				// In the default scaffold provided, the program ends immediately after
-				// the manager stops, so would be fine to enable this option. However,
-				// if you are doing or is intended to do any operation such as perform cleanups
-				// after the manager stops then its usage might be unsafe.
-				// LeaderElectionReleaseOnCancel: true,
+				Scheme:                        scheme,
+				Metrics:                       metricsServerOptions,
+				WebhookServer:                 webhookServer,
+				HealthProbeBindAddress:        probeAddr,
+				LeaderElection:                primaryManagerLeaderElection,
+				LeaderElectionID:              leaderElectionID,
+				LeaderElectionNamespace:       leaderElectionNamespace,
+				LeaseDuration:                 &leaseDuration,
+				RenewDeadline:                 &renewDeadline,
+				RetryPeriod:                   &retryPeriod,
+				LeaderElectionReleaseOnCancel: true,
 			}, mcManagerOptions...)
 			if err != nil {
 				setupLog.Error(err, "unable to start manager")
@@ -354,16 +338,17 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			singletonControllerMgr := mgr.GetLocalManager()
 			if enableClusterSharding {
 				singletonMgr, err = manager.New(cfg, manager.Options{
-					Scheme:                  scheme,
-					Metrics:                 metricsserver.Options{BindAddress: "0"},
-					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
-					HealthProbeBindAddress:  "0",
-					LeaderElection:          singletonControllersLeaderElection,
-					LeaderElectionID:        singletonControllersLeaderElectionID,
-					LeaderElectionNamespace: leaderElectionNamespace,
-					LeaseDuration:           &leaseDuration,
-					RenewDeadline:           &renewDeadline,
-					RetryPeriod:             &retryPeriod,
+					Scheme:                        scheme,
+					Metrics:                       metricsserver.Options{BindAddress: "0"},
+					WebhookServer:                 webhook.NewServer(webhook.Options{Port: 0}),
+					HealthProbeBindAddress:        "0",
+					LeaderElection:                singletonControllersLeaderElection,
+					LeaderElectionID:              singletonControllersLeaderElectionID,
+					LeaderElectionNamespace:       leaderElectionNamespace,
+					LeaderElectionReleaseOnCancel: true,
+					LeaseDuration:                 &leaseDuration,
+					RenewDeadline:                 &renewDeadline,
+					RetryPeriod:                   &retryPeriod,
 				})
 				if err != nil {
 					setupLog.Error(err, "unable to create singleton controller manager")
@@ -381,16 +366,17 @@ func NewCommand(build BuildInfo) *cobra.Command {
 					os.Exit(1)
 				}
 				federationMgr, err = manager.New(federationConfig, manager.Options{
-					Scheme:                  scheme,
-					Metrics:                 metricsserver.Options{BindAddress: "0"},
-					WebhookServer:           webhook.NewServer(webhook.Options{Port: 0}),
-					HealthProbeBindAddress:  "0",
-					LeaderElection:          singletonControllersLeaderElection,
-					LeaderElectionID:        singletonControllersLeaderElectionID + "-dns-federation",
-					LeaderElectionNamespace: leaderElectionNamespace,
-					LeaseDuration:           &leaseDuration,
-					RenewDeadline:           &renewDeadline,
-					RetryPeriod:             &retryPeriod,
+					Scheme:                        scheme,
+					Metrics:                       metricsserver.Options{BindAddress: "0"},
+					WebhookServer:                 webhook.NewServer(webhook.Options{Port: 0}),
+					HealthProbeBindAddress:        "0",
+					LeaderElection:                singletonControllersLeaderElection,
+					LeaderElectionID:              singletonControllersLeaderElectionID + "-dns-federation",
+					LeaderElectionNamespace:       leaderElectionNamespace,
+					LeaderElectionReleaseOnCancel: true,
+					LeaseDuration:                 &leaseDuration,
+					RenewDeadline:                 &renewDeadline,
+					RetryPeriod:                   &retryPeriod,
 				})
 				if err != nil {
 					setupLog.Error(err, "unable to create federation controller manager")
@@ -526,6 +512,25 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				})
 			}
 
+			if serverConfigFile != "" {
+				watcher := &configwatch.Watcher{
+					Path:   serverConfigFile,
+					Loaded: configData,
+					Changed: func(data []byte) (bool, error) {
+						next, err := decodeConfig(data)
+						if err != nil {
+							return false, err
+						}
+						if err := checkConfigFiles(next); err != nil {
+							return false, err
+						}
+						return !equality.Semantic.DeepEqual(next, serverConfig), nil
+					},
+					Log: setupLog,
+				}
+				g.Go(func() error { return watcher.Start(ctx) })
+			}
+
 			setupLog.Info("starting multicluster manager")
 			g.Go(func() error {
 				return ignoreCanceled(mgr.Start(ctx))
@@ -539,6 +544,9 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			}
 
 			if err := g.Wait(); err != nil {
+				if errors.Is(err, configwatch.ErrChanged) {
+					return nil
+				}
 				setupLog.Error(err, "unable to start")
 				os.Exit(1)
 			}
@@ -912,4 +920,58 @@ func ControllerNames() []string {
 		names = append(names, registration.name)
 	}
 	return names
+}
+
+func decodeConfig(data []byte) (config.NetworkServicesOperator, error) {
+	var serverConfig config.NetworkServicesOperator
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), data, &serverConfig); err != nil {
+		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)
+	}
+
+	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
+		serverConfig.Redis.URL = redisURL
+	}
+
+	if err := serverConfig.Validate(); err != nil {
+		return serverConfig, fmt.Errorf("invalid server config: %w", err)
+	}
+	return serverConfig, nil
+}
+
+func checkConfigFiles(serverConfig config.NetworkServicesOperator) error {
+	if err := clusterdiscovery.CheckRestConfigs(serverConfig.Discovery); err != nil {
+		return err
+	}
+	if _, err := serverConfig.DownstreamResourceManagement.RestConfig(); err != nil {
+		return fmt.Errorf("unable to load control plane kubeconfig: %w", err)
+	}
+	if serverConfig.InternalDNS.Enabled {
+		if _, err := federationRESTConfig(serverConfig.Federation, &rest.Config{}); err != nil {
+			return fmt.Errorf("unable to load federation kubeconfig: %w", err)
+		}
+	}
+	if serverConfig.Connector.Iroh.DNSEnabled {
+		if _, err := serverConfig.Connector.Iroh.DownstreamRestConfig(); err != nil {
+			return fmt.Errorf("unable to load iroh dns downstream kubeconfig: %w", err)
+		}
+	}
+	if serverConfig.IPAM.KubeconfigPath != "" || serverConfig.IPAM.InCluster {
+		if _, err := serverConfig.IPAM.RestConfig(); err != nil {
+			return fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
+		}
+	}
+	if serverConfig.Gateway.CertificateService.Enabled {
+		if _, err := serverConfig.Gateway.CertificateService.RestConfig(); err != nil {
+			return fmt.Errorf("unable to load certificate service kubeconfig: %w", err)
+		}
+	}
+	if _, err := serverConfig.Gateway.CertificateService.TrustedRoots(); err != nil {
+		return fmt.Errorf("unable to load certificate service trusted roots: %w", err)
+	}
+	if serverConfig.InternalDNS.Enabled || serverConfig.Gateway.CertificateService.Enabled {
+		if _, err := serverConfig.Discovery.DiscoveryRestConfig(); err != nil {
+			return fmt.Errorf("unable to load Milo root kubeconfig: %w", err)
+		}
+	}
+	return nil
 }

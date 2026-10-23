@@ -26,6 +26,20 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
+// CheckRestConfigs loads the kubeconfigs Initialize needs for discovery.
+func CheckRestConfigs(discovery config.DiscoveryConfig) error {
+	if discovery.Mode != multiclusterproviders.ProviderMilo {
+		return nil
+	}
+	if _, err := discovery.DiscoveryRestConfig(); err != nil {
+		return fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+	if _, err := discovery.ProjectRestConfig(); err != nil {
+		return fmt.Errorf("unable to get project rest config: %w", err)
+	}
+	return nil
+}
+
 // Initialize builds the multicluster provider the manager discovers clusters
 // through, and the setup to run on the manager once it exists.
 func Initialize(

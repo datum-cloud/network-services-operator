@@ -1,0 +1,37 @@
+rule_files:
+  - server-config-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'nso_server_config_rejected{cluster="lab",namespace="nso-system",pod="cell-controller-manager-0"}'
+        values: '0 0 1x15'
+      - series: 'nso_server_config_rejected{cluster="lab",namespace="nso-system",pod="controller-manager-0"}'
+        values: '0x17'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ServerConfigRejected
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: ServerConfigRejected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              cluster: lab
+              namespace: nso-system
+              pod: cell-controller-manager-0
+            exp_annotations:
+              summary: "cell-controller-manager-0 in lab/nso-system is ignoring its config file"
+              description: "Pod 'cell-controller-manager-0' in cluster 'lab', namespace 'nso-system' cannot read its server config file, or the file holds a config it refuses to load. It keeps running on the config it started with, so the change has not taken effect, and the pod will fail to start the next time it restarts. Check the pod's logs for 'keeping the running config'."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/server-config.md#serverconfigrejected"
+
+  - interval: 1m
+    input_series:
+      - series: 'nso_server_config_rejected{cluster="lab",namespace="nso-system",pod="cell-controller-manager-0"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: ServerConfigRejected
+        exp_alerts: []

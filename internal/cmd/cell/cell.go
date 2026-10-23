@@ -10,6 +10,7 @@ import (
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -29,6 +30,7 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
 	galacticcontroller "go.datum.net/network-services-operator/internal/galactic/controller"
 	"go.datum.net/network-services-operator/internal/logging"
@@ -83,7 +85,7 @@ func NewCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			ctrl.SetLogger(logging.New(&opts))
 
-			serverConfig, err := loadConfig(serverConfigFile)
+			serverConfig, configData, err := loadConfig(serverConfigFile)
 			if err != nil {
 				setupLog.Error(err, "unable to load server config")
 				os.Exit(1)
@@ -131,15 +133,16 @@ func NewCommand() *cobra.Command {
 			retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
 
 			mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
-				Scheme:                  scheme,
-				Metrics:                 serverConfig.MetricsServer.Options(ctx, deploymentCluster.GetClient()),
-				HealthProbeBindAddress:  probeAddr,
-				LeaderElection:          enableLeaderElection,
-				LeaderElectionID:        leaderElectionIDOverride,
-				LeaderElectionNamespace: leaderElectionNamespace,
-				LeaseDuration:           &leaseDuration,
-				RenewDeadline:           &renewDeadline,
-				RetryPeriod:             &retryPeriod,
+				Scheme:                        scheme,
+				Metrics:                       serverConfig.MetricsServer.Options(ctx, deploymentCluster.GetClient()),
+				HealthProbeBindAddress:        probeAddr,
+				LeaderElection:                enableLeaderElection,
+				LeaderElectionID:              leaderElectionIDOverride,
+				LeaderElectionNamespace:       leaderElectionNamespace,
+				LeaderElectionReleaseOnCancel: true,
+				LeaseDuration:                 &leaseDuration,
+				RenewDeadline:                 &renewDeadline,
+				RetryPeriod:                   &retryPeriod,
 			})
 			if err != nil {
 				setupLog.Error(err, "unable to start manager")
@@ -200,12 +203,34 @@ func NewCommand() *cobra.Command {
 				})
 			}
 
+			if serverConfigFile != "" {
+				watcher := &configwatch.Watcher{
+					Path:   serverConfigFile,
+					Loaded: configData,
+					Changed: func(data []byte) (bool, error) {
+						next, err := decodeConfig(data)
+						if err != nil {
+							return false, err
+						}
+						if err := checkConfigFiles(next); err != nil {
+							return false, err
+						}
+						return !equality.Semantic.DeepEqual(next, serverConfig), nil
+					},
+					Log: setupLog,
+				}
+				g.Go(func() error { return watcher.Start(ctx) })
+			}
+
 			setupLog.Info("starting cell controller manager")
 			g.Go(func() error {
 				return ignoreCanceled(mgr.Start(ctx))
 			})
 
 			if err := g.Wait(); err != nil {
+				if errors.Is(err, configwatch.ErrChanged) {
+					return nil
+				}
 				setupLog.Error(err, "unable to start")
 				os.Exit(1)
 			}
@@ -231,17 +256,35 @@ func ignoreCanceled(err error) error {
 	return err
 }
 
-func loadConfig(path string) (config.CellControllerManager, error) {
-	var serverConfig config.CellControllerManager
-
+func loadConfig(path string) (config.CellControllerManager, []byte, error) {
 	var data []byte
 	if len(path) > 0 {
 		var err error
 		data, err = os.ReadFile(path)
 		if err != nil {
-			return serverConfig, fmt.Errorf("unable to read server config from %q: %w", path, err)
+			return config.CellControllerManager{}, nil, fmt.Errorf("unable to read server config from %q: %w", path, err)
 		}
 	}
+
+	serverConfig, err := decodeConfig(data)
+	return serverConfig, data, err
+}
+
+func checkConfigFiles(serverConfig config.CellControllerManager) error {
+	if err := clusterdiscovery.CheckRestConfigs(serverConfig.Discovery); err != nil {
+		return err
+	}
+	if _, err := serverConfig.IPAM.RestConfig(); err != nil {
+		return fmt.Errorf("unable to load IPAM kubeconfig: %w", err)
+	}
+	if _, err := serverConfig.Federation.RestConfig(); err != nil {
+		return fmt.Errorf("unable to load the federation hub kubeconfig: %w", err)
+	}
+	return nil
+}
+
+func decodeConfig(data []byte) (config.CellControllerManager, error) {
+	var serverConfig config.CellControllerManager
 
 	if err := runtime.DecodeInto(codecs.UniversalDecoder(), data, &serverConfig); err != nil {
 		return serverConfig, fmt.Errorf("unable to decode server config: %w", err)

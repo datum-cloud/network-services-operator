@@ -33,6 +33,10 @@ const (
 	internalDNSRouteContextLabel = "networking.datumapis.com/internal-dns-context-uid"
 )
 
+// errNoConsumerInterfaces means no interface on the network has an attachment
+// yet, so there is no consumer VPC to program.
+var errNoConsumerInterfaces = errors.New("no realized interface identifies the consumer VPC lifetime")
+
 var internalDNSServiceProtocols = []networkv1alpha1.NetworkServiceProtocol{
 	networkv1alpha1.NetworkServiceProtocolUDP, networkv1alpha1.NetworkServiceProtocolTCP,
 }
@@ -85,6 +89,9 @@ func (r *InternalDNSCellReconciler) reconcile(
 	}
 
 	vpc, consumerAttachments, err := r.consumerVPC(ctx, cl, networkContext)
+	if errors.Is(err, errNoConsumerInterfaces) {
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.report(ctx, networkContext, nil, noAttachmentsCondition())
+	}
 	if err != nil {
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.report(ctx, networkContext, nil, metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
@@ -209,7 +216,7 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 		attachments = append(attachments, attachment)
 	}
 	if vpc == nil || len(attachments) == 0 {
-		return nil, nil, errors.New("no realized interface identifies the consumer VPC lifetime")
+		return nil, nil, errNoConsumerInterfaces
 	}
 	return vpc, attachments, nil
 }
@@ -343,16 +350,20 @@ func unreadyPathCondition(
 	consumerVPCIdentity string,
 ) metav1.Condition {
 	if _, err := dnsaccess.ProgrammingPlan(policy, endpoint, attachments, consumerVPCIdentity); errors.Is(err, dnsaccess.ErrNoEligibleConsumers) {
-		return metav1.Condition{
-			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
-			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments,
-			Message: "Nothing is attached to this network in this location",
-		}
+		return noAttachmentsCondition()
 	}
 	return metav1.Condition{
 		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
 		Message: "Galactic has not acknowledged the current DNS service path on every required node",
+	}
+}
+
+func noAttachmentsCondition() metav1.Condition {
+	return metav1.Condition{
+		Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+		Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments,
+		Message: "Nothing is attached to this network in this location",
 	}
 }
 

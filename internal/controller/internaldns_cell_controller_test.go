@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -314,5 +315,40 @@ func assertServicePaths(t *testing.T, ctx context.Context, cl client.Client, nam
 	slices.Sort(gotPolicies)
 	if !slices.Equal(gotEndpoints, names) || !slices.Equal(gotPolicies, names) {
 		t.Fatalf("endpoints %v and policies %v, want %v", gotEndpoints, gotPolicies, names)
+	}
+}
+
+func TestInternalDNSCellReportsNoAttachments(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{
+		networkingv1alpha.AddToScheme, cloudv1alpha1.AddToScheme, networkv1alpha1.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	networkContext := testNetworkContext("context", "context-uid")
+	networkContext.Annotations = testDNSIntent(time.Time{})
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(networkContext.DeepCopy()).Build()
+	hub := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
+		WithObjects(networkContext.DeepCopy()).Build()
+	r := &InternalDNSCellReconciler{
+		Config:     config.InternalDNSConfig{Frontend: "fd53::53"},
+		HubCluster: &fakeCluster{cl: hub},
+	}
+	if _, err := r.reconcile(ctx, cl, networkContext); err != nil {
+		t.Fatal(err)
+	}
+	reported := &networkingv1alpha.NetworkContext{}
+	if err := hub.Get(ctx, client.ObjectKeyFromObject(networkContext), reported); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(reported.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments {
+		t.Fatalf("network with no interfaces reported %#v, want False/NoAttachments", condition)
 	}
 }

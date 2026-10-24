@@ -2321,3 +2321,167 @@ func TestASettledInterfaceIsNotRelabelled(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first.ResourceVersion, second.ResourceVersion)
 }
+
+// seedForeignAllocation stands in for a same-named claim in another location of
+// the project, which minted the allocation this claim's name derives.
+func (s *scenario) seedForeignAllocation(name string) *ipamv1alpha1.IPClaim {
+	s.t.Helper()
+
+	ipamClient, err := s.ipam.ClientForProject(testProject)
+	require.NoError(s.t, err)
+
+	foreign := &ipamv1alpha1.IPClaim{}
+	foreign.Namespace = testProjectNS
+	foreign.Name = name
+	foreign.Spec = ipamv1alpha1.IPClaimSpec{
+		IPFamily:      ipamv1alpha1.IPv6,
+		ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+		Scope: map[string]ipamv1alpha1.ScopeRef{
+			ipamScopeRoleNetwork:  {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: "default"},
+			ipamScopeRoleLocation: {APIGroup: datumNetworkingAPIGroup, Kind: "Location", Name: "us-east-1"},
+		},
+	}
+	require.NoError(s.t, ipamClient.Create(s.ctx, foreign))
+	return foreign
+}
+
+func TestAllocationHeldForAnotherLocationIsPassedOver(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	discriminator := familyDiscriminator(networkingv1alpha.IPv6Protocol)
+	location := locationsv1alpha1.LocationReference{Name: testLocationName}
+	names := ipClaimNames("shared-eth0", discriminator, location)
+	foreign := s.seedForeignAllocation(names[0])
+
+	claim := s.createClaim("shared-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	iface, err := s.getInterface("shared-eth0")
+	require.NoError(t, err, "the claim is addressed under a name for this location")
+	require.Len(t, iface.Spec.Addresses, 1)
+	require.NotEqual(t, foreign.Status.AllocatedCIDR, iface.Spec.Addresses[0].Address,
+		"the other location's address is never published here")
+	require.Equal(t, []string{names[0], names[1]}, s.ipam.created()[testProject])
+
+	bound := conditionOf(s.getClaim("shared-eth0"), networkingv1alpha.NetworkInterfaceClaimAllocated)
+	require.Equal(t, metav1.ConditionTrue, bound.Status, "the location's own allocation backs the address")
+
+	s.deleteClaim(s.getClaim("shared-eth0"))
+	require.Equal(t, []string{names[1]}, s.ipam.deleted()[testProject],
+		"only this location's address is released")
+
+	ipamClient, err := s.ipam.ClientForProject(testProject)
+	require.NoError(t, err)
+	var kept ipamv1alpha1.IPClaim
+	require.NoError(t, ipamClient.Get(s.ctx, client.ObjectKeyFromObject(foreign), &kept))
+	require.Equal(t, foreign.Status.AllocatedCIDR, kept.Status.AllocatedCIDR)
+}
+
+func TestPlainNamesAreKeptWhenNoOtherLocationHoldsThem(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("solo-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Equal(t,
+		[]string{ipClaimName("solo-eth0", familyDiscriminator(networkingv1alpha.IPv6Protocol))},
+		s.ipam.created()[testProject],
+		"a claim no other location shares keeps the name it always had")
+}
+
+func TestReleaseLeavesAnotherLocationsAllocation(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("moved-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+	_, err := s.getInterface("moved-eth0")
+	require.NoError(t, err)
+
+	// The allocation behind this interface is now the other location's, as it
+	// is when a claim adopted a same-named claim's allocation before the guard.
+	ipamClient, err := s.ipam.ClientForProject(testProject)
+	require.NoError(t, err)
+	name := ipClaimName("moved-eth0", familyDiscriminator(networkingv1alpha.IPv6Protocol))
+	var held ipamv1alpha1.IPClaim
+	require.NoError(t, ipamClient.Get(s.ctx, client.ObjectKey{Namespace: testProjectNS, Name: name}, &held))
+	held.Spec.Scope[ipamScopeRoleLocation] = ipamv1alpha1.ScopeRef{
+		APIGroup: datumNetworkingAPIGroup, Kind: "Location", Name: "us-east-1"}
+	require.NoError(t, ipamClient.Update(s.ctx, &held))
+
+	s.reconcile(s.getClaim("moved-eth0"))
+	allocated := conditionOf(s.getClaim("moved-eth0"), networkingv1alpha.NetworkInterfaceClaimAllocated)
+	require.Equal(t, "AddressAllocationMissing", allocated.Reason,
+		"an address held for another location backs nothing here")
+
+	s.deleteClaim(s.getClaim("moved-eth0"))
+	require.Empty(t, s.ipam.deleted()[testProject],
+		"deleting this claim does not take the other location's address")
+}
+
+func TestRollbackUnderRetainFreesTheAllocation(t *testing.T) {
+	s := newScenario(t, true,
+		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol})
+
+	s.ipam.refuse("kept-eth0-f-ipv4",
+		ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`))
+
+	claim := s.createClaim("kept-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies: []networkingv1alpha.IPFamily{
+			networkingv1alpha.IPv6Protocol,
+			networkingv1alpha.IPv4Protocol,
+		},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	})
+	s.reconcile(claim)
+
+	require.Equal(t, []string{"kept-eth0-f-ipv6"}, s.ipam.deleted()[testProject])
+	require.Empty(t, s.ipam.orphanedAllocations(),
+		"the rolled-back address goes back to its pool rather than blocking its name")
+}
+
+func TestFindAllocationPrefersTheNameHoldingTheAddress(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	ipamClient, err := s.ipam.ClientForProject(testProject)
+	require.NoError(t, err)
+
+	location := locationsv1alpha1.LocationReference{Name: testLocationName}
+	discriminator := familyDiscriminator(networkingv1alpha.IPv6Protocol)
+	held := map[string]string{}
+	for _, name := range ipClaimNames("both-eth0", discriminator, location) {
+		ipClaim := &ipamv1alpha1.IPClaim{}
+		ipClaim.Namespace = testProjectNS
+		ipClaim.Name = name
+		ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
+			IPFamily:      ipamv1alpha1.IPv6,
+			ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+			Scope: map[string]ipamv1alpha1.ScopeRef{
+				ipamScopeRoleNetwork:  {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: "default"},
+				ipamScopeRoleLocation: {APIGroup: datumNetworkingAPIGroup, Kind: "Location", Name: testLocationName},
+			},
+		}
+		require.NoError(t, ipamClient.Create(s.ctx, ipClaim))
+		held[name] = ipClaim.Status.AllocatedCIDR
+	}
+
+	qualified := ipClaimNames("both-eth0", discriminator, location)[1]
+	found, foreign, err := findAllocation(s.ctx, ipamClient, testProjectNS, "both-eth0",
+		allocationEntry{discriminator: discriminator, address: held[qualified]}, location)
+	require.NoError(t, err)
+	require.Nil(t, foreign)
+	require.Equal(t, qualified, found.Name,
+		"with both names held here, the one carrying the interface's address is the interface's")
+}

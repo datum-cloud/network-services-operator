@@ -166,7 +166,7 @@ func (r *HTTPProxyReconciler) buildDNSRecordStatuses(
 		}
 
 		if listener, ok := httpsListeners[hostname]; ok && isSingleLabelWildcard(hostname) {
-			records = append(records, r.certificateRecords(ctx, cl, gateway, listener, hostname)...)
+			records = append(records, r.certificateRecords(ctx, cl, gateway, listener, hostname, domains.Items)...)
 		}
 
 		if ownership, ok := ownershipRecord(hostname, domains.Items); ok {
@@ -237,28 +237,44 @@ func (r *HTTPProxyReconciler) platformRoutingRecord(
 	hostname string,
 	domains []networkingv1alpha.Domain,
 ) (present bool, rrType string, managed bool) {
-	var recordSet dnsv1alpha1.DNSRecordSet
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: gateway.Namespace, Name: dnsRecordSetName(gateway.Name, hostname)}, &recordSet); err != nil {
+	recordSet, present := platformRecordSet(ctx, cl, gateway, hostname, domains)
+	if recordSet == nil {
 		return false, "", false
 	}
-	if recordSet.Labels[labelManagedBy] != labelManagedByValue || recordSet.Annotations[annotationDNSHostname] != hostname {
-		return false, "", false
+	return present, string(recordSet.Spec.RecordType), true
+}
+
+// platformRecordSet returns the record set the platform wrote for name, nil
+// when it did not, and whether the record takes effect: programmed, in a zone
+// the domain's registry delegates to.
+func platformRecordSet(
+	ctx context.Context,
+	cl client.Client,
+	gateway *gatewayv1.Gateway,
+	name string,
+	domains []networkingv1alpha.Domain,
+) (recordSet *dnsv1alpha1.DNSRecordSet, present bool) {
+	var found dnsv1alpha1.DNSRecordSet
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: gateway.Namespace, Name: dnsRecordSetName(gateway.Name, name)}, &found); err != nil {
+		return nil, false
+	}
+	if found.Labels[labelManagedBy] != labelManagedByValue || found.Annotations[annotationDNSHostname] != name {
+		return nil, false
 	}
 
-	rrType = string(recordSet.Spec.RecordType)
-	if !apimeta.IsStatusConditionTrue(recordSet.Status.Conditions, conditionTypeProgrammed) {
-		return false, rrType, true
+	if !apimeta.IsStatusConditionTrue(found.Status.Conditions, conditionTypeProgrammed) {
+		return &found, false
 	}
 
 	var zone dnsv1alpha1.DNSZone
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: gateway.Namespace, Name: recordSet.Spec.DNSZoneRef.Name}, &zone); err != nil {
-		return false, rrType, true
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: gateway.Namespace, Name: found.Spec.DNSZoneRef.Name}, &zone); err != nil {
+		return &found, false
 	}
-	domain, found := findDomainByName(domains, zone.Spec.DomainName)
-	if !found {
-		return false, rrType, true
+	domain, ok := findDomainByName(domains, zone.Spec.DomainName)
+	if !ok {
+		return &found, false
 	}
-	return dnsutil.HasDNSAuthority(&domain, &zone), rrType, true
+	return &found, dnsutil.HasDNSAuthority(&domain, &zone)
 }
 
 // certificateRecords lists the record that delegates the hostname's ACME DNS
@@ -270,27 +286,31 @@ func (r *HTTPProxyReconciler) certificateRecords(
 	gateway *gatewayv1.Gateway,
 	listener gatewayv1.SectionName,
 	hostname string,
+	domains []networkingv1alpha.Domain,
 ) []networkingv1alpha.HostnameDNSRecord {
 	var cert certificatesv1alpha1.TLSCertificate
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: gateway.Namespace, Name: tlsCertificateName(gateway.Name, listener)}, &cert); err != nil {
 		return nil
 	}
 
-	name := acmeChallengeLabel + "." + strings.TrimPrefix(hostname, "*.")
-	content := ""
-	for _, required := range cert.Status.RequiredDNSRecords {
-		if required.Purpose == certificatesv1alpha1.DNSRecordPurposeCertificate &&
-			strings.EqualFold(strings.TrimSuffix(required.Name, "."), name) &&
-			strings.EqualFold(required.Type, string(dnsv1alpha1.RRTypeCNAME)) {
-			content = required.Content
-			break
-		}
-	}
-	if content == "" && cert.Status.Issuance == certificatesv1alpha1.ChallengeTypeDNS01 {
-		content = cert.Status.DelegationTarget
-	}
+	name, content := delegationRecordFor(&cert, hostname)
 	if content == "" {
 		return nil
+	}
+
+	if recordSet, present := platformRecordSet(ctx, cl, gateway, name, domains); recordSet != nil && recordSetPointsAt(recordSet, content) {
+		state := networkingv1alpha.HostnameDNSRecordMissing
+		if present {
+			state = networkingv1alpha.HostnameDNSRecordPresent
+		}
+		return []networkingv1alpha.HostnameDNSRecord{{
+			Name:      name,
+			Type:      string(dnsv1alpha1.RRTypeCNAME),
+			Content:   content,
+			Purpose:   networkingv1alpha.HostnameDNSRecordPurposeCertificate,
+			ManagedBy: networkingv1alpha.HostnameDNSRecordManagedByPlatform,
+			State:     state,
+		}}
 	}
 
 	state := networkingv1alpha.HostnameDNSRecordMissing
@@ -302,11 +322,37 @@ func (r *HTTPProxyReconciler) certificateRecords(
 	return []networkingv1alpha.HostnameDNSRecord{{
 		Name:      name,
 		Type:      string(dnsv1alpha1.RRTypeCNAME),
-		Content:   strings.TrimSuffix(content, "."),
+		Content:   content,
 		Purpose:   networkingv1alpha.HostnameDNSRecordPurposeCertificate,
 		ManagedBy: networkingv1alpha.HostnameDNSRecordManagedByUser,
 		State:     state,
 	}}
+}
+
+// delegationRecordFor returns the challenge name and the target it must
+// delegate to, taken from the certificate's status for this hostname only. The
+// target is empty when the certificate needs no delegation record.
+func delegationRecordFor(cert *certificatesv1alpha1.TLSCertificate, hostname string) (name, content string) {
+	name = acmeChallengeLabel + "." + strings.TrimPrefix(hostname, "*.")
+	for _, required := range cert.Status.RequiredDNSRecords {
+		if required.Purpose == certificatesv1alpha1.DNSRecordPurposeCertificate &&
+			strings.EqualFold(strings.TrimSuffix(required.Name, "."), name) &&
+			strings.EqualFold(required.Type, string(dnsv1alpha1.RRTypeCNAME)) {
+			content = required.Content
+			break
+		}
+	}
+	if content == "" && cert.Status.Issuance == certificatesv1alpha1.ChallengeTypeDNS01 {
+		content = cert.Status.DelegationTarget
+	}
+	return name, strings.TrimSuffix(content, ".")
+}
+
+func recordSetPointsAt(recordSet *dnsv1alpha1.DNSRecordSet, content string) bool {
+	if recordSet.Spec.RecordType != dnsv1alpha1.RRTypeCNAME || len(recordSet.Spec.Records) != 1 || recordSet.Spec.Records[0].CNAME == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSuffix(recordSet.Spec.Records[0].CNAME.Content, "."), content)
 }
 
 // ownershipRecord returns the TXT record that would verify the most specific

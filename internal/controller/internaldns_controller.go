@@ -549,20 +549,38 @@ func (r *InternalDNSReadinessReconciler) publish(
 	}
 	intent, err := internalDNSSettingsFromAnnotations(projectContext.Annotations, r.Config.Nameservers())
 	if err != nil {
-		return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, metav1.Condition{
+		condition := metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
 			Reason: networkingv1alpha.NetworkContextDNSReadyReasonPending, Message: err.Error(),
-		})
+		}
+		disabled, lookupErr := networkDNSDisabled(ctx, cl, projectContext)
+		if lookupErr != nil {
+			return ctrl.Result{}, lookupErr
+		}
+		if disabled {
+			condition.Reason = networkingv1alpha.NetworkContextDNSReadyReasonDisabled
+			condition.Message = "DNS is turned off for this network"
+		}
+		return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, condition)
 	}
 
 	access := hubContext.Status.DNSAccess
-	ready := apimeta.IsStatusConditionTrue(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+	hubCondition := apimeta.FindStatusCondition(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+	ready := hubCondition != nil && hubCondition.Status == metav1.ConditionTrue
 	if !ready || !dnsAccessMatches(intent, access) || access == nil || access.ServiceDestination != projectContext.Annotations[InternalDNSServiceDestinationAnnotation] {
-		err := r.updateProject(ctx, cl, projectContext, retainedDNSSettings(projectContext.Spec.DNS, intent), metav1.Condition{
+		condition := metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
 			Message: "Current network programming health is unavailable",
-		})
+		}
+		// Pass on the cell's own reason so a network with nothing attached
+		// doesn't look like a programming failure.
+		if hubCondition != nil && !ready && hubCondition.Reason != "" {
+			condition.Status = hubCondition.Status
+			condition.Reason = hubCondition.Reason
+			condition.Message = hubCondition.Message
+		}
+		err := r.updateProject(ctx, cl, projectContext, retainedDNSSettings(projectContext.Spec.DNS, intent), condition)
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, err
 	}
 	err = r.updateProject(ctx, cl, projectContext, intent, metav1.Condition{
@@ -606,6 +624,19 @@ func (r *InternalDNSReadinessReconciler) SetupWithManager(mgr manager.Manager) e
 		For(&networkingv1alpha.NetworkContext{}).
 		Named("internaldns-readiness").
 		Complete(r)
+}
+
+func networkDNSDisabled(
+	ctx context.Context,
+	cl client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (bool, error) {
+	network := &networkingv1alpha.Network{}
+	key := client.ObjectKey{Namespace: networkContext.Namespace, Name: networkContext.Spec.Network.Name}
+	if err := cl.Get(ctx, key, network); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return network.Spec.DNS.Mode == networkingv1alpha.NetworkDNSModeDisabled, nil
 }
 
 func internalDNSSettingsFromAnnotations(

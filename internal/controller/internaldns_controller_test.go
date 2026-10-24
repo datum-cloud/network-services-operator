@@ -613,3 +613,73 @@ func TestInternalDNSReadinessLeavesTerminatingContext(t *testing.T) {
 		t.Fatalf("readiness published settings to a terminating context: %#v", current.Spec.DNS)
 	}
 }
+
+func TestInternalDNSReadinessExplainsUnreadyContexts(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	idle := testNetworkContext("idle", "idle-uid")
+	idle.Annotations = testDNSIntent(time.Time{})
+	disabled := testNetworkContext("disabled", "disabled-uid")
+	disabled.Spec.Network.Name = "producer"
+	pending := testNetworkContext("pending", "pending-uid")
+	network := &networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "producer"},
+		Spec: networkingv1alpha.NetworkSpec{DNS: networkingv1alpha.NetworkDNSPolicy{
+			Mode: networkingv1alpha.NetworkDNSModeDisabled,
+		}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
+		WithObjects(idle, disabled, pending, network).Build()
+	r := &InternalDNSReadinessReconciler{Config: config.InternalDNSConfig{Frontend: "fd53::53"}}
+
+	cases := []struct {
+		networkContext *networkingv1alpha.NetworkContext
+		hub            []metav1.Condition
+		status         metav1.ConditionStatus
+		reason         string
+	}{{
+		networkContext: idle,
+		hub: []metav1.Condition{{
+			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads,
+			Message: "No workload is attached to this network in this location",
+		}},
+		status: metav1.ConditionFalse,
+		reason: networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads,
+	}, {
+		networkContext: idle,
+		status:         metav1.ConditionUnknown,
+		reason:         networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
+	}, {
+		networkContext: disabled,
+		status:         metav1.ConditionFalse,
+		reason:         networkingv1alpha.NetworkContextDNSReadyReasonDisabled,
+	}, {
+		networkContext: pending,
+		status:         metav1.ConditionFalse,
+		reason:         networkingv1alpha.NetworkContextDNSReadyReasonPending,
+	}}
+	for _, tc := range cases {
+		current := &networkingv1alpha.NetworkContext{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(tc.networkContext), current); err != nil {
+			t.Fatal(err)
+		}
+		hubContext := current.DeepCopy()
+		hubContext.Status.Conditions = tc.hub
+		if _, err := r.publish(ctx, cl, current, hubContext); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(tc.networkContext), current); err != nil {
+			t.Fatal(err)
+		}
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+		if condition == nil || condition.Status != tc.status || condition.Reason != tc.reason {
+			t.Errorf("%s DNSReady = %#v, want %s/%s", tc.networkContext.Name, condition, tc.status, tc.reason)
+		}
+	}
+}

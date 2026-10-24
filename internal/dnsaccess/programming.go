@@ -20,6 +20,10 @@ import (
 	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
 )
 
+// ErrNoEligibleConsumers means no consumer attachment is ready to program, so
+// there is no path to verify yet.
+var ErrNoEligibleConsumers = errors.New("no eligible consumer attachments")
+
 // ProgrammingRequirements fences readiness to the complete service topology.
 type ProgrammingRequirements struct {
 	InputDigest string
@@ -85,7 +89,7 @@ func ProgrammingPlan(
 		nodes[producer.Status.Node] = true
 	}
 	if selected == 0 {
-		return plan, errors.New("no eligible consumer attachments")
+		return plan, ErrNoEligibleConsumers
 	}
 
 	snapshot := struct {

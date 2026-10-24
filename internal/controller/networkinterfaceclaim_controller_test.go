@@ -2451,3 +2451,37 @@ func TestRollbackUnderRetainFreesTheAllocation(t *testing.T) {
 	require.Empty(t, s.ipam.orphanedAllocations(),
 		"the rolled-back address goes back to its pool rather than blocking its name")
 }
+
+func TestFindAllocationPrefersTheNameHoldingTheAddress(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	ipamClient, err := s.ipam.ClientForProject(testProject)
+	require.NoError(t, err)
+
+	location := locationsv1alpha1.LocationReference{Name: testLocationName}
+	discriminator := familyDiscriminator(networkingv1alpha.IPv6Protocol)
+	held := map[string]string{}
+	for _, name := range ipClaimNames("both-eth0", discriminator, location) {
+		ipClaim := &ipamv1alpha1.IPClaim{}
+		ipClaim.Namespace = testProjectNS
+		ipClaim.Name = name
+		ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
+			IPFamily:      ipamv1alpha1.IPv6,
+			ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+			Scope: map[string]ipamv1alpha1.ScopeRef{
+				ipamScopeRoleNetwork:  {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: "default"},
+				ipamScopeRoleLocation: {APIGroup: datumNetworkingAPIGroup, Kind: "Location", Name: testLocationName},
+			},
+		}
+		require.NoError(t, ipamClient.Create(s.ctx, ipClaim))
+		held[name] = ipClaim.Status.AllocatedCIDR
+	}
+
+	qualified := ipClaimNames("both-eth0", discriminator, location)[1]
+	found, foreign, err := findAllocation(s.ctx, ipamClient, testProjectNS, "both-eth0",
+		allocationEntry{discriminator: discriminator, address: held[qualified]}, location)
+	require.NoError(t, err)
+	require.Nil(t, foreign)
+	require.Equal(t, qualified, found.Name,
+		"with both names held here, the one carrying the interface's address is the interface's")
+}

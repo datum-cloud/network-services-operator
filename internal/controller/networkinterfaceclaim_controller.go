@@ -709,6 +709,9 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 			}
 			// Under Retain IPAM keeps the allocation after the claim goes, and
 			// it would block this name on the next attempt.
+			if ipClaim.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimRetain {
+				continue
+			}
 			if err := releaseRetainedAllocation(ctx, ipamClient, ipClaim.Namespace,
 				ipClaim.Status.BoundAllocationRef); err != nil {
 				leaked = append(leaked, ipClaim.Name)
@@ -857,7 +860,7 @@ func (r *NetworkInterfaceClaimReconciler) checkAllocations(
 	var errs []error
 	for _, entry := range allocationEntries(iface) {
 		ipClaim, foreign, err := findAllocation(ctx, ipamClient, routing.projectNamespace,
-			owner, entry.discriminator, location)
+			owner, entry, location)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -896,17 +899,19 @@ func (r *NetworkInterfaceClaimReconciler) checkAllocations(
 }
 
 // findAllocation reads the allocation this location holds for an address,
-// under either name it can carry. An allocation found under the plain name
-// for another location is returned as foreign.
+// under either name it can carry. Both names can be held here at once, after a
+// retained claim's name is freed elsewhere and reused, so the one holding the
+// entry's address wins. An allocation found only for another location is
+// returned as foreign.
 func findAllocation(
 	ctx context.Context,
 	ipamClient client.Client,
 	namespace string,
 	owner string,
-	discriminator string,
+	entry allocationEntry,
 	location locationsv1alpha1.LocationReference,
 ) (held *ipamv1alpha1.IPClaim, foreign *ipamv1alpha1.IPClaim, err error) {
-	for _, name := range ipClaimNames(owner, discriminator, location) {
+	for _, name := range ipClaimNames(owner, entry.discriminator, location) {
 		ipClaim := &ipamv1alpha1.IPClaim{}
 		key := client.ObjectKey{Namespace: namespace, Name: name}
 		if err := ipamClient.Get(ctx, key, ipClaim); err != nil {
@@ -915,10 +920,19 @@ func findAllocation(
 			}
 			return nil, nil, fmt.Errorf("failed reading IPClaim %q: %w", name, err)
 		}
-		if allocationServesLocation(ipClaim, location) {
+		if !allocationServesLocation(ipClaim, location) {
+			foreign = ipClaim
+			continue
+		}
+		if entry.address == "" || entry.holds(ipClaim) {
 			return ipClaim, nil, nil
 		}
-		foreign = ipClaim
+		if held == nil {
+			held = ipClaim
+		}
+	}
+	if held != nil {
+		return held, nil, nil
 	}
 	return nil, foreign, nil
 }
@@ -936,8 +950,7 @@ func (r *NetworkInterfaceClaimReconciler) reportForeignAllocation(
 	foreign *ipamv1alpha1.IPClaim,
 	location locationsv1alpha1.LocationReference,
 ) {
-	log.FromContext(ctx).Error(errAddressHeldElsewhere,
-		"network interface advertises an address another location holds",
+	log.FromContext(ctx).Info("network interface advertises an address another location holds",
 		"interface", iface.Name, "address", entry.address, "ipclaim", foreign.Name,
 		"allocationLocation", allocationLocation(foreign), "location", location.Name,
 		"project", routing.project)
@@ -950,8 +963,6 @@ func (r *NetworkInterfaceClaimReconciler) reportForeignAllocation(
 			"Both locations may publish it. Delete this claim and its interface to readdress it.",
 		entry.address, iface.Name, foreign.Name, allocationLocation(foreign), location.Name)
 }
-
-var errAddressHeldElsewhere = errors.New("another location holds this address")
 
 // allocationClaimName is the claim whose name the addresses were allocated
 // under, which is not always the claim holding the interface now.
@@ -1036,15 +1047,6 @@ func allocationEntries(iface *networkingv1alpha.NetworkInterface) []allocationEn
 		})
 	}
 	return entries
-}
-
-func allocationDiscriminators(iface *networkingv1alpha.NetworkInterface) []string {
-	entries := allocationEntries(iface)
-	discriminators := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		discriminators = append(discriminators, entry.discriminator)
-	}
-	return discriminators
 }
 
 func (r *NetworkInterfaceClaimReconciler) publishInterfaceStatus(
@@ -1485,7 +1487,7 @@ func (r *NetworkInterfaceClaimReconciler) releaseAddresses(
 	iface *networkingv1alpha.NetworkInterface,
 ) error {
 	return r.releaseIPClaims(ctx, cl, namespace,
-		allocationClaimName(iface), allocationDiscriminators(iface))
+		allocationClaimName(iface), allocationEntries(iface))
 }
 
 // releaseClaimAllocations releases the addresses this claim allocated. A claim
@@ -1502,7 +1504,7 @@ func (r *NetworkInterfaceClaimReconciler) releaseClaimAllocations(
 	}
 
 	return r.releaseIPClaims(ctx, cl, claim.Namespace,
-		claim.Name, claimDiscriminators(claim))
+		claim.Name, claimEntries(claim))
 }
 
 func markInterfaceAvailable(
@@ -1559,9 +1561,9 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 	cl client.Client,
 	namespace string,
 	owner string,
-	discriminators []string,
+	entries []allocationEntry,
 ) error {
-	if len(discriminators) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
 
@@ -1581,9 +1583,9 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 	}
 
 	var errs []error
-	for _, discriminator := range discriminators {
+	for _, entry := range entries {
 		held, foreign, err := findAllocation(ctx, ipamClient, routing.projectNamespace,
-			owner, discriminator, location)
+			owner, entry, location)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -1599,7 +1601,10 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 			continue
 		}
 
-		if err := ipamClient.Delete(ctx, held); err != nil && !apierrors.IsNotFound(err) {
+		// The UID pins the delete to the allocation checked above, in case its
+		// name is released and taken by another location in between.
+		if err := ipamClient.Delete(ctx, held, client.Preconditions{UID: &held.UID}); err != nil &&
+			!apierrors.IsNotFound(err) {
 			errs = append(errs, fmt.Errorf("failed releasing %q: %w", held.Name, err))
 			continue
 		}
@@ -1633,6 +1638,17 @@ func releaseRetainedAllocation(
 		return fmt.Errorf("failed releasing IPAllocation %q: %w", ref.Name, err)
 	}
 	return nil
+}
+
+// claimEntries names the addresses a claim asked for, without the addresses
+// themselves, for a claim whose interface is gone.
+func claimEntries(claim *networkingv1alpha.NetworkInterfaceClaim) []allocationEntry {
+	discriminators := claimDiscriminators(claim)
+	entries := make([]allocationEntry, 0, len(discriminators))
+	for _, discriminator := range discriminators {
+		entries = append(entries, allocationEntry{discriminator: discriminator})
+	}
+	return entries
 }
 
 func claimDiscriminators(claim *networkingv1alpha.NetworkInterfaceClaim) []string {

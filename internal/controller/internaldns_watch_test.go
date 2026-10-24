@@ -29,6 +29,7 @@ func TestInternalDNSObjectReachesItsNetworkContexts(t *testing.T) {
 	second := testNetworkContext("second", "context-2")
 	other := testNetworkContext("other", "context-3")
 	other.Labels[networkingv1alpha.NetworkUIDLabel] = "other-network-uid"
+	other.Spec.Network.Name = "green"
 	elsewhere := testNetworkContext("first", "context-4")
 	elsewhere.Namespace = "other-tenant"
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(first, second, other, elsewhere).Build()
@@ -49,6 +50,18 @@ func TestInternalDNSObjectReachesItsNetworkContexts(t *testing.T) {
 		if len(got) != 2 || !got["tenant/first"] || !got["tenant/second"] {
 			t.Fatalf("%s reached %v, want tenant/first and tenant/second", obj.GetKind(), got)
 		}
+	}
+
+	// The old context of a Network recreated under the same name still reaches
+	// the new network's contexts through its owner reference.
+	stale := newInternalDNSObject(internalDNSContextGVK, "tenant", "dns-blue-old")
+	stale.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: "old-network-uid"})
+	stale.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: networkingv1alpha.GroupVersion.String(), Kind: "Network", Name: "blue",
+		UID: "old-network-uid", Controller: boolPtr(true),
+	}})
+	if requests := internalDNSNetworkContextRequests(context.Background(), cl, "project-a", stale); len(requests) != 2 {
+		t.Fatalf("a recreated network's old context reached %d network contexts, want 2", len(requests))
 	}
 
 	unowned := newInternalDNSObject(internalDNSContextGVK, "tenant", "dns-blue")

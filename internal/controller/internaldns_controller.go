@@ -223,7 +223,9 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: internalDNSResyncInterval}, nil
+	// Network DNS mode and Location topology aren't watched, so keep checking
+	// them at the short interval once access is in place.
+	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 }
 
 func (r *InternalDNSProjectReconciler) reportTerminating(
@@ -540,22 +542,33 @@ func internalDNSNetworkContextRequests(
 	obj client.Object,
 ) []mcreconcile.Request {
 	networkUID := obj.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation]
-	if networkUID == "" {
+	// A resolver context is owned by its Network. When a Network is recreated
+	// under the same name, the old context's UID no longer matches any network
+	// context, but its removal is what unblocks the new network's setup.
+	var networkName string
+	if owner := metav1.GetControllerOf(obj); owner != nil && owner.Kind == "Network" &&
+		owner.APIVersion == networkingv1alpha.GroupVersion.String() {
+		networkName = owner.Name
+	}
+	if networkUID == "" && networkName == "" {
 		return nil
 	}
 	var contexts networkingv1alpha.NetworkContextList
-	if err := cl.List(ctx, &contexts, client.InNamespace(obj.GetNamespace()), client.MatchingLabels{
-		networkingv1alpha.NetworkUIDLabel: networkUID,
-	}); err != nil {
+	if err := cl.List(ctx, &contexts, client.InNamespace(obj.GetNamespace())); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list network contexts for internal DNS object",
 			"kind", obj.GetObjectKind().GroupVersionKind().Kind, "object", client.ObjectKeyFromObject(obj))
 		return nil
 	}
-	requests := make([]mcreconcile.Request, 0, len(contexts.Items))
+	var requests []mcreconcile.Request
 	for i := range contexts.Items {
+		networkContext := &contexts.Items[i]
+		if (networkUID == "" || networkContext.Labels[networkingv1alpha.NetworkUIDLabel] != networkUID) &&
+			(networkName == "" || networkContext.Spec.Network.Name != networkName) {
+			continue
+		}
 		requests = append(requests, mcreconcile.Request{
 			ClusterName: clusterName,
-			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&contexts.Items[i])},
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(networkContext)},
 		})
 	}
 	return requests

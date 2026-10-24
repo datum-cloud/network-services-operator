@@ -226,7 +226,7 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, err
 	}
 
-	allocations, err := r.checkAllocations(ctx, ipamClient, recorder, routing, claim, iface)
+	allocations, err := r.checkAllocations(ctx, ipamClient, recorder, routing, claim, iface, location)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -749,6 +749,10 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 		}
 
 		if getErr == nil {
+			if !allocationServesLocation(existing, location) {
+				rollback()
+				return nil, foreignAllocation(existing, request, location)
+			}
 			ipClaim = existing
 		} else if createErr := ipamClient.Create(ctx, ipClaim); createErr != nil {
 			// The platform provisions this namespace with the project, so a
@@ -781,6 +785,10 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 					message: allocationFailureMessage(reason, request, createErr),
 				}
 			}
+			if !allocationServesLocation(raced, location) {
+				rollback()
+				return nil, foreignAllocation(raced, request, location)
+			}
 			ipClaim = raced
 		} else {
 			created = append(created, ipClaim)
@@ -811,6 +819,7 @@ func (r *NetworkInterfaceClaimReconciler) checkAllocations(
 	routing projectRouting,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 	iface *networkingv1alpha.NetworkInterface,
+	location locationsv1alpha1.LocationReference,
 ) (allocationHealth, error) {
 	owner := allocationClaimName(iface)
 	health := allocationHealth{intact: true}
@@ -832,6 +841,15 @@ func (r *NetworkInterfaceClaimReconciler) checkAllocations(
 				continue
 			}
 			errs = append(errs, fmt.Errorf("failed reading IPClaim %q: %w", key.Name, err))
+			continue
+		}
+
+		if !allocationServesLocation(&ipClaim, location) {
+			health = allocationHealth{
+				message: fmt.Sprintf("Address %s is published, but allocation %q holds it for location %q",
+					entry.address, key.Name, allocationLocation(&ipClaim)),
+			}
+			r.reportMissingAllocation(ctx, recorder, routing, claim, iface, entry, key.Name, "")
 			continue
 		}
 
@@ -1465,6 +1483,11 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 		return fmt.Errorf("cannot release addresses claimed by %q: %w", owner, err)
 	}
 
+	location, err := r.location(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot release addresses claimed by %q: %w", owner, err)
+	}
+
 	ipamClient, err := r.IPAM.ClientForProject(routing.project)
 	if err != nil {
 		return fmt.Errorf("failed building IPAM client: %w", err)
@@ -1482,6 +1505,13 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 				errs = append(errs, fmt.Errorf("failed reading %q: %w", ipClaim.Name, err))
 				continue
 			}
+		} else if !allocationServesLocation(&held, location) {
+			// A same-named claim in another location minted this allocation.
+			// Releasing it would take a live address from that location.
+			log.FromContext(ctx).Info("leaving an allocation another location holds",
+				"ipclaim", held.Name, "allocationLocation", allocationLocation(&held),
+				"location", location.Name, "project", routing.project)
+			continue
 		}
 
 		if err := ipamClient.Delete(ctx, ipClaim); err != nil && !apierrors.IsNotFound(err) {
@@ -1544,6 +1574,33 @@ func familyDiscriminator(family networkingv1alpha.IPFamily) string {
 
 func classDiscriminator(class string) string {
 	return "c-" + class
+}
+
+// allocationServesLocation reports whether an allocation was made for this
+// location. Allocation names come from the claim name alone, so a same-named
+// claim in another location of the project derives the same name. An
+// allocation that names no location predates the scope and is taken as ours.
+func allocationServesLocation(ipClaim *ipamv1alpha1.IPClaim, location locationsv1alpha1.LocationReference) bool {
+	held := allocationLocation(ipClaim)
+	return held == "" || held == location.Name
+}
+
+func allocationLocation(ipClaim *ipamv1alpha1.IPClaim) string {
+	return ipClaim.Spec.Scope[ipamScopeRoleLocation].Name
+}
+
+func foreignAllocation(
+	ipClaim *ipamv1alpha1.IPClaim,
+	request allocationRequest,
+	location locationsv1alpha1.LocationReference,
+) *allocationFailure {
+	return &allocationFailure{
+		reason: allocationFailureConflict,
+		message: fmt.Sprintf(
+			"Allocation %q already holds %s for location %q, not %q. A claim with this name exists in "+
+				"another location of the project; give this claim a different name",
+			ipClaim.Name, request.describe(), allocationLocation(ipClaim), location.Name),
+	}
 }
 
 // ipClaimName derives a stable name from the claim and what it asks for, so a

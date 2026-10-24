@@ -20,8 +20,9 @@ import (
 	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
 )
 
-// ErrNoEligibleConsumers means no consumer attachment is ready to program, so
-// there is no path to verify yet.
+// ErrNoEligibleConsumers means no consumer attachment is placed on a node, so
+// there is no path to verify yet. A placed attachment that isn't ready is a
+// programming problem and returns a different error.
 var ErrNoEligibleConsumers = errors.New("no eligible consumer attachments")
 
 // ProgrammingRequirements fences readiness to the complete service topology.
@@ -66,7 +67,7 @@ func ProgrammingPlan(
 		relevant[types.NamespacedName{Namespace: producer.Namespace, Name: producer.Name}] = true
 	}
 	nodes := map[string]bool{}
-	selected := 0
+	selected, placed := 0, 0
 	sorted := nonNilAttachments(attachments)
 	for _, attachment := range sorted {
 		if !selector.Matches(labels.Set(attachment.Labels)) || !consumerMatchesVPC(policy, attachment, consumerVPCIdentity) {
@@ -74,6 +75,9 @@ func ProgrammingPlan(
 		}
 		key := types.NamespacedName{Namespace: attachment.Namespace, Name: attachment.Name}
 		relevant[key] = true
+		if attachment.DeletionTimestamp == nil && attachment.Status.Node != "" {
+			placed++
+		}
 		if attachment.DeletionTimestamp != nil || !ready[key] {
 			continue
 		}
@@ -88,8 +92,11 @@ func ProgrammingPlan(
 		nodes[attachment.Status.Node] = true
 		nodes[producer.Status.Node] = true
 	}
-	if selected == 0 {
+	if selected == 0 && placed == 0 {
 		return plan, ErrNoEligibleConsumers
+	}
+	if selected == 0 {
+		return plan, errors.New("no consumer attachment is ready")
 	}
 
 	snapshot := struct {

@@ -656,6 +656,14 @@ func TestInternalDNSReadinessExplainsUnreadyContexts(t *testing.T) {
 		status:         metav1.ConditionUnknown,
 		reason:         networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
 	}, {
+		networkContext: idle,
+		hub: []metav1.Condition{{
+			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+			Reason: networkingv1alpha.NetworkContextDNSReadyReasonAccessAbsent,
+		}},
+		status: metav1.ConditionUnknown,
+		reason: networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
+	}, {
 		networkContext: disabled,
 		status:         metav1.ConditionFalse,
 		reason:         networkingv1alpha.NetworkContextDNSReadyReasonDisabled,

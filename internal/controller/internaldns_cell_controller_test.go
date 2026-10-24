@@ -96,6 +96,13 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 		t.Fatalf("unacknowledged path reported %s, want NetworkPathNotReady", condition.Reason)
 	}
 
+	broken := consumer.DeepCopy()
+	broken.Status.HostInterface = ""
+	if condition := unreadyPathCondition(policy, endpoint, []*cloudv1alpha1.VPCAttachment{broken, producer}, "vpc-fabric-id"); condition.Reason !=
+		networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
+		t.Fatalf("a placed workload that isn't ready reported %s, want NetworkPathNotReady", condition.Reason)
+	}
+
 	unattached := consumer.DeepCopy()
 	unattached.Status.Node = ""
 	idle := []*cloudv1alpha1.VPCAttachment{unattached, producer}

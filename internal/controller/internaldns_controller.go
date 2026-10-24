@@ -557,11 +557,14 @@ func (r *InternalDNSReadinessReconciler) publish(
 		if lookupErr != nil {
 			return ctrl.Result{}, lookupErr
 		}
-		if disabled {
-			condition.Reason = networkingv1alpha.NetworkContextDNSReadyReasonDisabled
-			condition.Message = "DNS is turned off for this network"
+		if !disabled {
+			return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, condition)
 		}
-		return ctrl.Result{}, r.updateProject(ctx, cl, projectContext, nil, condition)
+		// Re-enabling DNS doesn't touch the context until access is ready,
+		// so check again rather than wait for a hub event.
+		condition.Reason = networkingv1alpha.NetworkContextDNSReadyReasonDisabled
+		condition.Message = "DNS is turned off for this network"
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.updateProject(ctx, cl, projectContext, nil, condition)
 	}
 
 	access := hubContext.Status.DNSAccess
@@ -573,9 +576,10 @@ func (r *InternalDNSReadinessReconciler) publish(
 			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
 			Message: "Current network programming health is unavailable",
 		}
-		// Pass on the cell's own reason so a network with nothing attached
-		// doesn't look like a programming failure.
-		if hubCondition != nil && !ready && hubCondition.Reason != "" {
+		// Pass on the cell's reason when nothing is attached, so an idle network
+		// doesn't look like a programming failure. Other cell reasons describe
+		// cell internals or a lagging copy, so they stay generic here.
+		if hubCondition != nil && hubCondition.Reason == networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads {
 			condition.Status = hubCondition.Status
 			condition.Reason = hubCondition.Reason
 			condition.Message = hubCondition.Message

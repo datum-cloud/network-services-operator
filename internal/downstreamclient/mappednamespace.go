@@ -75,11 +75,65 @@ func (c *mappedNamespaceResourceStrategy) getUpstreamNamespace(ctx context.Conte
 
 func (c *mappedNamespaceResourceStrategy) GetDownstreamNamespaceNameForUpstreamNamespace(ctx context.Context, name string) (string, error) {
 	namespace, err := c.getUpstreamNamespace(ctx, name)
-	if err != nil {
+	if err == nil {
+		return fmt.Sprintf("ns-%s", namespace.UID), nil
+	}
+
+	// The downstream namespace is named after the upstream namespace's UID, so
+	// normally we read that UID from the namespace itself. A project purge
+	// force-finalizes the upstream namespace out from under us, though, and it
+	// does so without waiting for the objects inside it to be cleaned up. If we
+	// insisted on the upstream namespace we would never be able to finalize
+	// those objects, and everything we created downstream would be left behind
+	// serving traffic. So when the upstream namespace is gone, find the
+	// downstream namespace by the labels it was stamped with when we created it.
+	if !apierrors.IsNotFound(err) {
 		return "", fmt.Errorf("failed to get downstream namespace: %w", err)
 	}
 
-	return fmt.Sprintf("ns-%s", namespace.UID), nil
+	downstreamNamespaceName, resolveErr := c.findDownstreamNamespaceByLabels(ctx, name)
+	if resolveErr != nil {
+		return "", fmt.Errorf("failed to get downstream namespace: %w: %w", err, resolveErr)
+	}
+
+	return downstreamNamespaceName, nil
+}
+
+// findDownstreamNamespaceByLabels locates the downstream namespace belonging to
+// an upstream namespace without reading that namespace, by matching the labels
+// written in ensureDownstreamNamespace. The cluster name and upstream namespace
+// name together identify exactly one downstream namespace.
+func (c *mappedNamespaceResourceStrategy) findDownstreamNamespaceByLabels(ctx context.Context, upstreamNamespace string) (string, error) {
+	selector := client.MatchingLabels{
+		UpstreamOwnerNamespaceLabel: upstreamNamespace,
+	}
+	// Single-cluster mode leaves the cluster name empty, and ensureDownstreamNamespace
+	// skips the label rather than writing an invalid value, so only match on it
+	// when there is one to match. There is a single upstream cluster in that
+	// mode, so the namespace name alone is still unambiguous.
+	if c.upstreamClusterName != "" {
+		selector[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+	}
+
+	var namespaces corev1.NamespaceList
+	if err := c.downstreamClient.List(ctx, &namespaces, selector); err != nil {
+		return "", fmt.Errorf("failed to list downstream namespaces: %w", err)
+	}
+
+	switch len(namespaces.Items) {
+	case 1:
+		return namespaces.Items[0].Name, nil
+	case 0:
+		// Nothing was ever created downstream for this upstream namespace, so
+		// there is no name to resolve and nothing to clean up either.
+		return "", fmt.Errorf("no downstream namespace is labelled for upstream namespace %q", upstreamNamespace)
+	default:
+		names := make([]string, 0, len(namespaces.Items))
+		for _, ns := range namespaces.Items {
+			names = append(names, ns.Name)
+		}
+		return "", fmt.Errorf("upstream namespace %q resolves to more than one downstream namespace: %s", upstreamNamespace, strings.Join(names, ", "))
+	}
 }
 
 func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.Context, obj metav1.Object) (*corev1.Namespace, error) {

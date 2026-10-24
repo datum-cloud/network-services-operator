@@ -100,18 +100,18 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 	broken.Status.HostInterface = ""
 	if condition := unreadyPathCondition(policy, endpoint, []*cloudv1alpha1.VPCAttachment{broken, producer}, "vpc-fabric-id"); condition.Reason !=
 		networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
-		t.Fatalf("a placed workload that isn't ready reported %s, want NetworkPathNotReady", condition.Reason)
+		t.Fatalf("a placed attachment that isn't ready reported %s, want NetworkPathNotReady", condition.Reason)
 	}
 
 	unattached := consumer.DeepCopy()
 	unattached.Status.Node = ""
 	idle := []*cloudv1alpha1.VPCAttachment{unattached, producer}
 	if _, ready := policyProgrammed(policy, endpoint, idle, "vpc-fabric-id", now); ready {
-		t.Fatal("a network with no attached workload was reported ready")
+		t.Fatal("a network with no attachments was reported ready")
 	}
 	if condition := unreadyPathCondition(policy, endpoint, idle, "vpc-fabric-id"); condition.Status != metav1.ConditionFalse ||
-		condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads {
-		t.Fatalf("no attached workload reported %s/%s, want False/NoAttachedWorkloads", condition.Status, condition.Reason)
+		condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments {
+		t.Fatalf("no attachments reported %s/%s, want False/NoAttachments", condition.Status, condition.Reason)
 	}
 }
 

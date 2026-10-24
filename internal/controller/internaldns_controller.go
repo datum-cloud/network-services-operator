@@ -579,7 +579,7 @@ func (r *InternalDNSReadinessReconciler) publish(
 		// Pass on the cell's reason when nothing is attached, so an idle network
 		// doesn't look like a programming failure. Other cell reasons describe
 		// cell internals or a lagging copy, so they stay generic here.
-		if hubCondition != nil && hubCondition.Reason == networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads {
+		if hubCondition != nil && hubCondition.Reason == networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments {
 			condition.Status = hubCondition.Status
 			condition.Reason = hubCondition.Reason
 			condition.Message = hubCondition.Message

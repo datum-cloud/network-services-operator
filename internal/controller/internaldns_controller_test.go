@@ -646,11 +646,11 @@ func TestInternalDNSReadinessExplainsUnreadyContexts(t *testing.T) {
 		networkContext: idle,
 		hub: []metav1.Condition{{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
-			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads,
-			Message: "No workload is attached to this network in this location",
+			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments,
+			Message: "Nothing is attached to this network in this location",
 		}},
 		status: metav1.ConditionFalse,
-		reason: networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads,
+		reason: networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments,
 	}, {
 		networkContext: idle,
 		status:         metav1.ConditionUnknown,

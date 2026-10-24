@@ -333,8 +333,8 @@ func (r *InternalDNSCellReconciler) deleteServicePaths(
 	return errors.Join(errs...)
 }
 
-// unreadyPathCondition explains why a DNS service path is not ready. With no
-// attached workload there is no path to acknowledge, so it says that instead
+// unreadyPathCondition explains why a DNS service path is not ready. With
+// nothing attached there is no path to acknowledge, so it says that instead
 // of reporting a programming failure.
 func unreadyPathCondition(
 	policy *networkv1alpha1.ServiceRoutePolicy,
@@ -345,8 +345,8 @@ func unreadyPathCondition(
 	if _, err := dnsaccess.ProgrammingPlan(policy, endpoint, attachments, consumerVPCIdentity); errors.Is(err, dnsaccess.ErrNoEligibleConsumers) {
 		return metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
-			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads,
-			Message: "No workload is attached to this network in this location",
+			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments,
+			Message: "Nothing is attached to this network in this location",
 		}
 	}
 	return metav1.Condition{

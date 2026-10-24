@@ -2345,11 +2345,13 @@ func (s *scenario) seedForeignAllocation(name string) *ipamv1alpha1.IPClaim {
 	return foreign
 }
 
-func TestAllocationHeldForAnotherLocationIsRefused(t *testing.T) {
+func TestAllocationHeldForAnotherLocationIsPassedOver(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 
-	name := ipClaimName("shared-eth0", familyDiscriminator(networkingv1alpha.IPv6Protocol))
-	foreign := s.seedForeignAllocation(name)
+	discriminator := familyDiscriminator(networkingv1alpha.IPv6Protocol)
+	location := locationsv1alpha1.LocationReference{Name: testLocationName}
+	names := ipClaimNames("shared-eth0", discriminator, location)
+	foreign := s.seedForeignAllocation(names[0])
 
 	claim := s.createClaim("shared-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
 		InterfaceName: "eth0",
@@ -2358,25 +2360,41 @@ func TestAllocationHeldForAnotherLocationIsRefused(t *testing.T) {
 	})
 	s.reconcile(claim)
 
-	_, err := s.getInterface("shared-eth0")
-	require.True(t, apierrors.IsNotFound(err),
-		"an address another location holds is never published here")
+	iface, err := s.getInterface("shared-eth0")
+	require.NoError(t, err, "the claim is addressed under a name for this location")
+	require.Len(t, iface.Spec.Addresses, 1)
+	require.NotEqual(t, foreign.Status.AllocatedCIDR, iface.Spec.Addresses[0].Address,
+		"the other location's address is never published here")
+	require.Equal(t, []string{names[0], names[1]}, s.ipam.created()[testProject])
 
-	rejected := s.getClaim("shared-eth0")
-	condition := conditionOf(rejected, networkingv1alpha.NetworkInterfaceClaimAllocated)
-	require.Equal(t, metav1.ConditionFalse, condition.Status)
-	require.Equal(t, string(allocationFailureConflict), condition.Reason)
-	require.Contains(t, condition.Message, `for location "us-east-1", not "us-central-1"`)
+	bound := conditionOf(s.getClaim("shared-eth0"), networkingv1alpha.NetworkInterfaceClaimAllocated)
+	require.Equal(t, metav1.ConditionTrue, bound.Status, "the location's own allocation backs the address")
 
-	s.deleteClaim(rejected)
-	require.Empty(t, s.ipam.deleted()[testProject],
-		"neither the refusal nor the claim's deletion releases the other location's address")
+	s.deleteClaim(s.getClaim("shared-eth0"))
+	require.Equal(t, []string{names[1]}, s.ipam.deleted()[testProject],
+		"only this location's address is released")
 
 	ipamClient, err := s.ipam.ClientForProject(testProject)
 	require.NoError(t, err)
 	var kept ipamv1alpha1.IPClaim
 	require.NoError(t, ipamClient.Get(s.ctx, client.ObjectKeyFromObject(foreign), &kept))
 	require.Equal(t, foreign.Status.AllocatedCIDR, kept.Status.AllocatedCIDR)
+}
+
+func TestPlainNamesAreKeptWhenNoOtherLocationHoldsThem(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("solo-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Equal(t,
+		[]string{ipClaimName("solo-eth0", familyDiscriminator(networkingv1alpha.IPv6Protocol))},
+		s.ipam.created()[testProject],
+		"a claim no other location shares keeps the name it always had")
 }
 
 func TestReleaseLeavesAnotherLocationsAllocation(t *testing.T) {
@@ -2410,4 +2428,26 @@ func TestReleaseLeavesAnotherLocationsAllocation(t *testing.T) {
 	s.deleteClaim(s.getClaim("moved-eth0"))
 	require.Empty(t, s.ipam.deleted()[testProject],
 		"deleting this claim does not take the other location's address")
+}
+
+func TestRollbackUnderRetainFreesTheAllocation(t *testing.T) {
+	s := newScenario(t, true,
+		[]networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol})
+
+	s.ipam.refuse("kept-eth0-f-ipv4",
+		ipamerrors.NewPoolExhausted("datum-v4", `IPPool "datum-v4" is exhausted`))
+
+	claim := s.createClaim("kept-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies: []networkingv1alpha.IPFamily{
+			networkingv1alpha.IPv6Protocol,
+			networkingv1alpha.IPv4Protocol,
+		},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+	})
+	s.reconcile(claim)
+
+	require.Equal(t, []string{"kept-eth0-f-ipv6"}, s.ipam.deleted()[testProject])
+	require.Empty(t, s.ipam.orphanedAllocations(),
+		"the rolled-back address goes back to its pool rather than blocking its name")
 }

@@ -705,6 +705,15 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 				leaked = append(leaked, ipClaim.Name)
 				logger.Error(err, "failed releasing address after a partial allocation",
 					"ipclaim", ipClaim.Name, "project", routing.project)
+				continue
+			}
+			// Under Retain IPAM keeps the allocation after the claim goes, and
+			// it would block this name on the next attempt.
+			if err := releaseRetainedAllocation(ctx, ipamClient, ipClaim.Namespace,
+				ipClaim.Status.BoundAllocationRef); err != nil {
+				leaked = append(leaked, ipClaim.Name)
+				logger.Error(err, "failed releasing a retained allocation after a partial allocation",
+					"ipclaim", ipClaim.Name, "project", routing.project)
 			}
 		}
 		if len(leaked) > 0 {
@@ -713,30 +722,9 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 		}
 	}
 
-	for _, request := range requests {
-		ipClaim := &ipamv1alpha1.IPClaim{}
-		ipClaim.Namespace = routing.projectNamespace
-		ipClaim.Name = ipClaimName(claim.Name, request.discriminator)
-		ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
-			ClassName:     request.className,
-			ReclaimPolicy: ipamReclaimPolicy(claim.Spec.ReclaimPolicy),
-			Scope: map[string]ipamv1alpha1.ScopeRef{
-				ipamScopeRoleNetwork: {
-					APIGroup: datumNetworkingAPIGroup,
-					Kind:     "Network",
-					Name:     networkContext.Spec.Network.Name,
-				},
-				ipamScopeRoleLocation: {
-					APIGroup: datumNetworkingAPIGroup,
-					Kind:     "Location",
-					Name:     location.Name,
-				},
-			},
-		}
-		if request.className == "" {
-			ipClaim.Spec.IPFamily = ipamv1alpha1.IPFamily(request.family)
-		}
-
+	// claimAddress reads or creates the named IPClaim, reporting whether this
+	// call created it.
+	claimAddress := func(ipClaim *ipamv1alpha1.IPClaim, request allocationRequest) (*ipamv1alpha1.IPClaim, bool, error) {
 		// Ask whether the address exists rather than reading the refusal. This
 		// holds against any IPAM version, whatever that version reports for a
 		// duplicate, which matters while the operator can run ahead of the
@@ -744,68 +732,110 @@ func (r *NetworkInterfaceClaimReconciler) allocate(
 		existing := &ipamv1alpha1.IPClaim{}
 		getErr := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), existing)
 		if getErr != nil && !apierrors.IsNotFound(getErr) {
-			rollback()
-			return nil, fmt.Errorf("failed reading IPClaim %q: %w", ipClaim.Name, getErr)
+			return nil, false, fmt.Errorf("failed reading IPClaim %q: %w", ipClaim.Name, getErr)
 		}
-
 		if getErr == nil {
-			if !allocationServesLocation(existing, location) {
-				rollback()
-				return nil, foreignAllocation(existing, request, location)
-			}
-			ipClaim = existing
-		} else if createErr := ipamClient.Create(ctx, ipClaim); createErr != nil {
-			// The platform provisions this namespace with the project, so a
-			// missing one is not a race to wait out: it says the project's
-			// control plane is not bootstrapped, and a claim retrying forever
-			// would only time out with nothing said. The operator does not make
-			// the namespace itself, because that would be writing into a
-			// customer's project on their behalf. The rejection is read off
-			// the create the API server already refused, rather than a read of
-			// our own that would answer for a moment that has passed by the
-			// time we write.
-			if isNamespaceNotFound(createErr, routing.projectNamespace) {
-				rollback()
-				return nil, &bindingRefused{
-					reason: networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
-					message: fmt.Sprintf(
-						"Project %q has no namespace %q in its control plane, so no address can be allocated for it",
-						routing.project, routing.projectNamespace),
-				}
-			}
-
-			// The create can still lose a race with another writer, so ask
-			// again before calling this a failure to allocate.
-			raced := &ipamv1alpha1.IPClaim{}
-			if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), raced); err != nil {
-				rollback()
-				reason := classifyAllocationFailure(createErr)
-				return nil, &allocationFailure{
-					reason:  reason,
-					message: allocationFailureMessage(reason, request, createErr),
-				}
-			}
-			if !allocationServesLocation(raced, location) {
-				rollback()
-				return nil, foreignAllocation(raced, request, location)
-			}
-			ipClaim = raced
-		} else {
-			created = append(created, ipClaim)
+			return existing, false, nil
 		}
 
-		if ipClaim.Status.AllocatedCIDR == "" {
+		createErr := ipamClient.Create(ctx, ipClaim)
+		if createErr == nil {
+			return ipClaim, true, nil
+		}
+
+		// The platform provisions this namespace with the project, so a
+		// missing one is not a race to wait out: it says the project's
+		// control plane is not bootstrapped, and a claim retrying forever
+		// would only time out with nothing said. The operator does not make
+		// the namespace itself, because that would be writing into a
+		// customer's project on their behalf. The rejection is read off
+		// the create the API server already refused, rather than a read of
+		// our own that would answer for a moment that has passed by the
+		// time we write.
+		if isNamespaceNotFound(createErr, routing.projectNamespace) {
+			return nil, false, &bindingRefused{
+				reason: networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound,
+				message: fmt.Sprintf(
+					"Project %q has no namespace %q in its control plane, so no address can be allocated for it",
+					routing.project, routing.projectNamespace),
+			}
+		}
+
+		// The create can still lose a race with another writer, so ask
+		// again before calling this a failure to allocate.
+		raced := &ipamv1alpha1.IPClaim{}
+		if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), raced); err != nil {
+			reason := classifyAllocationFailure(createErr)
+			return nil, false, &allocationFailure{
+				reason:  reason,
+				message: allocationFailureMessage(reason, request, createErr),
+			}
+		}
+		return raced, false, nil
+	}
+
+	for _, request := range requests {
+		var held *ipamv1alpha1.IPClaim
+		var foreign *ipamv1alpha1.IPClaim
+		// A same-named claim in another location of the project derives the
+		// same plain name, so its allocation is passed over for one named for
+		// this location as well.
+		for _, name := range ipClaimNames(claim.Name, request.discriminator, location) {
+			ipClaim := &ipamv1alpha1.IPClaim{}
+			ipClaim.Namespace = routing.projectNamespace
+			ipClaim.Name = name
+			ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
+				ClassName:     request.className,
+				ReclaimPolicy: ipamReclaimPolicy(claim.Spec.ReclaimPolicy),
+				Scope: map[string]ipamv1alpha1.ScopeRef{
+					ipamScopeRoleNetwork: {
+						APIGroup: datumNetworkingAPIGroup,
+						Kind:     "Network",
+						Name:     networkContext.Spec.Network.Name,
+					},
+					ipamScopeRoleLocation: {
+						APIGroup: datumNetworkingAPIGroup,
+						Kind:     "Location",
+						Name:     location.Name,
+					},
+				},
+			}
+			if request.className == "" {
+				ipClaim.Spec.IPFamily = ipamv1alpha1.IPFamily(request.family)
+			}
+
+			result, isNew, err := claimAddress(ipClaim, request)
+			if err != nil {
+				rollback()
+				return nil, err
+			}
+			if isNew {
+				created = append(created, result)
+			}
+			if !allocationServesLocation(result, location) {
+				foreign = result
+				continue
+			}
+			held = result
+			break
+		}
+		if held == nil {
+			rollback()
+			return nil, foreignAllocation(foreign, request, location)
+		}
+
+		if held.Status.AllocatedCIDR == "" {
 			rollback()
 			return nil, &allocationFailure{
 				reason: allocationFailureUnknown,
 				message: fmt.Sprintf("IPAM reported no address for %s (phase %q)",
-					request.describe(), ipClaim.Status.Phase),
+					request.describe(), held.Status.Phase),
 			}
 		}
 
 		allocated = append(allocated, allocatedAddress{
 			request: request,
-			cidr:    ipClaim.Status.AllocatedCIDR,
+			cidr:    held.Status.AllocatedCIDR,
 		})
 	}
 
@@ -826,45 +856,102 @@ func (r *NetworkInterfaceClaimReconciler) checkAllocations(
 
 	var errs []error
 	for _, entry := range allocationEntries(iface) {
-		var ipClaim ipamv1alpha1.IPClaim
-		key := client.ObjectKey{
-			Namespace: routing.projectNamespace,
-			Name:      ipClaimName(owner, entry.discriminator),
-		}
-		if err := ipamClient.Get(ctx, key, &ipClaim); err != nil {
-			if apierrors.IsNotFound(err) {
-				health = allocationHealth{
-					message: fmt.Sprintf("Address %s is held by no allocation in project %q",
-						entry.address, routing.project),
-				}
-				r.reportMissingAllocation(ctx, recorder, routing, claim, iface, entry, key.Name, "")
-				continue
-			}
-			errs = append(errs, fmt.Errorf("failed reading IPClaim %q: %w", key.Name, err))
+		ipClaim, foreign, err := findAllocation(ctx, ipamClient, routing.projectNamespace,
+			owner, entry.discriminator, location)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
 
-		if !allocationServesLocation(&ipClaim, location) {
+		if ipClaim == nil && foreign != nil {
 			health = allocationHealth{
 				message: fmt.Sprintf("Address %s is published, but allocation %q holds it for location %q",
-					entry.address, key.Name, allocationLocation(&ipClaim)),
+					entry.address, foreign.Name, allocationLocation(foreign)),
 			}
-			r.reportMissingAllocation(ctx, recorder, routing, claim, iface, entry, key.Name, "")
+			r.reportForeignAllocation(ctx, recorder, routing, claim, iface, entry, foreign, location)
 			continue
 		}
 
-		if !entry.holds(&ipClaim) {
+		if ipClaim == nil {
+			name := ipClaimName(owner, entry.discriminator)
+			health = allocationHealth{
+				message: fmt.Sprintf("Address %s is held by no allocation in project %q",
+					entry.address, routing.project),
+			}
+			r.reportMissingAllocation(ctx, recorder, routing, claim, iface, entry, name, "")
+			continue
+		}
+
+		if !entry.holds(ipClaim) {
 			health = allocationHealth{
 				message: fmt.Sprintf("Address %s is published, but allocation %q holds %s",
-					entry.address, key.Name, ipClaim.Status.AllocatedCIDR),
+					entry.address, ipClaim.Name, ipClaim.Status.AllocatedCIDR),
 			}
-			r.reportMissingAllocation(ctx, recorder, routing, claim, iface, entry, key.Name,
+			r.reportMissingAllocation(ctx, recorder, routing, claim, iface, entry, ipClaim.Name,
 				ipClaim.Status.AllocatedCIDR)
 		}
 	}
 
 	return health, errors.Join(errs...)
 }
+
+// findAllocation reads the allocation this location holds for an address,
+// under either name it can carry. An allocation found under the plain name
+// for another location is returned as foreign.
+func findAllocation(
+	ctx context.Context,
+	ipamClient client.Client,
+	namespace string,
+	owner string,
+	discriminator string,
+	location locationsv1alpha1.LocationReference,
+) (held *ipamv1alpha1.IPClaim, foreign *ipamv1alpha1.IPClaim, err error) {
+	for _, name := range ipClaimNames(owner, discriminator, location) {
+		ipClaim := &ipamv1alpha1.IPClaim{}
+		key := client.ObjectKey{Namespace: namespace, Name: name}
+		if err := ipamClient.Get(ctx, key, ipClaim); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("failed reading IPClaim %q: %w", name, err)
+		}
+		if allocationServesLocation(ipClaim, location) {
+			return ipClaim, nil, nil
+		}
+		foreign = ipClaim
+	}
+	return nil, foreign, nil
+}
+
+// reportForeignAllocation warns that an interface publishes an address another
+// location holds. IPAM keeps the address held, so the risk is the same address
+// serving in two locations, not its reuse.
+func (r *NetworkInterfaceClaimReconciler) reportForeignAllocation(
+	ctx context.Context,
+	recorder events.EventRecorder,
+	routing projectRouting,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	iface *networkingv1alpha.NetworkInterface,
+	entry allocationEntry,
+	foreign *ipamv1alpha1.IPClaim,
+	location locationsv1alpha1.LocationReference,
+) {
+	log.FromContext(ctx).Error(errAddressHeldElsewhere,
+		"network interface advertises an address another location holds",
+		"interface", iface.Name, "address", entry.address, "ipclaim", foreign.Name,
+		"allocationLocation", allocationLocation(foreign), "location", location.Name,
+		"project", routing.project)
+
+	if recorder == nil {
+		return
+	}
+	recorder.Eventf(claim, iface, corev1.EventTypeWarning, "AddressHeldByAnotherLocation", "VerifyAllocation",
+		"Address %s on network interface %q is held by allocation %q for location %q, not %q. "+
+			"Both locations may publish it. Delete this claim and its interface to readdress it.",
+		entry.address, iface.Name, foreign.Name, allocationLocation(foreign), location.Name)
+}
+
+var errAddressHeldElsewhere = errors.New("another location holds this address")
 
 // allocationClaimName is the claim whose name the addresses were allocated
 // under, which is not always the claim holding the interface now.
@@ -1495,31 +1582,29 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 
 	var errs []error
 	for _, discriminator := range discriminators {
-		ipClaim := &ipamv1alpha1.IPClaim{}
-		ipClaim.Namespace = routing.projectNamespace
-		ipClaim.Name = ipClaimName(owner, discriminator)
-
-		var held ipamv1alpha1.IPClaim
-		if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), &held); err != nil {
-			if !apierrors.IsNotFound(err) {
-				errs = append(errs, fmt.Errorf("failed reading %q: %w", ipClaim.Name, err))
-				continue
+		held, foreign, err := findAllocation(ctx, ipamClient, routing.projectNamespace,
+			owner, discriminator, location)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if held == nil {
+			if foreign != nil {
+				// A same-named claim in another location minted this
+				// allocation. Releasing it would take a live address there.
+				log.FromContext(ctx).Info("leaving an allocation another location holds",
+					"ipclaim", foreign.Name, "allocationLocation", allocationLocation(foreign),
+					"location", location.Name, "project", routing.project)
 			}
-		} else if !allocationServesLocation(&held, location) {
-			// A same-named claim in another location minted this allocation.
-			// Releasing it would take a live address from that location.
-			log.FromContext(ctx).Info("leaving an allocation another location holds",
-				"ipclaim", held.Name, "allocationLocation", allocationLocation(&held),
-				"location", location.Name, "project", routing.project)
 			continue
 		}
 
-		if err := ipamClient.Delete(ctx, ipClaim); err != nil && !apierrors.IsNotFound(err) {
-			errs = append(errs, fmt.Errorf("failed releasing %q: %w", ipClaim.Name, err))
+		if err := ipamClient.Delete(ctx, held); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("failed releasing %q: %w", held.Name, err))
 			continue
 		}
 
-		if err := releaseRetainedAllocation(ctx, ipamClient, ipClaim.Namespace, held.Status.BoundAllocationRef); err != nil {
+		if err := releaseRetainedAllocation(ctx, ipamClient, held.Namespace, held.Status.BoundAllocationRef); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1597,9 +1682,20 @@ func foreignAllocation(
 	return &allocationFailure{
 		reason: allocationFailureConflict,
 		message: fmt.Sprintf(
-			"Allocation %q already holds %s for location %q, not %q. A claim with this name exists in "+
-				"another location of the project; give this claim a different name",
+			"Allocation %q holds %s for location %q, not %q, under every name this claim can use",
 			ipClaim.Name, request.describe(), allocationLocation(ipClaim), location.Name),
+	}
+}
+
+// ipClaimNames lists the names an address can be allocated under, in the order
+// they are tried. The plain name keeps every existing allocation where it is;
+// the second is named for the location, so a same-named claim in another
+// location of the project cannot hold it.
+func ipClaimNames(claimName, discriminator string, location locationsv1alpha1.LocationReference) []string {
+	sum := sha256.Sum256([]byte(location.Name))
+	return []string{
+		ipClaimName(claimName, discriminator),
+		ipClaimName(claimName, discriminator+"-l"+hex.EncodeToString(sum[:])[:8]),
 	}
 }
 

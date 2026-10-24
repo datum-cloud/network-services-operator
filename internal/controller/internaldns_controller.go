@@ -21,11 +21,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -48,7 +55,11 @@ const (
 
 	internalDNSRegionTopologyKey = "topology.datum.net/region"
 	internalDNSRetryInterval     = 10 * time.Second
-	internalDNSDefaultDomain     = "datum.internal"
+	// internalDNSResyncInterval backs up the resolver context and access
+	// binding watches. A status change on either reaches the network contexts
+	// it serves within the watch latency, so this only catches a missed event.
+	internalDNSResyncInterval = time.Minute
+	internalDNSDefaultDomain  = "datum.internal"
 )
 
 var (
@@ -187,7 +198,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	suffix, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
 	zoneName, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "dnsZoneRef", "name")
 	if dnsContext.GetUID() == "" || suffix != internalDNSDefaultDomain || zoneName == "" || !resolverContextReady(dnsContext) {
-		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+		return ctrl.Result{RequeueAfter: internalDNSResyncInterval}, nil
 	}
 
 	destination, err := internalDNSDestination(r.Config.ServicePrefix, dnsContext.GetUID())
@@ -199,7 +210,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 	if !ready {
-		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+		return ctrl.Result{RequeueAfter: internalDNSResyncInterval}, nil
 	}
 
 	if err := r.publishIntent(ctx, cl, networkContext, map[string]string{
@@ -212,7 +223,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+	return ctrl.Result{RequeueAfter: internalDNSResyncInterval}, nil
 }
 
 func (r *InternalDNSProjectReconciler) reportTerminating(
@@ -498,10 +509,100 @@ func (r *InternalDNSProjectReconciler) SetupWithManager(mgr mcmanager.Manager) e
 		return errors.New("a project identity resolver is required")
 	}
 	r.mgr = mgr
+	watchOpts := []mcbuilder.WatchesOption{
+		mcbuilder.WithEngageWithLocalCluster(false),
+		mcbuilder.WithPredicates(internalDNSObjectChangedPredicate()),
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Watches(newInternalDNSObject(internalDNSContextGVK, "", ""), enqueueInternalDNSNetworkContexts, watchOpts...).
+		Watches(newInternalDNSObject(internalDNSAccessGVK, "", ""), enqueueInternalDNSNetworkContexts, watchOpts...).
 		Named("internaldns-project").
 		Complete(r)
+}
+
+// enqueueInternalDNSNetworkContexts maps a resolver context or access binding
+// to the network contexts of the network that owns it, so each setup step
+// runs as soon as the one before it reports ready.
+func enqueueInternalDNSNetworkContexts(
+	clusterName multicluster.ClusterName,
+	cl cluster.Cluster,
+) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		return internalDNSNetworkContextRequests(ctx, cl.GetClient(), clusterName, obj)
+	})
+}
+
+func internalDNSNetworkContextRequests(
+	ctx context.Context,
+	cl client.Client,
+	clusterName multicluster.ClusterName,
+	obj client.Object,
+) []mcreconcile.Request {
+	networkUID := obj.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation]
+	if networkUID == "" {
+		return nil
+	}
+	var contexts networkingv1alpha.NetworkContextList
+	if err := cl.List(ctx, &contexts, client.InNamespace(obj.GetNamespace()), client.MatchingLabels{
+		networkingv1alpha.NetworkUIDLabel: networkUID,
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list network contexts for internal DNS object",
+			"kind", obj.GetObjectKind().GroupVersionKind().Kind, "object", client.ObjectKeyFromObject(obj))
+		return nil
+	}
+	requests := make([]mcreconcile.Request, 0, len(contexts.Items))
+	for i := range contexts.Items {
+		requests = append(requests, mcreconcile.Request{
+			ClusterName: clusterName,
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&contexts.Items[i])},
+		})
+	}
+	return requests
+}
+
+// internalDNSObjectChangedPredicate passes creation, deletion, and an update
+// that changes what the project reconciler reads from a resolver context or
+// access binding. Other status writes don't re-reconcile every network
+// context on the network.
+func internalDNSObjectChangedPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldObj, okOld := e.ObjectOld.(*unstructured.Unstructured)
+			newObj, okNew := e.ObjectNew.(*unstructured.Unstructured)
+			if !okOld || !okNew {
+				return true
+			}
+			return internalDNSObjectInputs(oldObj) != internalDNSObjectInputs(newObj)
+		},
+	}
+}
+
+type internalDNSObjectState struct {
+	uid                types.UID
+	generation         int64
+	deleting           bool
+	ownerNetworkUID    string
+	ready              bool
+	observedGeneration int64
+	suffix             string
+	zoneName           string
+}
+
+func internalDNSObjectInputs(obj *unstructured.Unstructured) internalDNSObjectState {
+	observed, _, _ := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	suffix, _, _ := unstructured.NestedString(obj.Object, "status", "managedNamespace", "suffix")
+	zoneName, _, _ := unstructured.NestedString(obj.Object, "status", "managedNamespace", "dnsZoneRef", "name")
+	return internalDNSObjectState{
+		uid:                obj.GetUID(),
+		generation:         obj.GetGeneration(),
+		deleting:           !obj.GetDeletionTimestamp().IsZero(),
+		ownerNetworkUID:    obj.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation],
+		ready:              resolverContextReady(obj),
+		observedGeneration: observed,
+		suffix:             suffix,
+		zoneName:           zoneName,
+	}
 }
 
 type InternalDNSReadinessReconciler struct {

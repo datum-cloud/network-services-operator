@@ -91,6 +91,28 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 	if _, ready := policyProgrammed(policy, endpoint, attachments, "vpc-fabric-id", now); ready {
 		t.Fatal("expired node report was accepted")
 	}
+	if condition := unreadyPathCondition(policy, endpoint, attachments, "vpc-fabric-id"); condition.Reason !=
+		networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
+		t.Fatalf("unacknowledged path reported %s, want NetworkPathNotReady", condition.Reason)
+	}
+
+	broken := consumer.DeepCopy()
+	broken.Status.HostInterface = ""
+	if condition := unreadyPathCondition(policy, endpoint, []*cloudv1alpha1.VPCAttachment{broken, producer}, "vpc-fabric-id"); condition.Reason !=
+		networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
+		t.Fatalf("a placed workload that isn't ready reported %s, want NetworkPathNotReady", condition.Reason)
+	}
+
+	unattached := consumer.DeepCopy()
+	unattached.Status.Node = ""
+	idle := []*cloudv1alpha1.VPCAttachment{unattached, producer}
+	if _, ready := policyProgrammed(policy, endpoint, idle, "vpc-fabric-id", now); ready {
+		t.Fatal("a network with no attached workload was reported ready")
+	}
+	if condition := unreadyPathCondition(policy, endpoint, idle, "vpc-fabric-id"); condition.Status != metav1.ConditionFalse ||
+		condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonNoAttachedWorkloads {
+		t.Fatalf("no attached workload reported %s/%s, want False/NoAttachedWorkloads", condition.Status, condition.Reason)
+	}
 }
 
 func TestConsumerVPCRejectsMultipleVPCLifetimes(t *testing.T) {
@@ -197,7 +219,6 @@ func TestInternalDNSCellProgramsOnePathPerResolver(t *testing.T) {
 	if _, err := r.reconcile(ctx, cl, networkContext); err != nil {
 		t.Fatal(err)
 	}
-
 	var endpoints networkv1alpha1.ServiceEndpointList
 	if err := cl.List(ctx, &endpoints, client.InNamespace("tenant")); err != nil {
 		t.Fatal(err)

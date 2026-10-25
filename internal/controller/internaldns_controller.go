@@ -542,33 +542,22 @@ func internalDNSNetworkContextRequests(
 	obj client.Object,
 ) []mcreconcile.Request {
 	networkUID := obj.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation]
-	// A resolver context is owned by its Network. When a Network is recreated
-	// under the same name, the old context's UID no longer matches any network
-	// context, but its removal is what unblocks the new network's setup.
-	var networkName string
-	if owner := metav1.GetControllerOf(obj); owner != nil && owner.Kind == "Network" &&
-		owner.APIVersion == networkingv1alpha.GroupVersion.String() {
-		networkName = owner.Name
-	}
-	if networkUID == "" && networkName == "" {
+	if networkUID == "" {
 		return nil
 	}
 	var contexts networkingv1alpha.NetworkContextList
-	if err := cl.List(ctx, &contexts, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := cl.List(ctx, &contexts, client.InNamespace(obj.GetNamespace()), client.MatchingLabels{
+		networkingv1alpha.NetworkUIDLabel: networkUID,
+	}); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list network contexts for internal DNS object",
 			"kind", obj.GetObjectKind().GroupVersionKind().Kind, "object", client.ObjectKeyFromObject(obj))
 		return nil
 	}
-	var requests []mcreconcile.Request
+	requests := make([]mcreconcile.Request, 0, len(contexts.Items))
 	for i := range contexts.Items {
-		networkContext := &contexts.Items[i]
-		if (networkUID == "" || networkContext.Labels[networkingv1alpha.NetworkUIDLabel] != networkUID) &&
-			(networkName == "" || networkContext.Spec.Network.Name != networkName) {
-			continue
-		}
 		requests = append(requests, mcreconcile.Request{
 			ClusterName: clusterName,
-			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(networkContext)},
+			Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&contexts.Items[i])},
 		})
 	}
 	return requests

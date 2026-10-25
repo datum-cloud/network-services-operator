@@ -52,18 +52,6 @@ func TestInternalDNSObjectReachesItsNetworkContexts(t *testing.T) {
 		}
 	}
 
-	// The old context of a Network recreated under the same name still reaches
-	// the new network's contexts through its owner reference.
-	stale := newInternalDNSObject(internalDNSContextGVK, "tenant", "dns-blue-old")
-	stale.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: "old-network-uid"})
-	stale.SetOwnerReferences([]metav1.OwnerReference{{
-		APIVersion: networkingv1alpha.GroupVersion.String(), Kind: "Network", Name: "blue",
-		UID: "old-network-uid", Controller: boolPtr(true),
-	}})
-	if requests := internalDNSNetworkContextRequests(context.Background(), cl, "project-a", stale); len(requests) != 2 {
-		t.Fatalf("a recreated network's old context reached %d network contexts, want 2", len(requests))
-	}
-
 	unowned := newInternalDNSObject(internalDNSContextGVK, "tenant", "dns-blue")
 	if requests := internalDNSNetworkContextRequests(context.Background(), cl, "project-a", unowned); len(requests) != 0 {
 		t.Fatalf("an object without an owning network reached %d network contexts", len(requests))
@@ -112,6 +100,12 @@ func TestInternalDNSObjectChangedPredicate(t *testing.T) {
 		"managed namespace published": {mutate: func(obj *unstructured.Unstructured) {
 			_ = unstructured.SetNestedField(obj.Object, internalDNSDefaultDomain, "status", "managedNamespace", "suffix")
 			_ = unstructured.SetNestedField(obj.Object, "zone", "status", "managedNamespace", "dnsZoneRef", "name")
+		}, want: true},
+		"owner network changes": {mutate: func(obj *unstructured.Unstructured) {
+			obj.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: "other-network-uid"})
+		}, want: true},
+		"recreated": {mutate: func(obj *unstructured.Unstructured) {
+			obj.SetUID(types.UID("new-binding-uid"))
 		}, want: true},
 		"starts deleting": {mutate: func(obj *unstructured.Unstructured) {
 			now := metav1.Now()

@@ -32,3 +32,5 @@ resources:
   - networkinterfaces.yaml
   - networkinterfaceclaims.yaml
   - networkservices.yaml
+  - networkloadbalancers.yaml
+  - networkloadbalancerroutes.yaml

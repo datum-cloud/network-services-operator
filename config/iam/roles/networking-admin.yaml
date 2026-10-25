@@ -29,3 +29,11 @@ spec:
     - networking.datumapis.com/networkservices.update
     - networking.datumapis.com/networkservices.patch
     - networking.datumapis.com/networkservices.delete
+    - networking.datumapis.com/networkloadbalancers.create
+    - networking.datumapis.com/networkloadbalancers.update
+    - networking.datumapis.com/networkloadbalancers.patch
+    - networking.datumapis.com/networkloadbalancers.delete
+    - networking.datumapis.com/networkloadbalancerroutes.create
+    - networking.datumapis.com/networkloadbalancerroutes.update
+    - networking.datumapis.com/networkloadbalancerroutes.patch
+    - networking.datumapis.com/networkloadbalancerroutes.delete

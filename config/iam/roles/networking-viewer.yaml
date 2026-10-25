@@ -48,3 +48,11 @@ spec:
     - networking.datumapis.com/networkservices.get
     - networking.datumapis.com/networkservices/status.get
     - networking.datumapis.com/networkservices.watch
+    - networking.datumapis.com/networkloadbalancers.list
+    - networking.datumapis.com/networkloadbalancers.get
+    - networking.datumapis.com/networkloadbalancers/status.get
+    - networking.datumapis.com/networkloadbalancers.watch
+    - networking.datumapis.com/networkloadbalancerroutes.list
+    - networking.datumapis.com/networkloadbalancerroutes.get
+    - networking.datumapis.com/networkloadbalancerroutes/status.get
+    - networking.datumapis.com/networkloadbalancerroutes.watch

@@ -294,6 +294,17 @@ var catalog = []ReasonInfo{
 		Remediation: "Check that those machines have an address of the family the service publishes.",
 		Skill:       SkillBackendNotReachable,
 	},
+	{
+		Reason:        networkingv1alpha.HTTPProxyReasonUnsupportedBackendProtocol,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeAllTraffic,
+		Explanation: "A route on this load balancer sends traffic to a network service port that " +
+			"uses UDP. An application load balancer only carries TCP, so the load balancer has " +
+			"not been published.",
+		Remediation: "Point the route at a TCP port on the service, or change that port's protocol to TCP.",
+		Skill:       SkillBackendNotReachable,
+	},
 }
 
 // hostnameCatalog covers the per-hostname conditions and the aggregates over

@@ -4,6 +4,7 @@ package v1alpha
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // NetworkInterfaceReclaimPolicy decides what becomes of an interface, and the
@@ -262,6 +263,11 @@ type NetworkInterfaceAttachmentRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
+
+	// uid identifies the exact attachment incarnation. Probe consumers require
+	// this value so a recreated attachment cannot inherit the prior health.
+	// +kubebuilder:validation:Optional
+	UID types.UID `json:"uid,omitempty"`
 }
 
 // NetworkInterfaceSpec defines the desired state of NetworkInterface. It is
@@ -446,4 +452,8 @@ const (
 	// published from, so a collector can find the source of a copy it is looking
 	// at.
 	NetworkInterfaceSourceNamespaceLabel = "networking.datumapis.com/source-namespace"
+
+	// NetworkInterfaceSourceUIDLabel identifies the exact cell interface behind
+	// a published copy. A replacement may reuse the name, but never the UID.
+	NetworkInterfaceSourceUIDLabel = "networking.datumapis.com/source-uid"
 )

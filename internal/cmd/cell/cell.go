@@ -396,6 +396,9 @@ func controllerRegistrations(
 			HubCluster: hubCluster,
 		}).SetupWithManager(mgr)
 	}})
+	registrations = append(registrations, namedSetup{"networkloadbalancerbackendhealth", func() (bool, error) {
+		return true, (&controller.NetworkLoadBalancerBackendHealthReconciler{}).SetupWithManager(mgr.GetLocalManager())
+	}})
 
 	registrations = append(registrations, namedSetup{"internaldns-cell", func() (bool, error) {
 		if !serverConfig.InternalDNS.Enabled {

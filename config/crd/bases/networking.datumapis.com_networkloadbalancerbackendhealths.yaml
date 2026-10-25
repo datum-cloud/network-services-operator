@@ -1,0 +1,329 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.4
+  name: networkloadbalancerbackendhealths.networking.datumapis.com
+spec:
+  group: networking.datumapis.com
+  names:
+    kind: NetworkLoadBalancerBackendHealth
+    listKind: NetworkLoadBalancerBackendHealthList
+    plural: networkloadbalancerbackendhealths
+    singular: networkloadbalancerbackendhealth
+  scope: Namespaced
+  versions:
+  - name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          NetworkLoadBalancerBackendHealth is an internal, cell-local probe contract.
+          A target is eligible for data plane programming only after a fresh success.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              NetworkLoadBalancerBackendHealthSpec carries one route parent and location's
+              resolved targets into the cell that can reach them.
+            properties:
+              fabricVPCID:
+                minLength: 1
+                type: string
+              location:
+                minLength: 1
+                type: string
+              networkName:
+                minLength: 1
+                type: string
+              parentRef:
+                properties:
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  listener:
+                    minLength: 1
+                    type: string
+                  name:
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                required:
+                - generation
+                - listener
+                - name
+                - uid
+                type: object
+              routeRef:
+                properties:
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  name:
+                    minLength: 1
+                    type: string
+                  namespace:
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                required:
+                - generation
+                - name
+                - namespace
+                - uid
+                type: object
+              targets:
+                items:
+                  description: |-
+                    NetworkLoadBalancerBackendHealthTarget identifies one resolved interface
+                    endpoint and its probe. The source UID prevents a replacement interface
+                    reusing a name from inheriting a previous endpoint's health.
+                  properties:
+                    address:
+                      minLength: 1
+                      type: string
+                    attachmentName:
+                      minLength: 1
+                      type: string
+                    attachmentUID:
+                      description: |-
+                        UID is a type that holds unique ID values, including UUIDs.  Because we
+                        don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                        intent and helps make sure that UIDs and names do not get conflated.
+                      type: string
+                    name:
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    probe:
+                      description: |-
+                        NetworkLoadBalancerProbe describes a resolved active check. Its port is a
+                        backend port number, not a listener port or a NetworkService port name.
+                      properties:
+                        path:
+                          maxLength: 256
+                          pattern: ^/.*$
+                          type: string
+                        port:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        protocol:
+                          enum:
+                          - TCP
+                          - HTTP
+                          - HTTPS
+                          type: string
+                        serverName:
+                          maxLength: 253
+                          type: string
+                      required:
+                      - port
+                      - protocol
+                      type: object
+                      x-kubernetes-validations:
+                      - message: path is only valid for HTTP and HTTPS
+                        rule: 'has(self.path) ? self.protocol in [''HTTP'', ''HTTPS'']
+                          : true'
+                      - message: serverName is only valid for HTTPS
+                        rule: 'has(self.serverName) ? self.protocol == ''HTTPS'' :
+                          true'
+                    servingPort:
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    sourceInterface:
+                      minLength: 1
+                      type: string
+                    sourceNamespace:
+                      minLength: 1
+                      type: string
+                    sourceUID:
+                      description: |-
+                        UID is a type that holds unique ID values, including UUIDs.  Because we
+                        don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                        intent and helps make sure that UIDs and names do not get conflated.
+                      type: string
+                  required:
+                  - address
+                  - attachmentName
+                  - attachmentUID
+                  - name
+                  - probe
+                  - servingPort
+                  - sourceInterface
+                  - sourceNamespace
+                  - sourceUID
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - fabricVPCID
+            - location
+            - networkName
+            - parentRef
+            - routeRef
+            - targets
+            type: object
+          status:
+            default:
+              conditions:
+              - lastTransitionTime: "1970-01-01T00:00:00Z"
+                message: Waiting for a VPC-capable probe runner
+                reason: Pending
+                status: Unknown
+                type: ProbesEvaluated
+            properties:
+              conditions:
+                description: ProbesEvaluated remains Unknown until a VPC-capable runner
+                  reports results.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              targets:
+                items:
+                  description: |-
+                    NetworkLoadBalancerBackendHealthTargetStatus is usable only while its route,
+                    object generation, target fingerprint, and expiry match current intent.
+                  properties:
+                    consecutiveSuccesses:
+                      format: int32
+                      type: integer
+                    healthy:
+                      type: boolean
+                    lastProbeTime:
+                      format: date-time
+                      type: string
+                    name:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      type: string
+                    routeGeneration:
+                      format: int64
+                      type: integer
+                    routeUID:
+                      description: |-
+                        UID is a type that holds unique ID values, including UUIDs.  Because we
+                        don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                        intent and helps make sure that UIDs and names do not get conflated.
+                      type: string
+                    targetFingerprint:
+                      type: string
+                    validUntil:
+                      format: date-time
+                      type: string
+                  required:
+                  - consecutiveSuccesses
+                  - healthy
+                  - lastProbeTime
+                  - name
+                  - observedGeneration
+                  - routeGeneration
+                  - routeUID
+                  - targetFingerprint
+                  - validUntil
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

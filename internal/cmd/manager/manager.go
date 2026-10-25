@@ -613,6 +613,12 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 		{"Network", true, func() error {
 			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr)
 		}},
+		{"NetworkLoadBalancer", true, func() error {
+			return networkingv1alphawebhooks.SetupNetworkLoadBalancerWebhookWithManager(mgr)
+		}},
+		{"NetworkLoadBalancerRoute", true, func() error {
+			return networkingv1alphawebhooks.SetupNetworkLoadBalancerRouteWebhookWithManager(mgr)
+		}},
 		{"BackendTrafficPolicy", true, func() error {
 			return webhookgatewayv1alpha1.SetupBackendTrafficPolicyWebhookWithManager(mgr, serverConfig)
 		}},
@@ -803,6 +809,21 @@ func controllerRegistrations(
 		}},
 		{"networkservice", true, func() error {
 			return (&controller.NetworkServiceReconciler{}).SetupWithManager(mgr)
+		}},
+		{"networkloadbalancer", true, func() error {
+			return (&controller.NetworkLoadBalancerReconciler{
+				IPAM:            deps.ipamClients,
+				PublicIPv6Class: serverConfig.IPAM.Classes.PublicIPv6,
+				ManagedDomain:   serverConfig.Gateway.TargetDomain,
+			}).SetupWithManager(mgr)
+		}},
+		{"networkloadbalancerroute", true, func() error {
+			return (&controller.NetworkLoadBalancerRouteReconciler{}).SetupWithManager(mgr)
+		}},
+		{"networkloadbalancercellintent", true, func() error {
+			return (&controller.NetworkLoadBalancerCellIntentReconciler{
+				HubCluster: deps.downstreamCluster,
+			}).SetupWithManager(mgr)
 		}},
 		// Which workloads are behind a proxy is only answerable in a project
 		// control plane, and only a cell can act on it. The record this writes to

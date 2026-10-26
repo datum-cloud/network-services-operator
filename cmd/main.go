@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"go.miloapis.com/instrumentation/buildinfo"
 
 	cellcmd "go.datum.net/network-services-operator/internal/cmd/cell"
 	managercmd "go.datum.net/network-services-operator/internal/cmd/manager"
@@ -24,6 +25,8 @@ var (
 )
 
 func main() {
+	buildinfo.SetVersion(version)
+
 	root := &cobra.Command{
 		Use:   "network-services",
 		Short: "Datum network services operator",

@@ -22,6 +22,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
+	"go.miloapis.com/instrumentation/logging"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -33,7 +34,6 @@ import (
 	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
 	galacticcontroller "go.datum.net/network-services-operator/internal/galactic/controller"
-	"go.datum.net/network-services-operator/internal/logging"
 )
 
 const leaderElectionID = "6a7d51cc.datumapis.com-cell"

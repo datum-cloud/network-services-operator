@@ -20,8 +20,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+
+	"go.miloapis.com/instrumentation/metrics"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -56,7 +57,7 @@ const (
 )
 
 var (
-	httpProxyReconcileErrorsTotal = prometheus.NewCounterVec(
+	httpProxyReconcileErrorsTotal = metrics.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_httpproxy_reconcile_errors_total",
 			Help: "HTTPProxy reconciles that failed, by the step that failed and the API error class.",
@@ -64,7 +65,7 @@ var (
 		[]string{"step", metricLabelReason},
 	)
 
-	httpProxyProgrammingDuration = prometheus.NewHistogramVec(
+	httpProxyProgrammingDuration = metrics.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "nso_httpproxy_programming_duration_seconds",
 			Help:    "Time from an HTTPProxy generation first being observed (creation time for generation 1) to Programmed=True at that generation.",
@@ -79,11 +80,7 @@ var (
 )
 
 func init() {
-	ctrlmetrics.Registry.MustRegister(
-		httpProxyReconcileErrorsTotal,
-		httpProxyProgrammingDuration,
-		httpProxyFleet,
-	)
+	metrics.MustRegister(httpProxyFleet)
 }
 
 func httpProxyErrorReason(err error) string {

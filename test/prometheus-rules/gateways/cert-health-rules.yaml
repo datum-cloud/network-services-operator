@@ -8,17 +8,20 @@ groups:
   # cert gating has regressed and a bad cert reached Envoy directly.
   - alert: GatewayListenerCertUnusable
     expr: |
-      nso_gateway_listener_cert_withheld == 1
+      nso_gateway_listener_cert_withheld{reason!~"DNSNotPointingToGateway|DNSDelegationMissing"} == 1
     for: 5m
     labels:
       severity: warning
+      service: network-services
+      team: sre
     annotations:
-      summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
-      description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+      summary: "Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} has an unusable TLS certificate"
+      description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.resource_name }} in project {{ $labels.project }}, namespace {{ $labels.resource_namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+      runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#gatewaylistenercertunusable"
 
   # Fires when a managed TLS certificate is within 7 days of expiry while it
   # is still healthy. cert-manager renews automatically, but renewal fails if
-  # the domain's DNS no longer points to Datum. Acting here avoids a future
+  # the domain's DNS no longer points to this gateway. Acting here avoids a future
   # GatewayListenerCertUnusable alert.
   - alert: GatewayListenerCertExpiringSoon
     expr: |
@@ -26,36 +29,46 @@ groups:
     for: 1h
     labels:
       severity: warning
+      service: network-services
+      team: sre
     annotations:
-      summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
-      description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
+      summary: "TLS certificate for Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} expires in less than 7 days"
+      description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.resource_name }} in project {{ $labels.project }}, namespace {{ $labels.resource_namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to this gateway. Verify the Certificate is Ready=True in the downstream cluster."
+      runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#gatewaylistenercertexpiringsoon"
 
-  # Fires when the extension server's data-plane backstop is actively dropping
-  # broken TLS filter chains from PostTranslateModify responses. This is normal
-  # during the window between cert failure and controller-side gating catching
-  # up. If only this alert fires and GatewayListenerCertUnusable does not, the
-  # controller may have missed the bad listener — investigate.
+  # Fires when the extension server is actively dropping broken certificates
+  # from the configuration it sends to the edge. This is expected briefly
+  # between a certificate failing and the controller withholding the listener.
+  # If only this fires and GatewayListenerCertUnusable does not, the controller
+  # may have missed the listener.
   - alert: TLSBackstopPruningChains
     expr: |
       nso_extension_tls_pruned_chains_active > 0
     for: 2m
     labels:
       severity: warning
+      service: network-services
+      team: sre
     annotations:
-      summary: "Extension server TLS backstop is actively pruning {{ $value }} broken filter chain(s)"
-      description: "The extension server's TLS backstop is dropping {{ $value }} broken TLS filter chain(s) from PostTranslateModify responses. Check extension server logs for 'pruned invalid TLS chains' to identify affected hostnames. If GatewayListenerCertUnusable is also firing, the two-layer defense is working as expected. If only this alert fires, the controller-side cert gating may have missed the listener."
+      summary: "Extension server is dropping {{ $value }} broken certificate(s) to protect the edge listener"
+      description: "The extension server is dropping {{ $value }} broken certificate(s) from the configuration it sends to the edge gateway. Check extension server logs for 'pruned invalid TLS chains' to find the affected hostnames. If GatewayListenerCertUnusable is also firing, both layers of protection are working as expected. If only this alert fires, the controller may have missed the listener."
+      runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#tlsbackstoppruningchains"
 
-  # Fires when the extension server's backstop could not save a listener because
-  # every TLS filter chain on it is broken. The backstop never empties a listener,
-  # so Envoy will NACK the full LDS update — see EnvoyListenerUpdateRejected in
-  # the infra alerts for the confirming signal. This means NSO's controller-side
-  # cert gating did not suppress the listener before it reached the data plane.
+  # Fires when the extension server could not protect a listener because every
+  # certificate on it is broken. It never removes a listener entirely, so the
+  # edge will reject the update for that listener — EnvoyListenerUpdateRejected
+  # on the edge gateway confirms it. It means the controller did not withhold the listener
+  # before it reached the edge.
   - alert: TLSBackstopListenerAllCertsBroken
     expr: |
       nso_extension_tls_listeners_left_intact_active > 0
     for: 2m
     labels:
       severity: critical
+      service: network-services
+      team: sre
     annotations:
-      summary: "{{ $value }} Envoy listener(s) have all TLS certificates broken — backstop cannot protect them"
-      description: "The extension server left {{ $value }} Envoy listener(s) completely intact because every TLS filter chain on them referenced a broken certificate. The backstop never empties a listener, so Envoy will reject the LDS update for those listeners (see EnvoyListenerUpdateRejected). This means NSO's controller-side cert gating did not suppress the listener before it reached the data plane. Check extension server logs for 'listeners_left_intact' and investigate why evaluateListenerCertHealth did not catch the listener."
+      summary: "{{ $value }} edge listener(s) have every TLS certificate broken and cannot be protected"
+      description: "The extension server left {{ $value }} edge listener(s) untouched because every certificate on them is broken. It never removes a listener entirely, so the edge will reject the configuration update for those listeners (EnvoyListenerUpdateRejected confirms it). This means the controller did not withhold the listener before it reached the edge. Check extension server logs for 'listeners_left_intact' and why the controller did not withhold the listener."
+      runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#tlsbackstoplistenerallcertsbroken"
+

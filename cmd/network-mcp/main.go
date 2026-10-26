@@ -24,9 +24,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"go.miloapis.com/instrumentation/buildinfo"
+	"go.miloapis.com/instrumentation/logging"
+
 	networkagentdocs "go.datum.net/network-services-operator/docs/network-agent"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
-	"go.datum.net/network-services-operator/internal/logging"
 	"go.datum.net/network-services-operator/internal/mcpserver"
 	"go.datum.net/network-services-operator/internal/networkagent"
 )
@@ -37,9 +39,13 @@ const (
 	serverVersion = "0.1.0"
 )
 
+var version string
+
 var setupLog = ctrl.Log.WithName("setup")
 
 func main() {
+	buildinfo.SetVersion(version)
+
 	var addr string
 
 	flag.StringVar(&addr, "addr", mcpserver.EnvOr("NETWORK_MCP_ADDR", ":8080"),

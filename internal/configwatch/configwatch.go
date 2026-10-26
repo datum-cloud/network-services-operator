@@ -9,21 +9,18 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"go.miloapis.com/instrumentation/metrics"
 )
 
 const DefaultInterval = 10 * time.Second
 
 var ErrChanged = errors.New("server config changed")
 
-var rejected = prometheus.NewGauge(prometheus.GaugeOpts{
+var rejected = metrics.NewGauge(prometheus.GaugeOpts{
 	Name: "nso_server_config_rejected",
 	Help: "1 while the server config file cannot be read or holds a config this process refuses to load, so the process keeps running on the config it started with.",
 })
-
-func init() {
-	ctrlmetrics.Registry.MustRegister(rejected)
-}
 
 type Watcher struct {
 	Path   string

@@ -919,6 +919,15 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 	}
 	r.recordCertificateServiceState(upstreamClusterName, upstreamGateway, listenerName, reason)
 
+	delegation := apimeta.FindStatusCondition(cert.Status.Conditions, certificatesv1alpha1.ConditionDNSDelegationReady)
+	delegationMissing := delegation != nil && delegation.Status == metav1.ConditionFalse
+	customerCaused := func(status listenerCertStatus) listenerCertStatus {
+		if delegationMissing {
+			status.withheldReason = listenerCertReasonDNSDelegationMissing
+		}
+		return status
+	}
+
 	if secretStatus.healthy {
 		switch reason {
 		case "":
@@ -940,22 +949,22 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 			secretName: secretName,
 		}
 	case certificateServiceReasonIssuanceFailed, certificateServiceReasonNotReady:
-		return listenerCertStatus{
+		return customerCaused(listenerCertStatus{
 			reason:          gatewayv1.ListenerReasonInvalidCertificateRef,
 			message:         certificateNotIssuedMessage(hostname, detail),
 			pending:         true,
 			issuanceBlocked: true,
 			secretName:      secretName,
-		}
+		})
 	}
 
 	if !apimeta.IsStatusConditionTrue(cert.Status.Conditions, certificatesv1alpha1.ConditionReady) {
-		return listenerCertStatus{
+		return customerCaused(listenerCertStatus{
 			reason:     gatewayv1.ListenerReasonInvalidCertificateRef,
 			message:    certIssuanceFailingMessage(hostname),
 			pending:    true,
 			secretName: secretName,
-		}
+		})
 	}
 
 	if cert.Status.NotBefore != nil && cert.Status.NotBefore.After(now) {

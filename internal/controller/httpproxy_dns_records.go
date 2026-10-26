@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -49,9 +50,17 @@ type routingObserver struct {
 }
 
 type routingObservation struct {
-	present bool
+	answer  routingAnswer
 	expires time.Time
 }
+
+type routingAnswer int
+
+const (
+	routingUnknown routingAnswer = iota
+	routingElsewhere
+	routingHere
+)
 
 func newRoutingObserver() *routingObserver {
 	return &routingObserver{
@@ -63,17 +72,21 @@ func newRoutingObserver() *routingObserver {
 }
 
 func (o *routingObserver) routesTo(ctx context.Context, hostname, canonical string) bool {
+	return o.observe(ctx, hostname, canonical) == routingHere
+}
+
+func (o *routingObserver) observe(ctx context.Context, hostname, canonical string) routingAnswer {
 	key := hostname + "|" + canonical
 	now := o.now()
 
 	o.mu.Lock()
 	if seen, ok := o.cache[key]; ok && now.Before(seen.expires) {
 		o.mu.Unlock()
-		return seen.present
+		return seen.answer
 	}
 	o.mu.Unlock()
 
-	present := o.lookup(ctx, hostname, canonical)
+	answer := o.lookup(ctx, hostname, canonical)
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -84,11 +97,11 @@ func (o *routingObserver) routesTo(ctx context.Context, hostname, canonical stri
 			}
 		}
 	}
-	o.cache[key] = routingObservation{present: present, expires: now.Add(routingObservationTTL)}
-	return present
+	o.cache[key] = routingObservation{answer: answer, expires: now.Add(routingObservationTTL)}
+	return answer
 }
 
-func (o *routingObserver) lookup(ctx context.Context, hostname, canonical string) bool {
+func (o *routingObserver) lookup(ctx context.Context, hostname, canonical string) routingAnswer {
 	ctx, cancel := context.WithTimeout(ctx, routingLookupTimeout)
 	defer cancel()
 
@@ -98,25 +111,31 @@ func (o *routingObserver) lookup(ctx context.Context, hostname, canonical string
 	}
 
 	if target, err := o.lookupCNAME(ctx, probe+"."); err == nil && strings.EqualFold(strings.TrimSuffix(target, "."), canonical) {
-		return true
+		return routingHere
 	}
 
 	probeAddrs, err := o.lookupIP(ctx, probe+".")
-	if err != nil || len(probeAddrs) == 0 {
-		return false
+	if err != nil {
+		if dnsErr, ok := errors.AsType[*net.DNSError](err); ok && dnsErr.IsNotFound {
+			return routingElsewhere
+		}
+		return routingUnknown
+	}
+	if len(probeAddrs) == 0 {
+		return routingElsewhere
 	}
 	canonicalAddrs, err := o.lookupIP(ctx, canonical+".")
-	if err != nil {
-		return false
+	if err != nil || len(canonicalAddrs) == 0 {
+		return routingUnknown
 	}
 	for _, a := range probeAddrs {
 		for _, b := range canonicalAddrs {
 			if a.IP.Equal(b.IP) {
-				return true
+				return routingHere
 			}
 		}
 	}
-	return false
+	return routingElsewhere
 }
 
 // buildDNSRecordStatuses lists, for each custom hostname, the DNS records it

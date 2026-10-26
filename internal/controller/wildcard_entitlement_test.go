@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -432,4 +434,61 @@ func listenerNames(g *gatewayv1.Gateway) []gatewayv1.SectionName {
 		names = append(names, l.Name)
 	}
 	return names
+}
+
+func TestWildcardNotEntitledIsNotACertificateOutage(t *testing.T) {
+	tests := []struct {
+		name     string
+		entitled bool
+		want     int
+	}{
+		{name: "not entitled reports no withheld certificate", entitled: false, want: 0},
+		{name: "entitled without a usable certificate is withheld", entitled: true, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEntitlementFixture(t, "*.shop.example.com", false, fakeWildcardEntitlements{entitled: tt.entitled})
+			listenerSeries := prometheus.Labels{
+				metricLabelProject: "test", metricLabelResourceNamespace: f.gateway.Namespace, metricLabelResourceName: f.gateway.Name, metricLabelListener: string(f.listener),
+			}
+			reset := func() {
+				clearListenerCertMetrics("test", f.gateway.Namespace, f.gateway.Name)
+				gatewayListenerCertGatingTotal.DeletePartialMatch(listenerSeries)
+			}
+			reset()
+			t.Cleanup(reset)
+
+			f.h.reconcile()
+
+			assert.Equal(t, tt.want, seriesMatching(t, gatewayListenerCertWithheld, listenerSeries), "withheld")
+			assert.Equal(t, tt.want, seriesMatching(t, gatewayListenerCertGatingTotal, listenerSeries), "gating")
+			assert.Equal(t, tt.want, seriesMatching(t, gatewayListenerCertManaged, listenerSeries), "managed")
+		})
+	}
+}
+
+func seriesMatching(t *testing.T, vec prometheus.Collector, want prometheus.Labels) int {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 1024)
+	vec.Collect(ch)
+	close(ch)
+	count := 0
+	for metric := range ch {
+		var m dto.Metric
+		require.NoError(t, metric.Write(&m))
+		got := map[string]string{}
+		for _, l := range m.GetLabel() {
+			got[l.GetName()] = l.GetValue()
+		}
+		matched := true
+		for k, v := range want {
+			if got[k] != v {
+				matched = false
+			}
+		}
+		if matched {
+			count++
+		}
+	}
+	return count
 }

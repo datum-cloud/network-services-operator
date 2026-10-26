@@ -184,7 +184,7 @@ spec:
     # cert gating has regressed and a bad cert reached Envoy directly.
     - alert: GatewayListenerCertUnusable
       expr: |
-        nso_gateway_listener_cert_withheld == 1
+        nso_gateway_listener_cert_withheld{reason!~"DNSNotPointingToGateway|DNSDelegationMissing"} == 1
       for: 5m
       labels:
         severity: warning

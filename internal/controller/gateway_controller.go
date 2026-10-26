@@ -121,6 +121,8 @@ type GatewayReconciler struct {
 	certificateServiceFailures  sync.Map
 	certificateServiceStates    sync.Map
 	certificateServiceListeners sync.Map
+
+	routing *routingObserver
 }
 
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -318,6 +320,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		upstreamGateway,
 		claimedHostnames,
 	)
+	defer recordListenerCertMetrics(ctx, upstreamClusterName, upstreamGateway, listenerCertHealth)
 
 	desiredDownstreamGateway := r.getDesiredDownstreamGateway(
 		ctx,
@@ -537,7 +540,8 @@ type listenerCertStatus struct {
 	// notAfter is the certificate's expiry time, populated only when the
 	// certificate is healthy and its expiry is known. Used to set the expiry
 	// gauge so operators can alert before a cert expires.
-	notAfter *metav1.Time
+	notAfter       *metav1.Time
+	withheldReason string
 	// secretName is the downstream Secret that holds the certificate material.
 	// Carried here so the expiry gauge can be labelled with the secret name
 	// without recomputing it outside listenerCertHealth.
@@ -552,6 +556,11 @@ type listenerCertStatus struct {
 	// issuanceReason overrides the reason on the issuance-blocked condition.
 	issuanceReason string
 }
+
+const (
+	listenerCertReasonDNSNotPointingToGateway = "DNSNotPointingToGateway"
+	listenerCertReasonDNSDelegationMissing    = "DNSDelegationMissing"
+)
 
 const listenerConditionCertificateRenewalBlocked = "CertificateRenewalBlocked"
 const listenerReasonRenewalFailing = "RenewalFailing"
@@ -583,17 +592,11 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 	upstreamGateway *gatewayv1.Gateway,
 	claimedHostnames []string,
 ) map[gatewayv1.SectionName]listenerCertStatus {
-	logger := log.FromContext(ctx)
 	health := make(map[gatewayv1.SectionName]listenerCertStatus)
 
 	wildcardSuffix := "." + r.Config.Gateway.TargetDomain
 	hasSharedSecret := r.Config.Gateway.HasDefaultListenerTLSSecret()
 	now := time.Now()
-
-	// Drop this gateway's previous certificate metrics up front and re-record the
-	// current state below, so series for listeners that recovered, changed
-	// hostname, or were removed don't linger at a stale value.
-	clearListenerCertMetrics(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
 
 	for _, l := range upstreamGateway.Spec.Listeners {
 		// Only listeners that own a per-hostname certificate are gated.
@@ -615,8 +618,36 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			status = r.listenerTLSCertificateHealth(ctx, upstreamClusterName, upstreamClient, downstreamClient, downstreamNamespace, upstreamGateway, l.Name, hostname, now)
 		} else {
 			status = r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
+			if !status.healthy && r.routing != nil &&
+				r.routing.observe(ctx, hostname, r.gatewayCanonicalHostname(upstreamGateway)) == routingElsewhere {
+				status.withheldReason = listenerCertReasonDNSNotPointingToGateway
+			}
 		}
 		health[l.Name] = status
+	}
+
+	return health
+}
+
+func recordListenerCertMetrics(
+	ctx context.Context,
+	upstreamClusterName string,
+	upstreamGateway *gatewayv1.Gateway,
+	health map[gatewayv1.SectionName]listenerCertStatus,
+) {
+	logger := log.FromContext(ctx)
+
+	// Drop this gateway's previous certificate metrics up front and re-record the
+	// current state below, so series for listeners that recovered, changed
+	// hostname, or were removed don't linger at a stale value.
+	clearListenerCertMetrics(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
+
+	for _, l := range upstreamGateway.Spec.Listeners {
+		status, gated := health[l.Name]
+		if !gated || l.Hostname == nil || status.issuanceReason == certificateServiceReasonWildcardNotEntitled {
+			continue
+		}
+		hostname := string(*l.Hostname)
 
 		// Mark this listener as managed regardless of its health, so the
 		// SLI ratio (withheld / managed) can be computed fleet-wide.
@@ -636,13 +667,17 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			}
 			logger.Info("listener certificate unhealthy", logArgs...)
 
+			reason := string(status.reason)
+			if status.withheldReason != "" {
+				reason = status.withheldReason
+			}
 			gatewayListenerCertWithheld.WithLabelValues(
 				upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name,
-				string(l.Name), hostname, string(status.reason),
+				string(l.Name), hostname, reason,
 			).Set(1)
 			gatewayListenerCertGatingTotal.WithLabelValues(
 				upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name,
-				string(l.Name), hostname, string(status.reason),
+				string(l.Name), hostname, reason,
 			).Inc()
 		} else if status.notAfter != nil {
 			// Record the expiry timestamp for healthy certs so operators can
@@ -653,8 +688,6 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			).Set(float64(status.notAfter.Unix()))
 		}
 	}
-
-	return health
 }
 
 // listenerCertHealth reports whether a single listener's certificate can be
@@ -3131,6 +3164,9 @@ func passThroughVPCPodBackendRef(downstreamNamespace string, backendRef gatewayv
 // SetupWithManager sets up the controller with the Manager.
 func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	if r.routing == nil {
+		r.routing = newRoutingObserver()
+	}
 
 	if r.Config.Gateway.CertificateService.Enabled {
 		if err := r.DownstreamCluster.GetFieldIndexer().IndexField(

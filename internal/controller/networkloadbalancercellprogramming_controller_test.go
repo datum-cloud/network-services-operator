@@ -77,6 +77,7 @@ func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCel
 			Backends: []networkingv1alpha.NetworkLoadBalancerCellIntentBackend{{
 				SourceNamespace: nlbProgrammingTestNamespace, SourceName: iface.Name, SourceUID: string(iface.UID),
 				Family: networkingv1alpha.IPv6Protocol, Address: "fd20:0:30::1:0:0", Port: 8080,
+				Probe: networkingv1alpha.NetworkLoadBalancerCellIntentProbe{Protocol: "TCP", Port: 8080},
 			}},
 		},
 	}
@@ -107,6 +108,8 @@ func TestNLBCellProgrammingWritesGatewayServiceForVerifiedBackends(t *testing.T)
 	require.Equal(t, networkv1alpha1.NetworkServiceProtocolTCP, service.Spec.Protocol)
 	require.EqualValues(t, 80, service.Spec.Port)
 	require.EqualValues(t, 8080, service.Spec.BackendPort)
+	require.Equal(t, "FailClosed", service.Spec.HealthCheck.FailurePolicy)
+	require.EqualValues(t, 8080, service.Spec.HealthCheck.Port)
 	label := networkLoadBalancerBackendLabel(intent.Name)
 	require.Equal(t, map[string]string{label: nlbProgrammingBackendLabelValue}, service.Spec.BackendSelector.MatchLabels)
 
@@ -172,10 +175,11 @@ func TestNLBCellProgrammingReportsGatewayServiceStatus(t *testing.T) {
 
 	var service networkv1alpha1.NetworkService
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
-	service.Status.ObservedGeneration = service.Generation
+	service.Generation = 3
+	require.NoError(t, cl.Update(context.Background(), &service))
 	service.Status.Conditions = []metav1.Condition{
-		{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "serving", LastTransitionTime: metav1.Now()},
-		{Type: "Advertised", Status: metav1.ConditionTrue, Reason: "Advertised", Message: "advertised from 2 of 2 gateway nodes", LastTransitionTime: metav1.Now()},
+		{Type: "Ready", ObservedGeneration: service.Generation, Status: metav1.ConditionTrue, Reason: "Ready", Message: "serving", LastTransitionTime: metav1.Now()},
+		{Type: "Advertised", ObservedGeneration: service.Generation, Status: metav1.ConditionTrue, Reason: "Advertised", Message: "advertised from 2 of 2 gateway nodes", LastTransitionTime: metav1.Now()},
 	}
 	require.NoError(t, cl.Status().Update(context.Background(), &service))
 	reconcileNLBProgramming(t, r, intent)
@@ -213,4 +217,74 @@ func TestNLBCellProgrammingLeavesOtherLocationsStatusAlone(t *testing.T) {
 
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
 	require.Empty(t, intent.Status.Conditions)
+}
+
+func TestNLBGatewayServiceRejectsStaleConditions(t *testing.T) {
+	for _, conditionType := range []string{"Ready", "Advertised"} {
+		t.Run(conditionType, func(t *testing.T) {
+			service := &networkv1alpha1.NetworkService{ObjectMeta: metav1.ObjectMeta{Generation: 3}}
+			service.Status.ObservedGeneration = 3
+			require.Equal(t, metav1.ConditionUnknown, gatewayServiceCondition(service, conditionType).Status)
+			service.Status.Conditions = []metav1.Condition{{Type: conditionType, ObservedGeneration: 2, Status: metav1.ConditionTrue}}
+			require.Equal(t, metav1.ConditionUnknown, gatewayServiceCondition(service, conditionType).Status)
+			service.Status.ObservedGeneration = 0
+			service.Status.Conditions[0].ObservedGeneration = 3
+			require.Equal(t, metav1.ConditionTrue, gatewayServiceCondition(service, conditionType).Status)
+			service.Status.Conditions[0].Status = metav1.ConditionFalse
+			require.Equal(t, metav1.ConditionFalse, gatewayServiceCondition(service, conditionType).Status)
+		})
+	}
+}
+
+func TestNLBCellProgrammingWaitsForGatewayFinalizer(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	ctx := context.Background()
+	reconcileNLBProgramming(t, r, intent)
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(intent), &service))
+	service.Finalizers = []string{"networking.test/withdraw"}
+	require.NoError(t, cl.Update(ctx, &service))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(intent), intent))
+	intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
+	intent.Spec.Backends = nil
+	require.NoError(t, cl.Update(ctx, intent))
+	reconcileNLBProgramming(t, r, intent)
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(intent), intent))
+	require.False(t, intentWithdrawalAcknowledged(intent))
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(&service), &service))
+	require.False(t, service.DeletionTimestamp.IsZero())
+	service.Finalizers = nil
+	require.NoError(t, cl.Update(ctx, &service))
+	reconcileNLBProgramming(t, r, intent)
+	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(intent), intent))
+	require.True(t, intentWithdrawalAcknowledged(intent))
+}
+
+func TestNLBCellProgrammingRejectsUnsupportedProbe(t *testing.T) {
+	for _, protocol := range []string{"HTTP", "HTTPS", ""} {
+		t.Run(protocol, func(t *testing.T) {
+			cl, r, intent := nlbProgrammingFixture(t)
+			intent.Spec.Backends[0].Probe.Protocol = protocol
+			require.NoError(t, cl.Update(context.Background(), intent))
+			reconcileNLBProgramming(t, r, intent)
+			var service networkv1alpha1.NetworkService
+			require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service)))
+		})
+	}
+}
+
+func TestNLBCellProgrammingUDPUsesSeparateTCPHealthPort(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	intent.Spec.Protocol = networkingv1alpha.NetworkLoadBalancerProtocolUDP
+	intent.Spec.Backends[0].Port = 9090
+	intent.Spec.Backends[0].Probe.Port = 8081
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, networkv1alpha1.NetworkServiceProtocolUDP, service.Spec.Protocol)
+	require.EqualValues(t, 9090, service.Spec.BackendPort)
+	require.EqualValues(t, 8081, service.Spec.HealthCheck.Port)
+	require.EqualValues(t, 1, service.Spec.HealthCheck.UnhealthyThreshold)
+	require.EqualValues(t, 2, service.Spec.HealthCheck.HealthyThreshold)
 }

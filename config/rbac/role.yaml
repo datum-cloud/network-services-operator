@@ -320,6 +320,7 @@ rules:
   - networkcontexts
   - networkinterfaceclaims
   - networkinterfaces
+  - networkloadbalancercellintents
   - networkpolicies
   - networks
   - subnetclaims
@@ -387,17 +388,6 @@ rules:
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - networking.datumapis.com
-  resources:
-  - networkloadbalancercellintents
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - networking.datumapis.com

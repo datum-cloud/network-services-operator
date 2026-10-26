@@ -10,12 +10,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 func allocatedCellIntentAddress(value string, generation int64) networkingv1alpha.NetworkLoadBalancerAddressStatus {
@@ -97,6 +99,24 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, intent.Spec.State)
 		require.Empty(t, intent.Spec.Backends)
 	}
+	// The route must remain until both withdrawal conditions acknowledge the current generation.
+	require.NoError(t, project.Get(ctx, key, route))
+	require.Contains(t, route.Finalizers, nlbIntentFinalizer)
+	for i := range withdrawn.Items {
+		intent := &withdrawn.Items[i]
+		intent.Status.ObservedGeneration = intent.Generation
+		intent.Status.Conditions = []metav1.Condition{
+			{Type: networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed, Status: metav1.ConditionFalse, Reason: "Withdrawn", ObservedGeneration: intent.Generation, LastTransitionTime: metav1.Now()},
+			{Type: networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced, Status: metav1.ConditionFalse, Reason: "Withdrawn", ObservedGeneration: intent.Generation, LastTransitionTime: metav1.Now()},
+		}
+		require.NoError(t, hub.Update(ctx, intent))
+	}
+	result, err := reconciler.reconcileIntent(ctx, "project", project, key)
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	require.True(t, apierrors.IsNotFound(project.Get(ctx, key, route)))
+	require.NoError(t, hub.List(ctx, &withdrawn))
+	require.Empty(t, withdrawn.Items)
 }
 
 func TestCellIntentRequiresFreshPerLocationAllocation(t *testing.T) {
@@ -372,4 +392,56 @@ func TestCellIntentSkipsBackendsThatAreNotBound(t *testing.T) {
 	require.Len(t, desired, 1)
 	require.Len(t, desired[0].Spec.Backends, 1)
 	require.Equal(t, "source-bound", desired[0].Spec.Backends[0].SourceUID)
+}
+
+func TestCellIntentWithdrawalRequiresBothCurrentConditions(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		programmed, announced metav1.ConditionStatus
+		stale                 bool
+		want                  bool
+	}{
+		{name: "both withdrawn", programmed: metav1.ConditionFalse, announced: metav1.ConditionFalse, want: true},
+		{name: "still advertised", programmed: metav1.ConditionFalse, announced: metav1.ConditionTrue},
+		{name: "unknown advertisement", programmed: metav1.ConditionFalse, announced: metav1.ConditionUnknown},
+		{name: "stale acknowledgment", programmed: metav1.ConditionFalse, announced: metav1.ConditionFalse, stale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, intent := dataPlaneFixture()
+			intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
+			reportIntent(&intent, tc.programmed, tc.announced)
+			if tc.stale {
+				intent.Generation++
+			}
+			require.Equal(t, tc.want, intentWithdrawalAcknowledged(&intent))
+		})
+	}
+}
+
+func TestCellIntentOrphanCleanupWaitsForAcknowledgment(t *testing.T) {
+	ctx := context.Background()
+	_, intent := dataPlaneFixture()
+	intent.Namespace = "hub"
+	intent.Spec.Source.ProjectCluster = "project"
+	intent.Spec.Source.Namespace = "test"
+	intent.Spec.Source.RouteName = "gone"
+	intent.Labels = map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-project", downstreamclient.UpstreamOwnerNamespaceLabel: "test"}
+	other := intent.DeepCopy()
+	other.Name = "other-route"
+	other.Spec.Source.RouteName = "other"
+	hub := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(&intent, other).Build()
+	r := NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
+	result, err := r.cleanupOrphanedIntents(ctx, "project", client.ObjectKey{Namespace: "test", Name: "gone"})
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter)
+	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(&intent), &intent))
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, intent.Spec.State)
+	reportIntent(&intent, metav1.ConditionFalse, metav1.ConditionFalse)
+	require.NoError(t, hub.Update(ctx, &intent))
+	result, err = r.cleanupOrphanedIntents(ctx, "project", client.ObjectKey{Namespace: "test", Name: "gone"})
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	require.True(t, apierrors.IsNotFound(hub.Get(ctx, client.ObjectKeyFromObject(&intent), &intent)))
+	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(other), other))
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, other.Spec.State)
 }

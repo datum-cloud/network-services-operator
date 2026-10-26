@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -79,7 +80,8 @@ func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCel
 			}},
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent).
+		WithStatusSubresource(&networkingv1alpha.NetworkLoadBalancerCellIntent{}, &networkv1alpha1.NetworkService{}).Build()
 	r := &NetworkLoadBalancerCellProgrammingReconciler{
 		Client: cl, Scheme: scheme,
 		resolveLocation: func(context.Context) (string, error) { return "us-central-1", nil },
@@ -157,4 +159,58 @@ func TestNLBCellProgrammingRefusesBackendsOutsideTheIntentNamespace(t *testing.T
 
 	err := cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})
 	require.True(t, apierrors.IsNotFound(err))
+}
+
+func TestNLBCellProgrammingReportsGatewayServiceStatus(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	programmed := apimeta.FindStatusCondition(intent.Status.Conditions, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed)
+	require.NotNil(t, programmed)
+	require.Equal(t, metav1.ConditionUnknown, programmed.Status)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	service.Status.ObservedGeneration = service.Generation
+	service.Status.Conditions = []metav1.Condition{
+		{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "serving", LastTransitionTime: metav1.Now()},
+		{Type: "Advertised", Status: metav1.ConditionTrue, Reason: "Advertised", Message: "advertised from 2 of 2 gateway nodes", LastTransitionTime: metav1.Now()},
+	}
+	require.NoError(t, cl.Status().Update(context.Background(), &service))
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	require.Equal(t, intent.Generation, intent.Status.ObservedGeneration)
+	require.True(t, apimeta.IsStatusConditionTrue(intent.Status.Conditions, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed))
+	announced := apimeta.FindStatusCondition(intent.Status.Conditions, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced)
+	require.NotNil(t, announced)
+	require.Equal(t, metav1.ConditionTrue, announced.Status)
+	require.Equal(t, "advertised from 2 of 2 gateway nodes", announced.Message)
+}
+
+func TestNLBCellProgrammingReportsWithdrawal(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
+	intent.Spec.Backends = nil
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	programmed := apimeta.FindStatusCondition(intent.Status.Conditions, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed)
+	require.NotNil(t, programmed)
+	require.Equal(t, metav1.ConditionFalse, programmed.Status)
+	require.Equal(t, "Withdrawn", programmed.Reason)
+}
+
+func TestNLBCellProgrammingLeavesOtherLocationsStatusAlone(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	r.resolveLocation = func(context.Context) (string, error) { return "us-east-1", nil }
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	require.Empty(t, intent.Status.Conditions)
 }

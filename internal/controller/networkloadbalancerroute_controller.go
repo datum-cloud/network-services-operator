@@ -225,8 +225,43 @@ func reconcileRouteParent(
 	if status.Effective && len(endpoints) == 0 {
 		setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteProgrammed,
 			metav1.ConditionFalse, nlbRouteReasonNoEligibleEndpoints, "No enabled backend has a holder-available IPv6 endpoint with source identity in a selected location")
+		return status, nil
+	}
+	if status.Effective {
+		if programmed, ok := listenerAddressesProgrammed(&parent, listener); ok {
+			setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteProgrammed,
+				programmed.Status, programmed.Reason, programmed.Message)
+		}
 	}
 	return status, nil
+}
+
+// listenerAddressesProgrammed reports the listener's addresses as their
+// serving locations do. It reports nothing until an address is allocated.
+func listenerAddressesProgrammed(
+	parent *networkingv1alpha.NetworkLoadBalancer, listener *networkingv1alpha.NetworkLoadBalancerListener,
+) (metav1.Condition, bool) {
+	var addresses []*networkingv1alpha.NetworkLoadBalancerAddressStatus
+	for i := range parent.Status.Endpoints {
+		endpoint := &parent.Status.Endpoints[i]
+		if !slices.Contains(listener.AddressRefs, endpoint.RequestName) {
+			continue
+		}
+		for j := range endpoint.Addresses {
+			if endpoint.Addresses[j].Value != "" {
+				addresses = append(addresses, &endpoint.Addresses[j])
+			}
+		}
+	}
+	if len(addresses) == 0 {
+		return metav1.Condition{}, false
+	}
+	programmed := combineAddressConditions(addresses, networkingv1alpha.NetworkLoadBalancerProgrammed)
+	if programmed.Status == metav1.ConditionUnknown {
+		programmed.Status = metav1.ConditionFalse
+		programmed.Reason = nlbRouteReasonAwaitingDataPlane
+	}
+	return programmed, true
 }
 
 func unsupportedRouteListenerCapability(route *networkingv1alpha.NetworkLoadBalancerRoute,

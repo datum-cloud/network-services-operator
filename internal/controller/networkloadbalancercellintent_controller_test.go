@@ -55,7 +55,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	reconciler := &NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
 	key := client.ObjectKeyFromObject(route)
 
-	_, err := reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err := reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	var first networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &first))
@@ -73,7 +73,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	require.NoError(t, project.Get(ctx, client.ObjectKeyFromObject(parent), parent))
 	parent.Status.Endpoints = []networkingv1alpha.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::2", parent.Generation)}
 	require.NoError(t, project.Status().Update(ctx, parent))
-	_, err = reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	var changed networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &changed))
@@ -90,7 +90,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 
 	require.NoError(t, project.Get(ctx, key, route))
 	require.NoError(t, project.Delete(ctx, route))
-	_, err = reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	var withdrawn networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &withdrawn))
@@ -101,7 +101,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	}
 	// The route must remain until both withdrawal conditions acknowledge the current generation.
 	require.NoError(t, project.Get(ctx, key, route))
-	require.Contains(t, route.Finalizers, nlbIntentFinalizer)
+	require.Contains(t, route.Finalizers, parentRouteIntentFinalizer(parent.Name))
 	for i := range withdrawn.Items {
 		intent := &withdrawn.Items[i]
 		intent.Status.ObservedGeneration = intent.Generation
@@ -111,7 +111,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 		}
 		require.NoError(t, hub.Update(ctx, intent))
 	}
-	result, err := reconciler.reconcileIntent(ctx, "project", project, key)
+	result, err := reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	require.Zero(t, result.RequeueAfter)
 	require.True(t, apierrors.IsNotFound(project.Get(ctx, key, route)))
@@ -425,20 +425,22 @@ func TestCellIntentOrphanCleanupWaitsForAcknowledgment(t *testing.T) {
 	intent.Spec.Source.ProjectCluster = "project"
 	intent.Spec.Source.Namespace = "test"
 	intent.Spec.Source.RouteName = "gone"
+	intent.Spec.Source.ParentName = "gone"
 	intent.Labels = map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-project", downstreamclient.UpstreamOwnerNamespaceLabel: "test"}
 	other := intent.DeepCopy()
 	other.Name = "other-route"
 	other.Spec.Source.RouteName = "other"
+	other.Spec.Source.ParentName = "other"
 	hub := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(&intent, other).Build()
 	r := NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
-	result, err := r.cleanupOrphanedIntents(ctx, "project", client.ObjectKey{Namespace: "test", Name: "gone"})
+	result, err := r.reconcileParentIntents(ctx, "project", hub, client.ObjectKey{Namespace: "test", Name: "gone"})
 	require.NoError(t, err)
 	require.Positive(t, result.RequeueAfter)
 	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(&intent), &intent))
 	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, intent.Spec.State)
 	reportIntent(&intent, metav1.ConditionFalse, metav1.ConditionFalse)
 	require.NoError(t, hub.Update(ctx, &intent))
-	result, err = r.cleanupOrphanedIntents(ctx, "project", client.ObjectKey{Namespace: "test", Name: "gone"})
+	result, err = r.reconcileParentIntents(ctx, "project", hub, client.ObjectKey{Namespace: "test", Name: "gone"})
 	require.NoError(t, err)
 	require.Zero(t, result.RequeueAfter)
 	require.True(t, apierrors.IsNotFound(hub.Get(ctx, client.ObjectKeyFromObject(&intent), &intent)))

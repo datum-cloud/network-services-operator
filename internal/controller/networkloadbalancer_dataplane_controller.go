@@ -103,13 +103,16 @@ func applyNetworkLoadBalancerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer
 				continue
 			}
 			addresses = append(addresses, address)
-			address.WithdrawalPending = false
-			for j := range intents {
-				intent := &intents[j]
-				if intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.VIP == address.Value && (intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate || !intentWithdrawalAcknowledged(intent)) {
-					address.WithdrawalPending = true
+			if !address.Coordinated {
+				address.WithdrawalPending = false
+				for j := range intents {
+					intent := &intents[j]
+					if intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.VIP == address.Value && (intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate || !intentWithdrawalAcknowledged(intent)) {
+						address.WithdrawalPending = true
+					}
 				}
 			}
+
 			programmed, announced, known := addressDataPlane(intents, endpoint.RequestName, endpoint.Location, address.Value)
 			if len(endpoint.Listeners) > 0 {
 				var conditions []metav1.Condition

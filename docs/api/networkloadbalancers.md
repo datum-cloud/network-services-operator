@@ -739,6 +739,13 @@ allocation for this request/location.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>retiring</b></td>
+        <td>boolean</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>value</b></td>
         <td>string</td>
         <td>

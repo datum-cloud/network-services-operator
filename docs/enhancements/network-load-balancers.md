@@ -642,12 +642,12 @@ existing affected intents and wait for service and address-anchor finalizers and
 allocation withdrawal acknowledgments. Only then downgrade serving binaries or
 schemas. Removing a range or reducing an inventory does not authorize stale
 siblings to restore an earlier revision. The allocation status keeps
-`coordinated=true` once sharing or a true range uses it. Removing listeners or replacing a range with a singleton updates that
-same inventory; the final listener remains coordinated until the allocation is
+`coordinated=true` once sharing or a true range uses it. Removing listeners or
+replacing a range with a singleton updates that same inventory; the final listener remains coordinated until the allocation is
 released. A fresh singleton allocation can then use the legacy path.
 
-For development before publishing the Galactic dependency, create a temporary
-workspace outside either checkout (with the Go version required by NSO):
+For development across both repositories, create a temporary workspace outside
+either checkout (with the Go version required by NSO):
 
 ```sh
 mkdir -p /tmp/nlb-validation
@@ -826,6 +826,34 @@ withdrawal across the cells serving its location.
 - **Expose Gateway API directly.** It adds concepts consumers do not need for
   this use case and does not express Datum's location and address policies.
   Offer an adapter for portability while retaining the Datum API.
+
+## Publication and allocation retirement
+
+Coordinated allocations persist `withdrawalPending: true` before publishing a
+current-generation `Allocated` condition. This is a publication hold, independent
+of readiness and announcement. It remains armed while the allocation is selected,
+including when no route can publish. A grouped intent requires this hold and an
+allocation that is not `retiring`.
+
+The allocator marks deletion, deselection, and confirmed identity replacement as
+`retiring` with an optimistic status update, retaining the old claim identity.
+The parent-keyed intent controller is the sole publisher for that parent and the
+sole controller allowed to clear its coordinated publication hold. Its serialized
+reconcile withdraws previous publications, reads withdrawal acknowledgments from
+the authoritative hub API, and clears the hold using the parent's resource
+version. A conflict retries against the new parent state. Empty inventory is a
+valid retirement proof only in this actor, after all its earlier writes finish.
+The asynchronous dataplane status controller never clears this hold.
+
+This protocol requires one active controller owner for a project, as provided by
+the manager's leader election or exclusive shard assignment; independent active
+managers must not own the same project. The parent work queue serializes that
+owner's publications, while durable allocation fences and optimistic updates
+preserve retirement across restart. Every route receives a parent-specific
+finalizer and parent-name annotation before publication. Each parent removes only
+its own finalizer after withdrawal, including after reparenting or parent deletion.
+The annotation and hub source identity recover orphan cleanup on restart. Legacy
+route finalizers remain until all parent publications have drained.
 
 ## Infrastructure Needed
 

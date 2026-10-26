@@ -323,6 +323,8 @@ func TestNLBRangePublishesOneIntentWithCompleteInventory(t *testing.T) {
 	parent.Spec.Listeners = append(parent.Spec.Listeners, api.NetworkLoadBalancerListener{Name: "media", Protocol: api.NetworkLoadBalancerProtocolUDP, PortRange: &api.PortRange{Start: 10000, End: 10127}, AddressRefs: []string{"regional"}})
 	parent.Status.Endpoints = []api.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::1", parent.Generation)}
 	parent.Status.Endpoints[0].Addresses[0].ClaimRef.UID = "claim-1"
+	parent.Status.Endpoints[0].Addresses[0].Coordinated = true
+	parent.Status.Endpoints[0].Addresses[0].WithdrawalPending = true
 	service := testRouteNetworkService()
 	service.Spec.Ports = []api.NetworkServicePort{{Name: "http", Protocol: api.NetworkServiceProtocolUDP, PortRange: &api.PortRange{Start: 9000, End: 11000}}, {Name: "health", Port: 8080}}
 	cl := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(route, parent, readyIntentNetwork(), service, testRouteMember("member", true, "fd00::1/128")).Build()
@@ -524,6 +526,9 @@ func TestNLBCoordinationSurvivesObservationLossAndResetsOnReplacement(t *testing
 	require.NoError(t, s.ipam.Get(s.ctx, client.ObjectKeyFromObject(&claim), &claim))
 	claim.UID = "replacement-claim"
 	require.NoError(t, s.ipam.Update(s.ctx, &claim))
+	lb = s.reconcile()
+	require.True(t, edgeAddress(t, &lb).Retiring)
+	require.NoError(t, acknowledgeRetiredAllocations(s.ctx, s.client, &lb, nil))
 	lb = s.reconcile()
 	address = edgeAddress(t, &lb)
 	require.Equal(t, "replacement-claim", address.ClaimRef.UID)

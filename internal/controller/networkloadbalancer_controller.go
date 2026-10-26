@@ -140,11 +140,13 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		if claimRef.UID == "" && prior.ClaimRef != nil {
 			claimRef.UID = prior.ClaimRef.UID
 		}
-		identityChanged := prior.Value != "" && address != "" && prior.Value != address ||
-			prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
+		identityChanged := allocationIdentityChanged(prior, address, claimUID)
 		changed := prior.Value != "" && prior.Value != address ||
 			prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
 		if changed && addressPendingWithdrawal(prior) {
+			if prior.Coordinated && identityChanged {
+				prior.Retiring = true
+			}
 			// Keep the old address visible to withdrawal controllers. In particular,
 			// do not transfer its announcement or publication to a replacement IP.
 			allAllocated = false
@@ -156,12 +158,19 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
 			continue
 		}
+		if allocationRetirementPending(prior) {
+			setLoadBalancerCondition(&prior.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "Withdrawing", "The prior serving publication must drain before this allocation is selected again")
+			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
+			allAllocated = false
+			continue
+		}
 		entry := prior
 		if identityChanged || prior.Value == "" && address != "" {
 			// Programming, announcement, and DNS publication describe one concrete
 			// address, not the request that happened to produce it.
 			entry = networkingv1alpha.NetworkLoadBalancerAddressStatus{Family: request.family, Coordinated: prior.Coordinated && !identityChanged}
 		}
+		entry.Retiring = false
 		entry.Coordinated = entry.Coordinated || addressRequestUsesCoordination(&lb, request.requestName)
 		entry.Family = request.family
 		entry.ClaimRef = claimRef
@@ -178,6 +187,9 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, "AllocationPending", "IPAM has not assigned an address yet")
 		} else {
+			if entry.Coordinated {
+				entry.WithdrawalPending = true
+			}
 			entry.Value = address
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionTrue, "Allocated", "Public IPv6 address is held in IPAM")
@@ -191,6 +203,10 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 				continue
 			}
 			if addressPendingWithdrawal(old) {
+				if old.Coordinated {
+					old.Retiring = true
+					setLoadBalancerCondition(&old.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "Withdrawing", "The address is no longer selected for serving")
+				}
 				appendAddressStatus(&status, lb.Status.Endpoints, endpoint.RequestName, endpoint.Location, old)
 				allAllocated = false
 				continue
@@ -610,6 +626,19 @@ func (r *NetworkLoadBalancerReconciler) release(
 	if !controllerutil.ContainsFinalizer(lb, networkLoadBalancerFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	before := lb.DeepCopy()
+	for i := range lb.Status.Endpoints {
+		for j := range lb.Status.Endpoints[i].Addresses {
+			address := &lb.Status.Endpoints[i].Addresses[j]
+			if address.Coordinated && address.WithdrawalPending && !address.Retiring {
+				address.Retiring = true
+				setLoadBalancerCondition(&address.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "Withdrawing", "The load balancer is being deleted")
+			}
+		}
+	}
+	if !equality.Semantic.DeepEqual(before.Status, lb.Status) {
+		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	}
 	for _, endpoint := range lb.Status.Endpoints {
 		for _, address := range endpoint.Addresses {
 			if addressPendingWithdrawal(address) {
@@ -736,4 +765,13 @@ func addressRequestUsesCoordination(lb *networkingv1alpha.NetworkLoadBalancer, r
 		}
 	}
 	return false
+}
+
+func allocationRetirementPending(address networkingv1alpha.NetworkLoadBalancerAddressStatus) bool {
+	return address.Coordinated && address.Retiring && address.WithdrawalPending
+}
+
+func allocationIdentityChanged(prior networkingv1alpha.NetworkLoadBalancerAddressStatus, address, claimUID string) bool {
+	return prior.Value != "" && address != "" && prior.Value != address ||
+		prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
 }

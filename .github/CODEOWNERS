@@ -1,1 +1,2 @@
 * @datum-cloud/delivery
+/config/components/service-catalog-*/service-pricing.yaml @datum-cloud/billing @datum-cloud/delivery

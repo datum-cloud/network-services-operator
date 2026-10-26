@@ -1,0 +1,42 @@
+apiVersion: billing.miloapis.com/v1alpha1
+kind: ServicePricing
+metadata:
+  name: networking-alb-requests-v1
+  namespace: milo-system
+spec:
+  chargeType: Usage
+  serviceRef: networking.datumapis.com
+  currency: USD
+  displayName: ALB Requests
+  metric: networking.datumapis.com/gateway/requests
+  pricingUnit: request
+  rates:
+    - flat: "0.000001"
+---
+# The egress-bytes meter counts bytes, and these tiers are in GB: the usage is
+# converted into GB before they apply. An earlier egress price applied the
+# per-GB tiers to each byte; this pricing replaces it.
+apiVersion: billing.miloapis.com/v1alpha1
+kind: ServicePricing
+metadata:
+  name: networking-alb-egress-v1
+  namespace: milo-system
+spec:
+  chargeType: Usage
+  serviceRef: networking.datumapis.com
+  currency: USD
+  displayName: ALB Egress
+  metric: networking.datumapis.com/gateway/egress-bytes
+  pricingUnit: GB
+  unitConversion:
+    meterUnitsPerPricingUnit: "1073741824"
+    description: Egress is metered in bytes and priced per GB; 1 GB = 2^30 bytes, as the portal shows it.
+  rates:
+    - tiered:
+        - upTo: "200"
+          rate: "0"
+        - upTo: "10240"
+          rate: "0.05"
+        - upTo: "153600"
+          rate: "0.04"
+        - rate: "0.03"

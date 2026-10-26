@@ -7,25 +7,21 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/types"
 
-	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
 	"go.datum.net/network-services-operator/internal/networkagent"
 )
-
-const listInterfaces = "datumctl network interface list"
 
 func interfaceCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "interface",
 		Aliases: []string{"interfaces", "iface"},
-		Short:   "Inspect instances' network interfaces and release kept ones",
+		Short:   "Inspect instances' network interfaces",
 		Long: `Inspect the network interfaces instances hold on your networks.
 
 Datum creates an interface for each instance. A workload can ask to keep an
 instance's addresses when the instance goes away; the kept interface holds them
-until an instance of the same name comes back, or until you release it.`,
+until an instance of the same name comes back.`,
 	}
 	cmd.AddCommand(interfaceListCommand(), interfaceReleaseCommand())
 	return cmd
@@ -114,64 +110,17 @@ func interfaceState(i networkagent.InterfaceSummary) string {
 
 func interfaceReleaseCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "release <name>",
-		Short: "Give up a kept interface's addresses for good",
-		Long: `Delete a kept network interface, giving up its addresses for good.
-
-Only an interface no instance holds can be released. Its addresses do not come
-back: anything that refers to them, such as a DNS record or a firewall rule,
-has to change.`,
-		Example:           `  datumctl network interface release api-0-eth0`,
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeKeptInterfaceNames,
-		RunE:              runInterfaceRelease,
+		Use:    "release <name>",
+		Short:  "Not available: a kept interface cannot be released",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE:   runInterfaceRelease,
 	}
-	cmd.Flags().Bool("dry-run", false, "Submit for server-side validation without releasing")
+	cmd.Flags().Bool("dry-run", false, "Has no effect: the command always refuses")
 	return cmd
 }
 
-func runInterfaceRelease(cmd *cobra.Command, args []string) error {
-	name := args[0]
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
-
-	c, _, err := clients(cmd)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := withTimeout(cmd.Context())
-	defer cancel()
-	var iface networkingv1alpha.NetworkInterface
-	if err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: name}, &iface); err != nil {
-		return notFound("network interface", name, listInterfaces, err)
-	}
-	if iface.Status.Phase != networkingv1alpha.NetworkInterfacePhaseAvailable {
-		return util.NewCLIError(util.ExitConflict, fmt.Sprintf("network interface %q is held by a running instance", name)).
-			WithFix("an instance's interface goes when the instance does; only kept interfaces can be released:\n       " +
-				listInterfaces + " --kept")
-	}
-
-	if !dryRun {
-		var addresses []string
-		for _, a := range iface.Spec.Addresses {
-			addresses = append(addresses, a.Address)
-		}
-		for _, a := range iface.Spec.ExternalAddresses {
-			addresses = append(addresses, a.Address)
-		}
-		prompt := fmt.Sprintf("This releases network interface %q and gives up its addresses for good: %s",
-			name, util.OrDash(strings.Join(addresses, ", ")))
-		if err := confirmed(cmd, prompt, name); err != nil {
-			return err
-		}
-	}
-
-	if err := c.Delete(ctx, &iface, util.DryRunDeleteOpts(dryRun)...); err != nil {
-		return notFound("network interface", name, listInterfaces, err)
-	}
-	if dryRun {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Network interface %q validated for release.\n", name)
-		return nil
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Network interface %q released.\n", name)
-	return nil
+func runInterfaceRelease(_ *cobra.Command, args []string) error {
+	return util.NewCLIError(util.ExitUnavailable, fmt.Sprintf("network interface %q cannot be released", args[0])).
+		WithFix("a kept interface holds its addresses until an instance of the same name comes back")
 }

@@ -71,10 +71,9 @@ Each instance holds a network interface on its workload's network. A workload ca
 ```sh
 datumctl network interface list --network backend
 datumctl network interface list --kept
-datumctl network interface release api-0-eth0
 ```
 
-Releasing a kept interface gives its addresses up for good. An interface a running instance holds cannot be released.
+A kept interface cannot be released yet. `datumctl network interface release` refuses and changes nothing.
 
 ## When something is not working
 

@@ -127,8 +127,9 @@ A cell with `networkLoadBalancer.enabled` in its cell controller config serves
 For each backend it applies the interface and attachment checks in
 [Published intent](#published-intent). It labels each attachment that passes
 with `nlb.networking.datumapis.com/<intent name>: backend`, and writes one
-Galactic `NetworkService` with the intent's name in the gateway namespace
-(`galactic-system` by default). That service selects those labels, uses the
+Galactic `NetworkService` with the intent's name in the intent's namespace,
+owned by the intent so it is deleted with it. The gateways must watch
+services in every namespace to serve it. That service selects those labels, uses the
 attachments' fabric VPC as `vpcRef`, and serves the VIP on the listener port. It
 forwards to the backend port. An intent is not served if its backends span
 VPCs or ports, if no backend passes, or if it is withdrawn or deleted. In those

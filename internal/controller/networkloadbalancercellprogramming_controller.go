@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,17 +32,15 @@ import (
 )
 
 const (
-	nlbProgrammingManagedByLabel      = "networking.datumapis.com/nlb-cell-intent"
-	nlbProgrammingIntentNamespaceAnno = "networking.datumapis.com/nlb-cell-intent-namespace"
-	nlbProgrammingBackendLabelPrefix  = "nlb.networking.datumapis.com/"
-	nlbProgrammingBackendLabelValue   = "backend"
-	nlbProgrammingRetry               = 30 * time.Second
+	nlbProgrammingBackendLabelPrefix = "nlb.networking.datumapis.com/"
+	nlbProgrammingBackendLabelValue  = "backend"
+	nlbProgrammingRetry              = 30 * time.Second
 )
 
 type NetworkLoadBalancerCellProgrammingReconciler struct {
-	Client           client.Client
-	Location         config.LocationConfig
-	GatewayNamespace string
+	Client   client.Client
+	Scheme   *runtime.Scheme
+	Location config.LocationConfig
 
 	resolveLocation func(context.Context) (string, error)
 }
@@ -78,7 +77,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	for _, reason := range rejected {
 		logger.Info("backend excluded", "intent", req.NamespacedName, "reason", reason)
 	}
-	service, reason := desiredNetworkLoadBalancerService(&intent, backends, r.GatewayNamespace)
+	service, reason := desiredNetworkLoadBalancerService(&intent, backends)
 	if service == nil {
 		logger.Info("intent not served", "intent", req.NamespacedName, "reason", reason)
 		if err := r.withdraw(ctx, req.NamespacedName); err != nil {
@@ -92,20 +91,11 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	}
 	current := &networkv1alpha1.NetworkService{ObjectMeta: metav1.ObjectMeta{Namespace: service.Namespace, Name: service.Name}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, current, func() error {
-		if current.Labels == nil {
-			current.Labels = map[string]string{}
-		}
-		if current.Annotations == nil {
-			current.Annotations = map[string]string{}
-		}
-		for key, value := range service.Labels {
-			current.Labels[key] = value
-		}
-		for key, value := range service.Annotations {
-			current.Annotations[key] = value
+		if !current.CreationTimestamp.IsZero() && !metav1.IsControlledBy(current, &intent) {
+			return fmt.Errorf("gateway service %s belongs to another owner", current.Name)
 		}
 		current.Spec = service.Spec
-		return nil
+		return controllerutil.SetControllerReference(&intent, current, r.Scheme)
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("write gateway service %s: %w", service.Name, err)
 	}
@@ -210,7 +200,6 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) verifyBackend(
 func desiredNetworkLoadBalancerService(
 	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
 	backends []verifiedNetworkLoadBalancerBackend,
-	namespace string,
 ) (*networkv1alpha1.NetworkService, string) {
 	if len(backends) == 0 {
 		return nil, "no backend passed verification"
@@ -237,12 +226,7 @@ func desiredNetworkLoadBalancerService(
 		}
 	}
 	return &networkv1alpha1.NetworkService{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace:   namespace,
-			Name:        intent.Name,
-			Labels:      map[string]string{nlbProgrammingManagedByLabel: intent.Name},
-			Annotations: map[string]string{nlbProgrammingIntentNamespaceAnno: intent.Namespace},
-		},
+		ObjectMeta: metav1.ObjectMeta{Namespace: intent.Namespace, Name: intent.Name},
 		Spec: networkv1alpha1.NetworkServiceSpec{
 			VPCRef:       vpc,
 			VIPAddresses: []string{intent.Spec.VIP},
@@ -308,20 +292,24 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) unlabelBackends(
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) withdraw(ctx context.Context, key types.NamespacedName) error {
 	service := &networkv1alpha1.NetworkService{}
-	err := r.Client.Get(ctx, client.ObjectKey{Namespace: r.GatewayNamespace, Name: key.Name}, service)
+	err := r.Client.Get(ctx, key, service)
 	switch {
 	case apierrors.IsNotFound(err):
 	case err != nil:
-		return fmt.Errorf("read gateway service %s: %w", key.Name, err)
-	case service.Labels[nlbProgrammingManagedByLabel] != key.Name ||
-		service.Annotations[nlbProgrammingIntentNamespaceAnno] != key.Namespace:
-		return fmt.Errorf("gateway service %s/%s is not managed for intent %s", r.GatewayNamespace, key.Name, key)
+		return fmt.Errorf("read gateway service %s: %w", key, err)
+	case !ownedByCellIntent(service, key.Name):
+		return fmt.Errorf("gateway service %s is not owned by its cell intent", key)
 	default:
 		if err := r.Client.Delete(ctx, service); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("delete gateway service %s: %w", key.Name, err)
+			return fmt.Errorf("delete gateway service %s: %w", key, err)
 		}
 	}
 	return r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil)
+}
+
+func ownedByCellIntent(service *networkv1alpha1.NetworkService, intentName string) bool {
+	owner := metav1.GetControllerOf(service)
+	return owner != nil && owner.Kind == "NetworkLoadBalancerCellIntent" && owner.Name == intentName
 }
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) location(ctx context.Context) (string, error) {
@@ -351,25 +339,14 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) intentsInNamespace(ctx co
 	return requests
 }
 
-func intentForGatewayService(_ context.Context, obj client.Object) []reconcile.Request {
-	name := obj.GetLabels()[nlbProgrammingManagedByLabel]
-	namespace := obj.GetAnnotations()[nlbProgrammingIntentNamespaceAnno]
-	if name == "" || namespace == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}}
-}
-
 func (r *NetworkLoadBalancerCellProgrammingReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if r.GatewayNamespace == "" {
-		return errors.New("a gateway namespace is required")
-	}
 	r.Client = mgr.GetClient()
+	r.Scheme = mgr.GetScheme()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkLoadBalancerCellIntent{}).
 		Watches(&networkingv1alpha.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(r.intentsInNamespace)).
 		Watches(&cloudv1alpha1.VPCAttachment{}, handler.EnqueueRequestsFromMapFunc(r.intentsInNamespace)).
-		Watches(&networkv1alpha1.NetworkService{}, handler.EnqueueRequestsFromMapFunc(intentForGatewayService)).
+		Owns(&networkv1alpha1.NetworkService{}).
 		Named("networkloadbalancercellprogramming").
 		Complete(r)
 }

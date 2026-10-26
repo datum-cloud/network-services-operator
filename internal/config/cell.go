@@ -76,10 +76,6 @@ type CellControllerManager struct {
 
 type NetworkLoadBalancerCellConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
-
-	// GatewayNamespace is the namespace of this cell's NetworkGateways, where
-	// load balancer NetworkServices are written. Defaults to galactic-system.
-	GatewayNamespace string `json:"gatewayNamespace,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -118,10 +114,4 @@ func (c *CellControllerManager) Validate() error {
 		}
 	}
 	return nil
-}
-
-func SetDefaults_NetworkLoadBalancerCellConfig(obj *NetworkLoadBalancerCellConfig) {
-	if obj.GatewayNamespace == "" {
-		obj.GatewayNamespace = "galactic-system"
-	}
 }

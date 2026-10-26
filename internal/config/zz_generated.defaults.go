@@ -54,7 +54,6 @@ func SetObjectDefaults_CellControllerManager(in *CellControllerManager) {
 		in.Federation.Client.Burst = 100
 	}
 	SetDefaults_InternalDNSConfig(&in.InternalDNS)
-	SetDefaults_NetworkLoadBalancerCellConfig(&in.NetworkLoadBalancer)
 }
 
 func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {

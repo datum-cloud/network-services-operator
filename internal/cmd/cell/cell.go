@@ -405,8 +405,7 @@ func controllerRegistrations(
 			return false, nil
 		}
 		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
-			Location:         serverConfig.Location,
-			GatewayNamespace: serverConfig.NetworkLoadBalancer.GatewayNamespace,
+			Location: serverConfig.Location,
 		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 

@@ -81,7 +81,7 @@ func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCel
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent).Build()
 	r := &NetworkLoadBalancerCellProgrammingReconciler{
-		Client: cl, GatewayNamespace: "galactic-system",
+		Client: cl, Scheme: scheme,
 		resolveLocation: func(context.Context) (string, error) { return "us-central-1", nil },
 	}
 	return cl, r, intent
@@ -98,7 +98,8 @@ func TestNLBCellProgrammingWritesGatewayServiceForVerifiedBackends(t *testing.T)
 	reconcileNLBProgramming(t, r, intent)
 
 	var service networkv1alpha1.NetworkService
-	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: "galactic-system", Name: intent.Name}, &service))
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.True(t, ownedByCellIntent(&service, intent.Name))
 	require.Equal(t, "1Z", service.Spec.VPCRef)
 	require.Equal(t, []string{"2607:ed40:63::2"}, service.Spec.VIPAddresses)
 	require.Equal(t, networkv1alpha1.NetworkServiceProtocolTCP, service.Spec.Protocol)
@@ -121,7 +122,7 @@ func TestNLBCellProgrammingWithdrawsWhenBackendIdentityChanges(t *testing.T) {
 	require.NoError(t, cl.Update(context.Background(), intent))
 	reconcileNLBProgramming(t, r, intent)
 
-	err := cl.Get(context.Background(), client.ObjectKey{Namespace: "galactic-system", Name: intent.Name}, &networkv1alpha1.NetworkService{})
+	err := cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})
 	require.True(t, apierrors.IsNotFound(err))
 	var attachment cloudv1alpha1.VPCAttachment
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: nlbProgrammingTestNamespace, Name: "web-0-eth0"}, &attachment))
@@ -133,7 +134,7 @@ func TestNLBCellProgrammingIgnoresOtherLocations(t *testing.T) {
 	r.resolveLocation = func(context.Context) (string, error) { return "us-east-1", nil }
 	reconcileNLBProgramming(t, r, intent)
 
-	err := cl.Get(context.Background(), client.ObjectKey{Namespace: "galactic-system", Name: intent.Name}, &networkv1alpha1.NetworkService{})
+	err := cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})
 	require.True(t, apierrors.IsNotFound(err))
 }
 
@@ -143,7 +144,7 @@ func TestNLBCellProgrammingWithdrawsDeletedIntent(t *testing.T) {
 	require.NoError(t, cl.Delete(context.Background(), intent))
 	reconcileNLBProgramming(t, r, intent)
 
-	err := cl.Get(context.Background(), client.ObjectKey{Namespace: "galactic-system", Name: intent.Name}, &networkv1alpha1.NetworkService{})
+	err := cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})
 	require.True(t, apierrors.IsNotFound(err))
 }
 
@@ -154,6 +155,6 @@ func TestNLBCellProgrammingRefusesBackendsOutsideTheIntentNamespace(t *testing.T
 	require.NoError(t, cl.Update(context.Background(), intent))
 	reconcileNLBProgramming(t, r, intent)
 
-	err := cl.Get(context.Background(), client.ObjectKey{Namespace: "galactic-system", Name: intent.Name}, &networkv1alpha1.NetworkService{})
+	err := cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})
 	require.True(t, apierrors.IsNotFound(err))
 }

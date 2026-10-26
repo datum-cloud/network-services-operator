@@ -148,12 +148,11 @@ export function NetworkTable({
         size: 48,
         // The menu renders in a portal, but React still bubbles its clicks
         // through here to the row, which would open the network instead of
-        // the chosen action. Stop them at the cell, and fill the cell so a
-        // click beside the button doesn't open the row either.
+        // the chosen action. Stop them at the cell.
         cell: ({ row }) => (
           <div
             data-slot="dt-row-actions"
-            className="-m-2 flex justify-end p-2"
+            className="flex justify-end"
             onClick={(event) => event.stopPropagation()}>
             <MoreActions
               row={row.original}

@@ -164,6 +164,7 @@ type NetworkLoadBalancerIPClaimRef struct {
 
 // NetworkLoadBalancerAddressStatus describes one family at a location.
 type NetworkLoadBalancerAddressStatus struct {
+	Coordinated       bool                           `json:"coordinated,omitempty"`
 	Family            IPFamily                       `json:"family"`
 	Value             string                         `json:"value,omitempty"`
 	ClaimRef          *NetworkLoadBalancerIPClaimRef `json:"claimRef,omitempty"`

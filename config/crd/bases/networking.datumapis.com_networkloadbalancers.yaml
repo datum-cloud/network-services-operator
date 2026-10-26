@@ -435,6 +435,8 @@ spec:
                             x-kubernetes-list-map-keys:
                             - type
                             x-kubernetes-list-type: map
+                          coordinated:
+                            type: boolean
                           dnsPublished:
                             type: boolean
                           family:

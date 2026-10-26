@@ -137,6 +137,11 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		claimRef := &networkingv1alpha.NetworkLoadBalancerIPClaimRef{
 			Project: routing.project, Namespace: routing.projectNamespace, Name: claimName, UID: claimUID,
 		}
+		if claimRef.UID == "" && prior.ClaimRef != nil {
+			claimRef.UID = prior.ClaimRef.UID
+		}
+		identityChanged := prior.Value != "" && address != "" && prior.Value != address ||
+			prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
 		changed := prior.Value != "" && prior.Value != address ||
 			prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
 		if changed && addressPendingWithdrawal(prior) {
@@ -152,16 +157,16 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			continue
 		}
 		entry := prior
-		if changed || prior.Value == "" && address != "" {
+		if identityChanged || prior.Value == "" && address != "" {
 			// Programming, announcement, and DNS publication describe one concrete
 			// address, not the request that happened to produce it.
-			entry = networkingv1alpha.NetworkLoadBalancerAddressStatus{Family: request.family}
+			entry = networkingv1alpha.NetworkLoadBalancerAddressStatus{Family: request.family, Coordinated: prior.Coordinated && !identityChanged}
 		}
+		entry.Coordinated = entry.Coordinated || addressRequestUsesCoordination(&lb, request.requestName)
 		entry.Family = request.family
 		entry.ClaimRef = claimRef
 		if claimErr != nil {
 			allAllocated = false
-			entry.Value = ""
 			reason := string(classifyAllocationFailure(claimErr))
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, reason, claimErr.Error())
@@ -170,7 +175,6 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			}
 		} else if address == "" {
 			allAllocated = false
-			entry.Value = ""
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, "AllocationPending", "IPAM has not assigned an address yet")
 		} else {
@@ -718,4 +722,18 @@ func (r *NetworkLoadBalancerReconciler) SetupWithManager(mgr mcmanager.Manager) 
 		For(&networkingv1alpha.NetworkLoadBalancer{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("networkloadbalancer").
 		Complete(r)
+}
+
+func addressRequestUsesCoordination(lb *networkingv1alpha.NetworkLoadBalancer, request string) bool {
+	count := 0
+	for _, listener := range lb.Spec.Listeners {
+		if !slices.Contains(listener.AddressRefs, request) {
+			continue
+		}
+		count++
+		if count > 1 || !networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Singleton() {
+			return true
+		}
+	}
+	return false
 }

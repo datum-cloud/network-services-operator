@@ -711,6 +711,13 @@ allocation for this request/location.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>coordinated</b></td>
+        <td>boolean</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>dnsPublished</b></td>
         <td>boolean</td>
         <td>

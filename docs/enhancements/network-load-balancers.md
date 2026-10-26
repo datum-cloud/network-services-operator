@@ -641,8 +641,10 @@ To roll back, disable admission for new shared/range configurations, withdraw
 existing affected intents and wait for service and address-anchor finalizers and
 allocation withdrawal acknowledgments. Only then downgrade serving binaries or
 schemas. Removing a range or reducing an inventory does not authorize stale
-siblings to restore an earlier revision. A transition back to a legacy singleton
-waits for the prior coordinated inventory and its advertisements to disappear.
+siblings to restore an earlier revision. The allocation status keeps
+`coordinated=true` once sharing or a true range uses it. Removing listeners or replacing a range with a singleton updates that
+same inventory; the final listener remains coordinated until the allocation is
+released. A fresh singleton allocation can then use the legacy path.
 
 For development before publishing the Galactic dependency, create a temporary
 workspace outside either checkout (with the Go version required by NSO):

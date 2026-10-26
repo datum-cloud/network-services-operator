@@ -4,12 +4,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
 	api "go.datum.net/network-services-operator/api/v1alpha"
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -337,4 +339,194 @@ func TestNLBRangePublishesOneIntentWithCompleteInventory(t *testing.T) {
 	intents, err = buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
 	require.NoError(t, err)
 	require.Empty(t, intents)
+}
+
+func TestNLBCoordinationPersistsUntilAllocationRelease(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	s.lb.Spec.Listeners = append(s.lb.Spec.Listeners, api.NetworkLoadBalancerListener{Name: "media", Protocol: api.NetworkLoadBalancerProtocolUDP, Port: 5001, AddressRefs: []string{"regional"}})
+	require.NoError(t, s.client.Update(s.ctx, s.lb))
+	lb := s.reconcile()
+	for _, endpoint := range lb.Status.Endpoints {
+		require.Equal(t, endpoint.RequestName == "regional", endpoint.Addresses[0].Coordinated)
+	}
+	lb.Spec.Listeners = lb.Spec.Listeners[:1]
+	lb.Generation++
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	lb = s.reconcile()
+	for _, endpoint := range lb.Status.Endpoints {
+		if endpoint.RequestName != "regional" {
+			continue
+		}
+		require.True(t, endpoint.Addresses[0].Coordinated)
+		group := networkLoadBalancerAddressGroup(&lb, &lb.Spec.Listeners[0], endpoint.RequestName, endpoint.Location, endpoint.Addresses[0])
+		require.NotNil(t, group)
+		require.Len(t, group.Listeners, 1)
+	}
+	require.NoError(t, s.client.Delete(s.ctx, &lb))
+	_, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(&lb))
+	require.NoError(t, err)
+	require.Empty(t, s.claims())
+}
+
+func TestNLBSharedToSingletonRetainsAnchorInEitherOrder(t *testing.T) {
+	for _, withdrawFirst := range []bool{true, false} {
+		name := "inventory-first"
+		if withdrawFirst {
+			name = "withdrawal-first"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			cl, r, media := rangeProgrammingFixture(t)
+			web := media.DeepCopy()
+			web.Name = "web-intent"
+			web.ResourceVersion = ""
+			web.UID = "web-intent-uid"
+			web.Spec.Source.ListenerName = "web"
+			web.Spec.Protocol = api.NetworkLoadBalancerProtocolTCP
+			web.Spec.ListenerPort = 443
+			web.Spec.ListenerPortRange = nil
+			web.Spec.Backends[0].Port = 8080
+			web.Spec.Backends[0].PortRange = nil
+			web.Spec.AddressGroup.ListenerName = "web"
+			require.NoError(t, cl.Create(ctx, web))
+			require.NoError(t, cl.Create(ctx, &networkv1alpha1.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "galactic-system", Generation: 1}, Status: networkv1alpha1.NetworkGatewayStatus{ObservedGeneration: 1, BackendHealthFiltering: true, Capabilities: []string{networkv1alpha1.CapabilitySharedAddressListeners, networkv1alpha1.CapabilityUDPPortRanges}}}))
+			reconcileNLBProgramming(t, r, media)
+			reconcileNLBProgramming(t, r, web)
+			var anchor networkv1alpha1.NetworkServiceAddress
+			anchorKey := client.ObjectKey{Namespace: web.Namespace, Name: networkLoadBalancerAddressName(web.Spec.AddressGroup.UID)}
+			require.NoError(t, cl.Get(ctx, anchorKey, &anchor))
+			require.Len(t, anchor.Spec.Group.Listeners, 2)
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(media), media))
+			media.Spec.State = api.NetworkLoadBalancerCellIntentWithdrawn
+			media.Spec.Backends = nil
+			require.NoError(t, cl.Update(ctx, media))
+			if withdrawFirst {
+				reconcileNLBProgramming(t, r, media)
+			}
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(web), web))
+			web.Spec.Source.ParentGeneration = 4
+			web.Spec.AddressGroup.Generation = 4
+			web.Spec.AddressGroup.Revision = "single-listener"
+			web.Spec.AddressGroup.Listeners = web.Spec.AddressGroup.Listeners[:1]
+			require.NoError(t, cl.Update(ctx, web))
+			reconcileNLBProgramming(t, r, web)
+			if !withdrawFirst {
+				reconcileNLBProgramming(t, r, media)
+			}
+			require.NoError(t, cl.Get(ctx, anchorKey, &anchor))
+			require.Len(t, anchor.Spec.Group.Listeners, 1)
+			require.EqualValues(t, 4, anchor.Spec.Group.Generation)
+			var service networkv1alpha1.NetworkService
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(web), &service))
+			require.NotNil(t, service.Spec.AddressGroup)
+			require.Len(t, service.Spec.AddressGroup.Listeners, 1)
+			require.Equal(t, anchor.Spec.Group.UID, service.Spec.AddressGroup.UID)
+			require.True(t, apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(media), &networkv1alpha1.NetworkService{})))
+			anchor.Finalizers = []string{"test.galactic/withdrawal"}
+			require.NoError(t, cl.Update(ctx, &anchor))
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(web), web))
+			web.Spec.State = api.NetworkLoadBalancerCellIntentWithdrawn
+			web.Spec.Backends = nil
+			require.NoError(t, cl.Update(ctx, web))
+			reconcileNLBProgramming(t, r, web)
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(web), web))
+			require.False(t, intentWithdrawalAcknowledged(web))
+			require.NoError(t, cl.Get(ctx, anchorKey, &anchor))
+			require.False(t, anchor.DeletionTimestamp.IsZero())
+			anchor.Finalizers = nil
+			require.NoError(t, cl.Update(ctx, &anchor))
+			reconcileNLBProgramming(t, r, web)
+			require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(web), web))
+			require.True(t, intentWithdrawalAcknowledged(web))
+			require.True(t, apierrors.IsNotFound(cl.Get(ctx, anchorKey, &networkv1alpha1.NetworkServiceAddress{})))
+		})
+	}
+}
+
+func TestNLBRangeToSingletonKeepsCoordinationBeforeDataPlaneReport(t *testing.T) {
+	for _, equalEndpoint := range []bool{true, false} {
+		name := "scalar"
+		if equalEndpoint {
+			name = "equal-endpoints"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newLoadBalancerAllocationScenario(t)
+			s.lb.Spec.Listeners[0].Protocol = api.NetworkLoadBalancerProtocolUDP
+			s.lb.Spec.Listeners[0].Port = 0
+			s.lb.Spec.Listeners[0].PortRange = &api.PortRange{Start: 10000, End: 10127}
+			require.NoError(t, s.client.Update(s.ctx, s.lb))
+			lb := s.reconcile()
+			lb.Spec.Listeners[0].PortRange = &api.PortRange{Start: 10000, End: 10000}
+			if !equalEndpoint {
+				lb.Spec.Listeners[0].PortRange = nil
+				lb.Spec.Listeners[0].Port = 10000
+			}
+			lb.Generation++
+			require.NoError(t, s.client.Update(s.ctx, &lb))
+			for i, claim := range s.claims() {
+				claim.Status.AllocatedCIDR = fmt.Sprintf("2001:db8::%x/128", i+1)
+				require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
+			}
+			lb = s.reconcile()
+			for _, endpoint := range lb.Status.Endpoints {
+				address := endpoint.Addresses[0]
+				require.True(t, address.Coordinated)
+				group := networkLoadBalancerAddressGroup(&lb, &lb.Spec.Listeners[0], endpoint.RequestName, endpoint.Location, address)
+				require.NotNil(t, group)
+				require.Len(t, group.Listeners, 1)
+				require.Equal(t, api.PortRange{Start: 10000, End: 10000}, api.PortInterval(group.Listeners[0].Port, group.Listeners[0].PortRange))
+				require.Equal(t, lb.Generation, group.Generation)
+			}
+		})
+	}
+}
+
+type coordinationIPAMClient struct {
+	client.Client
+	fail bool
+}
+
+func (c *coordinationIPAMClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, isClaim := obj.(*ipamv1alpha1.IPClaim); c.fail && isClaim {
+		return fmt.Errorf("injected IPAM outage")
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func TestNLBCoordinationSurvivesObservationLossAndResetsOnReplacement(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	s.lb.Spec.Listeners = append(s.lb.Spec.Listeners, api.NetworkLoadBalancerListener{Name: "media", Protocol: api.NetworkLoadBalancerProtocolUDP, Port: 5001, AddressRefs: []string{"edge"}})
+	require.NoError(t, s.client.Update(s.ctx, s.lb))
+	s.reconcile()
+	claim := edgeClaim(t, s)
+	claim.UID = "original-claim"
+	require.NoError(t, s.ipam.Update(s.ctx, &claim))
+	claim.Status.Address = "2001:db8::1"
+	require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
+	lb := s.reconcile()
+	require.True(t, edgeAddress(t, &lb).Coordinated)
+	flaky := &coordinationIPAMClient{Client: s.ipam, fail: true}
+	s.control.IPAM = fixedIPAMClient{flaky}
+	lb.Spec.Listeners = lb.Spec.Listeners[:1]
+	lb.Generation++
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	lb = s.reconcile()
+	address := edgeAddress(t, &lb)
+	require.True(t, address.Coordinated)
+	require.Equal(t, "original-claim", address.ClaimRef.UID)
+	require.Equal(t, "2001:db8::1", address.Value)
+	require.False(t, apimeta.IsStatusConditionTrue(address.Conditions, api.NetworkLoadBalancerAllocated))
+	flaky.fail = false
+	lb = s.reconcile()
+	address = edgeAddress(t, &lb)
+	require.True(t, address.Coordinated)
+	require.NotNil(t, networkLoadBalancerAddressGroup(&lb, &lb.Spec.Listeners[0], "edge", "iad", *address))
+	require.NoError(t, s.ipam.Get(s.ctx, client.ObjectKeyFromObject(&claim), &claim))
+	claim.UID = "replacement-claim"
+	require.NoError(t, s.ipam.Update(s.ctx, &claim))
+	lb = s.reconcile()
+	address = edgeAddress(t, &lb)
+	require.Equal(t, "replacement-claim", address.ClaimRef.UID)
+	require.False(t, address.Coordinated)
+	require.Nil(t, networkLoadBalancerAddressGroup(&lb, &lb.Spec.Listeners[0], "edge", "iad", *address))
 }

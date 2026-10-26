@@ -474,7 +474,7 @@ func networkLoadBalancerAddressGroup(parent *networkingv1alpha.NetworkLoadBalanc
 			listeners = append(listeners, networkingv1alpha.NetworkLoadBalancerCellIntentAddressListener{Name: candidate.Name, Protocol: candidate.Protocol, Port: candidate.Port, PortRange: candidate.PortRange})
 		}
 	}
-	if len(listeners) < 2 && networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Singleton() {
+	if !allocation.Coordinated && len(listeners) < 2 && networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Singleton() {
 		return nil
 	}
 	slices.SortFunc(listeners, func(a, b networkingv1alpha.NetworkLoadBalancerCellIntentAddressListener) int {

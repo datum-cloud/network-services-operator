@@ -189,6 +189,7 @@ rules:
 - apiGroups:
   - galactic.datumapis.com
   resources:
+  - networkservices
   - serviceendpoints
   - serviceroutepolicies
   - vpcattachments

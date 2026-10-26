@@ -91,7 +91,7 @@ func NewCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
-			if serverConfig.InternalDNS.Enabled {
+			if serverConfig.InternalDNS.Enabled || serverConfig.NetworkLoadBalancer.Enabled {
 				utilruntime.Must(networkv1alpha1.AddToScheme(scheme))
 			}
 			setupLog.Info("server config", "config", serverConfig)
@@ -398,6 +398,15 @@ func controllerRegistrations(
 	}})
 	registrations = append(registrations, namedSetup{"networkloadbalancerbackendhealth", func() (bool, error) {
 		return true, (&controller.NetworkLoadBalancerBackendHealthReconciler{}).SetupWithManager(mgr.GetLocalManager())
+	}})
+
+	registrations = append(registrations, namedSetup{"networkloadbalancercellprogramming", func() (bool, error) {
+		if !serverConfig.NetworkLoadBalancer.Enabled {
+			return false, nil
+		}
+		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
+			Location: serverConfig.Location,
+		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 
 	registrations = append(registrations, namedSetup{"internaldns-cell", func() (bool, error) {

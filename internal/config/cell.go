@@ -65,6 +65,17 @@ type CellControllerManager struct {
 	// Galactic enables this cell to reconcile downstream Galactic VPCs and
 	// attachments once the Galactic CRDs are installed.
 	Galactic GalacticCellConfig `json:"galactic,omitempty"`
+
+	// NetworkLoadBalancer serves network load balancer cell intents from this
+	// cell's Galactic gateways. It is disabled unless explicitly enabled, and
+	// needs galactic.enabled.
+	NetworkLoadBalancer NetworkLoadBalancerCellConfig `json:"networkLoadBalancer,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type NetworkLoadBalancerCellConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -91,6 +102,9 @@ func (c *CellControllerManager) Validate() error {
 	}
 	if err := c.InternalDNS.validate(); err != nil {
 		return fmt.Errorf("internalDNS: %w", err)
+	}
+	if c.NetworkLoadBalancer.Enabled && !c.Galactic.Enabled {
+		return fmt.Errorf("networkLoadBalancer.enabled needs galactic.enabled")
 	}
 	if c.Galactic.Enabled {
 		switch c.Galactic.AttachmentMode {

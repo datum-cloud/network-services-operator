@@ -119,3 +119,21 @@ address/port/protocol, and does not implement weighted selection or active
 application probes. Those capabilities and an all-gateway programming
 acknowledgment are required before this intent can drive the full native API.
 Until then, route and load balancer `Programmed` and `Announced` remain false.
+
+## Cell programming (opt-in)
+
+A cell with `networkLoadBalancer.enabled` in its cell controller config serves
+`Validate` intents for its own location before the acknowledgment above exists.
+For each backend it applies the interface and attachment checks in
+[Published intent](#published-intent). It labels each attachment that passes
+with `nlb.networking.datumapis.com/<intent name>: backend`, and writes one
+Galactic `NetworkService` with the intent's name in the gateway namespace
+(`galactic-system` by default). That service selects those labels, uses the
+attachments' fabric VPC as `vpcRef`, and serves the VIP on the listener port. It
+forwards to the backend port. An intent is not served if its backends span
+VPCs or ports, if no backend passes, or if it is withdrawn or deleted. In those
+cases the service is deleted and the labels are removed.
+
+Nothing is reported back to the project yet, so route and load balancer
+`Programmed` stay unknown while the VIP serves. Enable this only where that is
+acceptable, such as staging.

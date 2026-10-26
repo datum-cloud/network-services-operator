@@ -117,6 +117,31 @@ type NetworkServicesOperator struct {
 	// InternalDNS configures managed resolver access. It is disabled unless
 	// explicitly enabled.
 	InternalDNS InternalDNSConfig `json:"internalDNS,omitempty"`
+
+	// NetworkLoadBalancer configures network load balancer behavior.
+	NetworkLoadBalancer NetworkLoadBalancerConfig `json:"networkLoadBalancer,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkLoadBalancerConfig configures network load balancer behavior.
+type NetworkLoadBalancerConfig struct {
+	// DNS configures how each location's generated hostname is published.
+	DNS NetworkLoadBalancerDNSConfig `json:"dns,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// NetworkLoadBalancerDNSConfig configures publishing each load balancer
+// location's generated hostname through external-dns on the hub.
+type NetworkLoadBalancerDNSConfig struct {
+	// Enabled publishes generated hostnames. Defaults to false.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// PublishOnAllocation publishes an address once it is allocated rather than
+	// once its location announces it. Use only where serving an unannounced
+	// address is acceptable, such as a staging environment. Defaults to false.
+	PublishOnAllocation bool `json:"publishOnAllocation,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

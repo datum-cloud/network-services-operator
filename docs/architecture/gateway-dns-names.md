@@ -19,3 +19,7 @@ Each name has one writer.
 
 - A `v4.` name answers IPv4 only, and a `v6.` name IPv6 only. A `CNAME` or `ALIAS` to the gateway's own name would answer both.
 - PowerDNS refuses an `A` or `AAAA` beside a `CNAME`, so a second writer at a `v4.` or `v6.` name stops the address records from publishing.
+
+## Network load balancer names
+
+A network load balancer location's generated name, such as `<location>.<label>.datumproxy.net`, is published the same way as a gateway's own name: from a `DNSEndpoint` on the hub, written by `NetworkLoadBalancerDNSReconciler`, once the address is announced. It is off unless `networkLoadBalancer.dns.enabled` is set; turning it off withdraws the records it published, and it is temporary until load balancer names move to Datum DNS registrations.

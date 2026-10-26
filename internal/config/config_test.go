@@ -423,6 +423,14 @@ func TestSetObjectDefaults_CertificateService(t *testing.T) {
 	}
 }
 
+func TestSetObjectDefaults_PreciseEndpointSliceMapping(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.Gateway.PreciseEndpointSliceMapping {
+		t.Error("gateway.preciseEndpointSliceMapping should default to false")
+	}
+}
+
 func TestCertificateServiceConfig_TrustedRoots(t *testing.T) {
 	off := CertificateServiceConfig{TrustedRootsFile: "/does/not/exist"}
 	if pool, err := off.TrustedRoots(); pool != nil || err != nil {

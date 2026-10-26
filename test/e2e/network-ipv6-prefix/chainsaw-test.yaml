@@ -44,8 +44,10 @@ spec:
                   ipv6PrefixRef:
                     project: project-alpha
                     namespace: default
-                (starts_with(ipam.ipv6Prefix, 'fd20:1')): true
-                (ends_with(ipam.ipv6Prefix, '/48')): true
+                # `|| ''`: a prefix not written yet must read as a mismatch, which the
+                # assert retries, not as a type error, which ends it at once.
+                (starts_with(ipam.ipv6Prefix || '', 'fd20:1')): true
+                (ends_with(ipam.ipv6Prefix || '', '/48')): true
                 (ipam.ipv6PrefixRef.poolName != ''): true
                 (ipam.ipv6PrefixRef.claimName != ''): true
                 (conditions[?type == 'IPAMAllocated'] | [0].status): "True"

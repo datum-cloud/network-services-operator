@@ -7,7 +7,7 @@ tests:
   # GatewayListenerCertUnusable — listener withheld for more than 5 minutes
   - interval: 1m
     input_series:
-      - series: 'nso_gateway_listener_cert_withheld{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", reason="InvalidCertificateRef"}'
+      - series: 'nso_gateway_listener_cert_withheld{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", reason="InvalidCertificateRef"}'
         values: '1+0x5'
     alert_rule_test:
       - eval_time: 6m
@@ -15,19 +15,20 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
               listener: https-custom
               hostname: example.com
               reason: InvalidCertificateRef
             exp_annotations:
-              summary: "Gateway listener customer-ns/my-gateway/https-custom has an unusable TLS certificate"
-              description: "NSO has withheld listener https-custom (hostname example.com) on Gateway my-gateway in namespace customer-ns because its TLS certificate is unusable (reason: InvalidCertificateRef). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+              summary: "Gateway listener project-a/customer-ns/my-gateway/https-custom has an unusable TLS certificate"
+              description: "NSO has withheld listener https-custom (hostname example.com) on Gateway my-gateway in project project-a, namespace customer-ns because its TLS certificate is unusable (reason: InvalidCertificateRef). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
 
   # GatewayListenerCertUnusable — listener withheld for less than 5 minutes (should NOT alert)
   - interval: 1m
     input_series:
-      - series: 'nso_gateway_listener_cert_withheld{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", reason="InvalidCertificateRef"}'
+      - series: 'nso_gateway_listener_cert_withheld{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", reason="InvalidCertificateRef"}'
         values: '1+0x2'
     alert_rule_test:
       - eval_time: 3m
@@ -37,7 +38,7 @@ tests:
   # GatewayListenerCertUnusable — listener is healthy (withheld=0, should NOT alert)
   - interval: 1m
     input_series:
-      - series: 'nso_gateway_listener_cert_withheld{resource_namespace="customer-ns", resource_name="healthy-gateway", listener="https-custom", hostname="ok.com", reason="InvalidCertificateRef"}'
+      - series: 'nso_gateway_listener_cert_withheld{project="project-a", resource_namespace="customer-ns", resource_name="healthy-gateway", listener="https-custom", hostname="ok.com", reason="InvalidCertificateRef"}'
         values: '0+0x5'
     alert_rule_test:
       - eval_time: 6m
@@ -48,7 +49,7 @@ tests:
   # At eval_time 62m (3720s), expiry_time = 3720 + 5*86400 = 435720
   - interval: 1m
     input_series:
-      - series: 'nso_gateway_listener_cert_expiry_time{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", secret="my-gateway-https-custom"}'
+      - series: 'nso_gateway_listener_cert_expiry_time{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", secret="my-gateway-https-custom"}'
         values: '435720+0x62'
     alert_rule_test:
       - eval_time: 62m
@@ -56,20 +57,21 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
               listener: https-custom
               hostname: example.com
               secret: my-gateway-https-custom
             exp_annotations:
-              summary: "TLS certificate for Gateway listener customer-ns/my-gateway/https-custom expires in less than 7 days"
-              description: "The cert-manager Certificate for listener https-custom (hostname example.com, secret my-gateway-https-custom) on Gateway my-gateway in namespace customer-ns expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to this gateway. Verify the Certificate is Ready=True in the downstream cluster."
+              summary: "TLS certificate for Gateway listener project-a/customer-ns/my-gateway/https-custom expires in less than 7 days"
+              description: "The cert-manager Certificate for listener https-custom (hostname example.com, secret my-gateway-https-custom) on Gateway my-gateway in project project-a, namespace customer-ns expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to this gateway. Verify the Certificate is Ready=True in the downstream cluster."
 
   # GatewayListenerCertExpiringSoon — cert expires in 8 days (outside threshold, should NOT alert)
   # At eval_time 62m (3720s), expiry_time = 3720 + 8*86400 = 694920
   - interval: 1m
     input_series:
-      - series: 'nso_gateway_listener_cert_expiry_time{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", secret="my-gateway-https-custom"}'
+      - series: 'nso_gateway_listener_cert_expiry_time{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-custom", hostname="example.com", secret="my-gateway-https-custom"}'
         values: '694920+0x62'
     alert_rule_test:
       - eval_time: 62m

@@ -86,7 +86,7 @@ var (
 			Name: "nso_certificate_service_failures_total",
 			Help: "Total certificate-service failures for a Gateway listener, by reason.",
 		},
-		[]string{metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelReason},
+		[]string{metricLabelProject, metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelReason},
 	)
 
 	// certificateServiceListenerFailing is 1 for each wildcard listener whose
@@ -97,7 +97,7 @@ var (
 			Name: "nso_certificate_service_listener_failing",
 			Help: "1 while a Gateway listener's certificate-service issuance or renewal is failing, by reason.",
 		},
-		[]string{metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelReason},
+		[]string{metricLabelProject, metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelReason},
 	)
 
 	// gatewayListenerCertWithheld is 1 for each upstream Gateway listener that NSO
@@ -106,14 +106,14 @@ var (
 	// is removed from the Gateway, or the Gateway is deleted.
 	//
 	// Use sum(nso_gateway_listener_cert_withheld) to count how many listeners are
-	// currently dark across the fleet, or filter by namespace/name/listener/hostname
-	// to find the specific affected object during an incident.
+	// currently dark across the fleet, or filter by project/namespace/name/
+	// listener/hostname to find the specific affected object during an incident.
 	gatewayListenerCertWithheld = metrics.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "nso_gateway_listener_cert_withheld",
 			Help: "1 when a Gateway listener is withheld from the downstream because its TLS certificate is unusable, 0 after it recovers.",
 		},
-		[]string{metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname, metricLabelReason},
+		[]string{metricLabelProject, metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname, metricLabelReason},
 	)
 
 	// gatewayListenerCertGatingTotal counts every reconcile cycle in which a
@@ -124,7 +124,7 @@ var (
 			Name: "nso_gateway_listener_cert_gating_total",
 			Help: "Total reconcile cycles in which a Gateway listener was withheld because its TLS certificate was unusable.",
 		},
-		[]string{metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname, metricLabelReason},
+		[]string{metricLabelProject, metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname, metricLabelReason},
 	)
 
 	// gatewayListenerCertExpiryTime is the Unix timestamp (seconds) at which a
@@ -139,7 +139,7 @@ var (
 			Name: "nso_gateway_listener_cert_expiry_time",
 			Help: "Unix timestamp when the managed TLS certificate for this Gateway listener expires. Only present when the certificate is healthy.",
 		},
-		[]string{metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname, metricLabelSecret},
+		[]string{metricLabelProject, metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname, metricLabelSecret},
 	)
 
 	// gatewayListenerCertManaged counts the total number of Gateway listeners
@@ -151,7 +151,7 @@ var (
 			Name: "nso_gateway_listener_cert_managed",
 			Help: "1 for each Gateway listener whose TLS certificate is managed and evaluated by NSO, regardless of health.",
 		},
-		[]string{metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname},
+		[]string{metricLabelProject, metricLabelResourceNamespace, metricLabelResourceName, metricLabelListener, metricLabelHostname},
 	)
 
 	cellLocationIdentitySource = metrics.NewGaugeVec(

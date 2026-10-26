@@ -8,9 +8,9 @@ tests:
   # the failure was counted only once when it began.
   - interval: 1m
     input_series:
-      - series: 'nso_certificate_service_listener_failing{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="IssuanceFailed"}'
+      - series: 'nso_certificate_service_listener_failing{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="IssuanceFailed"}'
         values: '1+0x180'
-      - series: 'nso_certificate_service_failures_total{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="IssuanceFailed"}'
+      - series: 'nso_certificate_service_failures_total{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="IssuanceFailed"}'
         values: '1+0x180'
     alert_rule_test:
       - eval_time: 150m
@@ -20,19 +20,20 @@ tests:
               severity: warning
               service: network-services
               team: sre
+              project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
               listener: https-hostname-0
               reason: IssuanceFailed
             exp_annotations:
-              summary: "Certificate for Gateway listener customer-ns/my-gateway/https-hostname-0 cannot be issued or renewed"
-              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway my-gateway in namespace customer-ns for over two hours (reason: IssuanceFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+              summary: "Certificate for Gateway listener project-a/customer-ns/my-gateway/https-hostname-0 cannot be issued or renewed"
+              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway my-gateway in project project-a, namespace customer-ns for over two hours (reason: IssuanceFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
               runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"
 
   # A step that keeps failing and retrying raises the alert from the counter alone.
   - interval: 1m
     input_series:
-      - series: 'nso_certificate_service_failures_total{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="StepFailed"}'
+      - series: 'nso_certificate_service_failures_total{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="StepFailed"}'
         values: '0+1x180'
     alert_rule_test:
       - eval_time: 150m
@@ -42,21 +43,22 @@ tests:
               severity: warning
               service: network-services
               team: sre
+              project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
               listener: https-hostname-0
               reason: StepFailed
             exp_annotations:
-              summary: "Certificate for Gateway listener customer-ns/my-gateway/https-hostname-0 cannot be issued or renewed"
-              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway my-gateway in namespace customer-ns for over two hours (reason: StepFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+              summary: "Certificate for Gateway listener project-a/customer-ns/my-gateway/https-hostname-0 cannot be issued or renewed"
+              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway my-gateway in project project-a, namespace customer-ns for over two hours (reason: StepFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
               runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"
 
   # A failure that cleared within the hour does not alert.
   - interval: 1m
     input_series:
-      - series: 'nso_certificate_service_listener_failing{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="NotReady"}'
+      - series: 'nso_certificate_service_listener_failing{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="NotReady"}'
         values: '1+0x30 _x150'
-      - series: 'nso_certificate_service_failures_total{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="NotReady"}'
+      - series: 'nso_certificate_service_failures_total{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="NotReady"}'
         values: '1+0x180'
     alert_rule_test:
       - eval_time: 150m
@@ -66,9 +68,47 @@ tests:
   # A failure younger than two hours does not alert yet.
   - interval: 1m
     input_series:
-      - series: 'nso_certificate_service_listener_failing{resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="Rejected"}'
+      - series: 'nso_certificate_service_listener_failing{project="project-a", resource_namespace="customer-ns", resource_name="my-gateway", listener="https-hostname-0", reason="Rejected"}'
         values: '1+0x90'
     alert_rule_test:
       - eval_time: 90m
         alertname: CertificateServiceIssuanceFailing
         exp_alerts: []
+
+  # Two projects that reuse a gateway name alert separately.
+  - interval: 1m
+    input_series:
+      - series: 'nso_certificate_service_listener_failing{project="project-a", resource_namespace="default", resource_name="shared-gw", listener="https-hostname-0", reason="IssuanceFailed"}'
+        values: '1+0x180'
+      - series: 'nso_certificate_service_listener_failing{project="project-b", resource_namespace="default", resource_name="shared-gw", listener="https-hostname-0", reason="IssuanceFailed"}'
+        values: '1+0x180'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: CertificateServiceIssuanceFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: sre
+              project: project-a
+              resource_namespace: default
+              resource_name: shared-gw
+              listener: https-hostname-0
+              reason: IssuanceFailed
+            exp_annotations:
+              summary: "Certificate for Gateway listener project-a/default/shared-gw/https-hostname-0 cannot be issued or renewed"
+              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway shared-gw in project project-a, namespace default for over two hours (reason: IssuanceFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"
+          - exp_labels:
+              severity: warning
+              service: network-services
+              team: sre
+              project: project-b
+              resource_namespace: default
+              resource_name: shared-gw
+              listener: https-hostname-0
+              reason: IssuanceFailed
+            exp_annotations:
+              summary: "Certificate for Gateway listener project-b/default/shared-gw/https-hostname-0 cannot be issued or renewed"
+              description: "The certificate service has been failing to issue or renew the certificate for listener https-hostname-0 on Gateway shared-gw in project project-b, namespace default for over two hours (reason: IssuanceFailed). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"

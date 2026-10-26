@@ -293,7 +293,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 
 				assert.Equal(t, tlsCertificateMirrorAdmitDelay, e.result.RequeueAfter, "a fresh mirror asks for a prompt re-evaluation")
 
-				health := e.reconciler.evaluateListenerCertHealth(ctx, e.upstream, e.downstream, downstreamNamespaceName, upstreamGateway, []string{hostname})
+				health := e.reconciler.evaluateListenerCertHealth(ctx, upstreamCluster, e.upstream, e.downstream, downstreamNamespaceName, upstreamGateway, []string{hostname})
 				status, gated := health[listenerName]
 				require.True(t, gated)
 				assert.True(t, status.healthy, "listener is admitted on the next pass: %s", status.message)
@@ -319,7 +319,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				assert.Equal(t, metav1.ConditionFalse, resolved.Status)
 				assert.Contains(t, resolved.Message, "names under datum.net are denied")
 				assert.NotContains(t, resolved.Message, "keep trying")
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRejected), 1.0)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRejected), 1.0)
 			},
 		},
 		{
@@ -336,7 +336,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				assert.Equal(t, metav1.ConditionTrue, blocked.Status)
 				assert.Contains(t, blocked.Message, "names under datum.net are denied")
 				assert.NotContains(t, blocked.Message, "keep trying")
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRefused), 1.0)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRefused), 1.0)
 				assert.Equal(t, certificateServiceBackoffBase, e.result.RequeueAfter)
 			},
 		},
@@ -409,7 +409,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				assert.Equal(t, servingCertPEM, secret.Data["tls.crt"], "an untrusted chain never replaces what serves")
 				blocked := assertListenerRenewalBlocked(t, upstreamGateway, "did not pass our checks")
 				assert.NotContains(t, blocked.Message, "keep trying")
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonUntrustedChain), 1.0)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonUntrustedChain), 1.0)
 			},
 		},
 		{
@@ -425,7 +425,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, listenerName), "the listener keeps serving")
 				assertListenerRenewalBlocked(t, upstreamGateway, "names under datum.net are denied")
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRejected), 1.0)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRejected), 1.0)
 			},
 		},
 		{
@@ -444,7 +444,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, listenerName))
 				assertListenerRenewalBlocked(t, upstreamGateway, "NXDOMAIN")
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonIssuanceFailed), 1.0)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonIssuanceFailed), 1.0)
 			},
 		},
 		{
@@ -461,8 +461,8 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				blocked := listenerCondition(t, upstreamGateway, listenerName, listenerConditionCertificateIssuanceBlocked)
 				assert.Equal(t, metav1.ConditionTrue, blocked.Status)
 				assert.Contains(t, blocked.Message, "has not been issued yet")
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNotReady), 1.0)
-				assert.Equal(t, 1.0, gaugeValue(t, certificateServiceListenerFailing, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNotReady), "a lasting failure stays visible after its one count")
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNotReady), 1.0)
+				assert.Equal(t, 1.0, gaugeValue(t, certificateServiceListenerFailing, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonNotReady), "a lasting failure stays visible after its one count")
 			},
 		},
 		{
@@ -499,8 +499,8 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 			assert: func(t *testing.T, e env, upstreamGateway, downstreamGateway *gatewayv1.Gateway) {
 				assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, listenerName))
 				assertListenerRenewalBlocked(t, upstreamGateway, "has not been renewed")
-				assert.Equal(t, 1.0, gaugeValue(t, certificateServiceListenerFailing, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRenewalOverdue))
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRenewalOverdue), 1.0)
+				assert.Equal(t, 1.0, gaugeValue(t, certificateServiceListenerFailing, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRenewalOverdue))
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonRenewalOverdue), 1.0)
 			},
 		},
 		{
@@ -517,7 +517,7 @@ func TestEnsureDownstreamGatewayCertificateService(t *testing.T) {
 				assert.NotNil(t, gatewayutil.GetListenerByName(downstreamGateway.Spec.Listeners, listenerName), "the listener keeps serving")
 				assertListenerRenewalBlocked(t, upstreamGateway, "keep trying")
 				assert.Equal(t, certificateServiceBackoffBase, e.result.RequeueAfter)
-				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed), 1.0)
+				assert.GreaterOrEqual(t, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed), 1.0)
 			},
 		},
 		{
@@ -1230,6 +1230,7 @@ func TestCertificateServiceRenewalBlockedClearsOnRecovery(t *testing.T) {
 	const gatewayName = "recovery-gw"
 	const listenerName = gatewayv1.SectionName("https-hostname-0")
 	const serviceNS = "certificates-system"
+	const upstreamCluster = "test"
 	secretName := listenerCertificateSecretName(gatewayName, listenerName)
 	certName := tlsCertificateName(gatewayName, listenerName)
 	ca := newTestCA(t)
@@ -1283,10 +1284,10 @@ func TestCertificateServiceRenewalBlockedClearsOnRecovery(t *testing.T) {
 		gateway: client.ObjectKeyFromObject(upstreamGateway), namespace: downstreamNamespaceName,
 	}
 
-	before := counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed)
+	before := counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed)
 	first, _, _ := h.reconcile()
 	assertListenerRenewalBlocked(t, first, "keep trying")
-	assert.Equal(t, before+1, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed))
+	assert.Equal(t, before+1, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed))
 
 	forbidden = false
 	h.reconciler.certificateServiceFailures.Delete(certificateServiceKey{gateway: upstreamGateway.UID, listener: listenerName})
@@ -1299,13 +1300,13 @@ func TestCertificateServiceRenewalBlockedClearsOnRecovery(t *testing.T) {
 	var mirror corev1.Secret
 	require.NoError(t, fakeDownstreamClient.Get(ctx, client.ObjectKey{Namespace: downstreamNamespaceName, Name: secretName}, &mirror))
 	assert.Equal(t, issuedCrt, mirror.Data["tls.crt"], "the issued certificate replaces the serving one once readable")
-	assert.Equal(t, before+1, counterValue(t, certificateServiceFailuresTotal, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed), "a success adds nothing")
+	assert.Equal(t, before+1, counterValue(t, certificateServiceFailuresTotal, upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed), "a success adds nothing")
 
 	removed := second.DeepCopy()
 	removed.Spec.Listeners = removed.Spec.Listeners[:len(removed.Spec.Listeners)-1]
-	h.reconciler.forgetRemovedListeners(removed)
+	h.reconciler.forgetRemovedListeners(upstreamCluster, removed)
 	var m dto.Metric
-	require.NoError(t, certificateServiceFailuresTotal.WithLabelValues(upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed).Write(&m))
+	require.NoError(t, certificateServiceFailuresTotal.WithLabelValues(upstreamCluster, upstreamNamespace.Name, gatewayName, string(listenerName), certificateServiceReasonStepFailed).Write(&m))
 	assert.Zero(t, m.GetCounter().GetValue(), "a removed listener's series is dropped")
 }
 
@@ -1313,20 +1314,20 @@ func TestCertificateServiceStateCountedPerTransition(t *testing.T) {
 	r := &GatewayReconciler{}
 	gw := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "count", Name: "gw", UID: uuid.NewUUID()}}
 	rejected := func() float64 {
-		return counterValue(t, certificateServiceFailuresTotal, "count", "gw", "https-0", certificateServiceReasonRejected)
+		return counterValue(t, certificateServiceFailuresTotal, "count-project", "count", "gw", "https-0", certificateServiceReasonRejected)
 	}
 	overdue := func() float64 {
-		return counterValue(t, certificateServiceFailuresTotal, "count", "gw", "https-0", certificateServiceReasonRenewalOverdue)
+		return counterValue(t, certificateServiceFailuresTotal, "count-project", "count", "gw", "https-0", certificateServiceReasonRenewalOverdue)
 	}
 	before, beforeOverdue := rejected(), overdue()
-	r.recordCertificateServiceState(gw, "https-0", certificateServiceReasonRejected)
-	r.recordCertificateServiceState(gw, "https-0", certificateServiceReasonRejected)
-	r.recordCertificateServiceState(gw, "https-0", certificateServiceReasonRejected)
+	r.recordCertificateServiceState("count-project", gw, "https-0", certificateServiceReasonRejected)
+	r.recordCertificateServiceState("count-project", gw, "https-0", certificateServiceReasonRejected)
+	r.recordCertificateServiceState("count-project", gw, "https-0", certificateServiceReasonRejected)
 	assert.Equal(t, before+1, rejected())
-	r.recordCertificateServiceState(gw, "https-0", "")
-	r.recordCertificateServiceState(gw, "https-0", certificateServiceReasonRejected)
+	r.recordCertificateServiceState("count-project", gw, "https-0", "")
+	r.recordCertificateServiceState("count-project", gw, "https-0", certificateServiceReasonRejected)
 	assert.Equal(t, before+2, rejected(), "a new failure after recovery counts again")
-	r.recordCertificateServiceState(gw, "https-0", certificateServiceReasonRenewalOverdue)
+	r.recordCertificateServiceState("count-project", gw, "https-0", certificateServiceReasonRenewalOverdue)
 	assert.Equal(t, beforeOverdue+1, overdue(), "a different failure counts under its own reason")
 }
 

@@ -311,6 +311,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	// hard-fail (LastFailureTime). See #260.
 	listenerCertHealth := r.evaluateListenerCertHealth(
 		ctx,
+		upstreamClusterName,
 		upstreamClient,
 		downstreamClient,
 		downstreamGateway.Namespace,
@@ -381,7 +382,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		}
 		certificateServiceRequeue = serviceResult.RequeueAfter
 	} else {
-		clearCertificateServiceFailing(upstreamGateway)
+		clearCertificateServiceFailing(upstreamClusterName, upstreamGateway)
 	}
 
 	certResult := r.ensureListenerCertificates(
@@ -561,8 +562,8 @@ const listenerReasonIssuanceFailing = "IssuanceFailing"
 // gateway. Used both before re-recording each reconcile and on gateway deletion
 // so a removed listener never leaves a series stuck at its last value. The gating
 // counter is left alone because it is cumulative.
-func clearListenerCertMetrics(namespace, name string) {
-	labels := prometheus.Labels{metricLabelResourceNamespace: namespace, metricLabelResourceName: name}
+func clearListenerCertMetrics(project, namespace, name string) {
+	labels := prometheus.Labels{metricLabelProject: project, metricLabelResourceNamespace: namespace, metricLabelResourceName: name}
 	gatewayListenerCertWithheld.DeletePartialMatch(labels)
 	gatewayListenerCertExpiryTime.DeletePartialMatch(labels)
 	gatewayListenerCertManaged.DeletePartialMatch(labels)
@@ -575,6 +576,7 @@ func clearListenerCertMetrics(namespace, name string) {
 // is left out so it is never gated.
 func (r *GatewayReconciler) evaluateListenerCertHealth(
 	ctx context.Context,
+	upstreamClusterName string,
 	upstreamClient client.Client,
 	downstreamClient client.Client,
 	downstreamNamespace string,
@@ -591,7 +593,7 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 	// Drop this gateway's previous certificate metrics up front and re-record the
 	// current state below, so series for listeners that recovered, changed
 	// hostname, or were removed don't linger at a stale value.
-	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
+	clearListenerCertMetrics(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
 
 	for _, l := range upstreamGateway.Spec.Listeners {
 		// Only listeners that own a per-hostname certificate are gated.
@@ -610,7 +612,7 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 
 		var status listenerCertStatus
 		if _, service := r.listenerUsesCertificateService(l, claimedHostnames); service {
-			status = r.listenerTLSCertificateHealth(ctx, upstreamClient, downstreamClient, downstreamNamespace, upstreamGateway, l.Name, hostname, now)
+			status = r.listenerTLSCertificateHealth(ctx, upstreamClusterName, upstreamClient, downstreamClient, downstreamNamespace, upstreamGateway, l.Name, hostname, now)
 		} else {
 			status = r.listenerCertHealth(ctx, downstreamClient, downstreamNamespace, upstreamGateway.Name, l.Name, hostname, now)
 		}
@@ -619,7 +621,7 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 		// Mark this listener as managed regardless of its health, so the
 		// SLI ratio (withheld / managed) can be computed fleet-wide.
 		gatewayListenerCertManaged.WithLabelValues(
-			upstreamGateway.Namespace, upstreamGateway.Name, string(l.Name), hostname,
+			upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name, string(l.Name), hostname,
 		).Set(1)
 
 		if !status.healthy {
@@ -635,18 +637,18 @@ func (r *GatewayReconciler) evaluateListenerCertHealth(
 			logger.Info("listener certificate unhealthy", logArgs...)
 
 			gatewayListenerCertWithheld.WithLabelValues(
-				upstreamGateway.Namespace, upstreamGateway.Name,
+				upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name,
 				string(l.Name), hostname, string(status.reason),
 			).Set(1)
 			gatewayListenerCertGatingTotal.WithLabelValues(
-				upstreamGateway.Namespace, upstreamGateway.Name,
+				upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name,
 				string(l.Name), hostname, string(status.reason),
 			).Inc()
 		} else if status.notAfter != nil {
 			// Record the expiry timestamp for healthy certs so operators can
 			// alert before the next expiry rather than after.
 			gatewayListenerCertExpiryTime.WithLabelValues(
-				upstreamGateway.Namespace, upstreamGateway.Name,
+				upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name,
 				string(l.Name), hostname, status.secretName,
 			).Set(float64(status.notAfter.Unix()))
 		}
@@ -1920,8 +1922,8 @@ func (r *GatewayReconciler) finalizeGateway(
 	// label sets that misrepresent fleet state.
 	gatewayProgrammed.DeleteLabelValues(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
 	// Clear this gateway's cert-health series now that it is gone.
-	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
-	r.forgetGateway(upstreamGateway)
+	clearListenerCertMetrics(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
+	r.forgetGateway(upstreamClusterName, upstreamGateway)
 
 	// Clean up DNS records created by this gateway
 	if r.Config.Gateway.EnableDNSIntegration {

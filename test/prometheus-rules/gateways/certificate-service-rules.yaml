@@ -7,15 +7,15 @@ groups:
   # certificate, so this fires weeks before that certificate expires.
   - alert: CertificateServiceIssuanceFailing
     expr: |
-      max by (resource_namespace, resource_name, listener, reason) (nso_certificate_service_listener_failing) > 0
+      max by (project, resource_namespace, resource_name, listener, reason) (nso_certificate_service_listener_failing) > 0
       or
-      sum by (resource_namespace, resource_name, listener, reason) (increase(nso_certificate_service_failures_total[1h])) > 0
+      sum by (project, resource_namespace, resource_name, listener, reason) (increase(nso_certificate_service_failures_total[1h])) > 0
     for: 2h
     labels:
       severity: warning
       service: network-services
       team: sre
     annotations:
-      summary: "Certificate for Gateway listener {{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} cannot be issued or renewed"
-      description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+      summary: "Certificate for Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} cannot be issued or renewed"
+      description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.resource_name }} in project {{ $labels.project }}, namespace {{ $labels.resource_namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
       runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"

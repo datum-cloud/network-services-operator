@@ -13,8 +13,8 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: "Gateway listener {{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} has an unusable TLS certificate"
-      description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+      summary: "Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} has an unusable TLS certificate"
+      description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.resource_name }} in project {{ $labels.project }}, namespace {{ $labels.resource_namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
 
   # Fires when a managed TLS certificate is within 7 days of expiry while it
   # is still healthy. cert-manager renews automatically, but renewal fails if
@@ -27,8 +27,8 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: "TLS certificate for Gateway listener {{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} expires in less than 7 days"
-      description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to this gateway. Verify the Certificate is Ready=True in the downstream cluster."
+      summary: "TLS certificate for Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} expires in less than 7 days"
+      description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.resource_name }} in project {{ $labels.project }}, namespace {{ $labels.resource_namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to this gateway. Verify the Certificate is Ready=True in the downstream cluster."
 
   # Fires when the extension server's data-plane backstop is actively dropping
   # broken TLS filter chains from PostTranslateModify responses. This is normal

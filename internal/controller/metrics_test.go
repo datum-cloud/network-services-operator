@@ -3,18 +3,41 @@
 package controller
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/uuid"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+
+	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
+
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
+	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 func TestControllerMetricsAreServedByTheManager(t *testing.T) {
 	gatewayLabels := []string{"test-project", "metrics-test", "gateway"}
-	certGatewayLabels := []string{"metrics-test", "gateway"}
-	listenerLabels := append(append([]string{}, certGatewayLabels...), "https", "example.com")
-	certServiceLabels := []string{"metrics-test", "gateway", "https", "Failed"}
+	listenerLabels := append(append([]string{}, gatewayLabels...), "https", "example.com")
+	certServiceLabels := []string{"test-project", "metrics-test", "gateway", "https", "Failed"}
 
 	touch := []struct {
 		vec    *prometheus.MetricVec
@@ -70,4 +93,132 @@ func TestControllerMetricsAreServedByTheManager(t *testing.T) {
 		_, ok := served[name]
 		require.Truef(t, ok, "%s is not registered on the registry the manager serves at /metrics", name)
 	}
+}
+
+func TestCertificateServiceMetricsKeepProjectsApart(t *testing.T) {
+	const listener = gatewayv1.SectionName("https-0")
+	gw := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "shared-gw", UID: uuid.NewUUID()}}
+	projects := []string{"project-a", "project-b"}
+	r := &GatewayReconciler{}
+	for _, project := range projects {
+		recordCertificateServiceFailure(project, gw, listener, certificateServiceReasonRejected)
+		publishCertificateServiceFailing(project, gw, map[gatewayv1.SectionName]string{listener: certificateServiceReasonRejected})
+		t.Cleanup(func() { r.forgetGateway(project, gw) })
+	}
+
+	series := func(vec prometheus.Collector, project string) int {
+		ch := make(chan prometheus.Metric, 64)
+		vec.Collect(ch)
+		close(ch)
+		count := 0
+		for metric := range ch {
+			var m dto.Metric
+			require.NoError(t, metric.Write(&m))
+			labels := map[string]string{}
+			for _, l := range m.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			if labels[metricLabelProject] == project && labels[metricLabelResourceNamespace] == gw.Namespace && labels[metricLabelResourceName] == gw.Name {
+				count++
+			}
+		}
+		return count
+	}
+	for _, project := range projects {
+		require.Equal(t, 1, series(certificateServiceFailuresTotal, project), project)
+		require.Equal(t, 1, series(certificateServiceListenerFailing, project), project)
+	}
+
+	publishCertificateServiceFailing("project-a", gw, nil)
+	require.Zero(t, series(certificateServiceListenerFailing, "project-a"))
+	require.Equal(t, 1, series(certificateServiceListenerFailing, "project-b"), "one project's recovery must not clear another's failing listener")
+
+	r.forgetGateway("project-a", gw)
+	require.Zero(t, series(certificateServiceFailuresTotal, "project-a"))
+	require.Equal(t, 1, series(certificateServiceFailuresTotal, "project-b"), "one project's gateway deletion must not drop another's failures")
+	require.Equal(t, 1, series(certificateServiceListenerFailing, "project-b"))
+}
+
+type engagedClusterNames chan multicluster.ClusterName
+
+func (e engagedClusterNames) Engage(_ context.Context, name multicluster.ClusterName, _ cluster.Cluster) error {
+	e <- name
+	return nil
+}
+
+func TestSingleClusterDiscoveryLabelsMetricsWithTheEngagedClusterName(t *testing.T) {
+	logger := zap.New(zap.UseFlagOptions(&zap.Options{Development: true}))
+	ctx, cancel := context.WithCancel(log.IntoContext(context.Background(), logger))
+	t.Cleanup(cancel)
+
+	withoutCertificates := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(withoutCertificates))
+	require.NoError(t, gatewayv1.Install(withoutCertificates))
+	require.NoError(t, discoveryv1.AddToScheme(withoutCertificates))
+	require.NoError(t, networkingv1alpha.AddToScheme(withoutCertificates))
+	downstreamScheme := newCertificateServiceTestScheme(t)
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "single-test", UID: uuid.NewUUID()}}
+	const hostname = "*.shop.example.com"
+	testCfg := config.NetworkServicesOperator{Gateway: certificateServiceGatewayConfig()}
+	upstreamGateway := newGateway(testCfg, upstreamNamespace.Name, "single-gw", func(g *gatewayv1.Gateway) {
+		g.UID = uuid.NewUUID()
+		g.Spec.Listeners = append(g.Spec.Listeners, tlsListener("https-hostname-0", hostname))
+	})
+	domain := dnsProvenDomain(upstreamNamespace.Name)
+	gatewayClass := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "test"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: "test"}}
+	route := newHTTPRoute(upstreamNamespace.Name, "app", func(r *gatewayv1.HTTPRoute) {
+		r.Spec.ParentRefs = []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName(upstreamGateway.Name)}}
+		r.Spec.Hostnames = []gatewayv1.Hostname{hostname}
+	})
+	for _, obj := range []client.Object{domain, gatewayClass, route} {
+		obj.SetUID(uuid.NewUUID())
+		obj.SetCreationTimestamp(metav1.Now())
+	}
+	fakeUpstreamClient := fake.NewClientBuilder().WithScheme(withoutCertificates).
+		WithObjects(upstreamGateway, upstreamNamespace, domain, gatewayClass, route).
+		WithStatusSubresource(upstreamGateway, route).Build()
+	fakeDownstreamClient := fake.NewClientBuilder().WithScheme(downstreamScheme).
+		WithIndex(&corev1.ConfigMap{}, hostnameClaimAncestorIndex, hostnameClaimAncestorIndexFunc("default")).
+		WithStatusSubresource(&gatewayv1.Gateway{}).Build()
+
+	_, provider, _, err := clusterdiscovery.Initialize(
+		config.DiscoveryConfig{Mode: multiclusterproviders.ProviderSingle},
+		config.ClientConnectionConfig{},
+		&fakeCluster{cl: fakeUpstreamClient},
+		withoutCertificates,
+	)
+	require.NoError(t, err)
+	runnable, ok := provider.(multicluster.ProviderRunnable)
+	require.True(t, ok)
+
+	engaged := make(engagedClusterNames, 1)
+	go func() { _ = runnable.Start(ctx, engaged) }()
+	var clusterName multicluster.ClusterName
+	select {
+	case clusterName = <-engaged:
+	case <-time.After(10 * time.Second):
+		t.Fatal("single-cluster discovery never engaged a cluster")
+	}
+	require.NotEmpty(t, clusterName)
+
+	reconciler := &GatewayReconciler{
+		mgr:                      &fakeMockManager{cl: fakeUpstreamClient},
+		Config:                   testCfg,
+		DownstreamCluster:        &fakeCluster{cl: fakeDownstreamClient},
+		CertificateServiceReader: fake.NewClientBuilder().WithScheme(downstreamScheme).Build(),
+		WildcardEntitlements:     fakeWildcardEntitlements{entitled: true},
+	}
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(clusterName), fakeUpstreamClient, fakeDownstreamClient)
+	prepareUpstreamGateway(reconciler, upstreamGateway)
+	t.Cleanup(func() { clearListenerCertMetrics(string(clusterName), upstreamGateway.Namespace, upstreamGateway.Name) })
+
+	result, _ := reconciler.ensureDownstreamGateway(ctx, string(clusterName), fakeUpstreamClient, upstreamGateway, downstreamStrategy)
+	require.NoError(t, result.Err)
+
+	managed := testutil.ToFloat64(gatewayListenerCertManaged.With(prometheus.Labels{
+		metricLabelProject: string(clusterName), metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name,
+		metricLabelListener: "https-hostname-0", metricLabelHostname: hostname,
+	}))
+	require.Equal(t, 1.0, managed, "the project label is the cluster name single-cluster discovery engaged")
 }

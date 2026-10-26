@@ -186,18 +186,18 @@ func (r *GatewayReconciler) certificateServiceInBackoff(key certificateServiceKe
 	return backoff, backoff.nextTry.Sub(now), true
 }
 
-func recordCertificateServiceFailure(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
-	certificateServiceFailuresTotal.WithLabelValues(gateway.Namespace, gateway.Name, string(listener), reason).Inc()
+func recordCertificateServiceFailure(project string, gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
+	certificateServiceFailuresTotal.WithLabelValues(project, gateway.Namespace, gateway.Name, string(listener), reason).Inc()
 }
 
 // recordCertificateServiceState counts a TLSCertificate failure once per
 // transition into it, since the same failure is read back on every pass for
 // as long as it lasts. An empty reason means the listener is healthy.
-func (r *GatewayReconciler) recordCertificateServiceState(gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
+func (r *GatewayReconciler) recordCertificateServiceState(project string, gateway *gatewayv1.Gateway, listener gatewayv1.SectionName, reason string) {
 	key := certificateServiceKey{gateway: gateway.UID, listener: listener}
 	previous, _ := r.certificateServiceStates.Load(key)
 	if reason != "" && previous != reason {
-		recordCertificateServiceFailure(gateway, listener, reason)
+		recordCertificateServiceFailure(project, gateway, listener, reason)
 	}
 	if reason == "" {
 		r.certificateServiceStates.Delete(key)
@@ -300,7 +300,7 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 			issue := certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateServiceUnavailableMessage(hostname)}
 			issues[l.Name] = issue
 			failing[l.Name] = issue.reason
-			recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+			recordCertificateServiceFailure(upstreamClusterName, upstreamGateway, l.Name, issue.reason)
 			requeueSooner(certificateServiceRecheck)
 			continue
 		}
@@ -319,7 +319,7 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 				issue := certificateServiceIssue{reason: certificateServiceReasonStepFailed, message: certificateServiceUnavailableMessage(hostname)}
 				issues[l.Name] = issue
 				failing[l.Name] = issue.reason
-				recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+				recordCertificateServiceFailure(upstreamClusterName, upstreamGateway, l.Name, issue.reason)
 				continue
 			}
 			if !*entitled {
@@ -346,7 +346,7 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 		if issue != nil {
 			issues[l.Name] = *issue
 			failing[l.Name] = issue.reason
-			recordCertificateServiceFailure(upstreamGateway, l.Name, issue.reason)
+			recordCertificateServiceFailure(upstreamClusterName, upstreamGateway, l.Name, issue.reason)
 			requeueSooner(r.certificateServiceRequeue(key, true, now, *issue))
 			continue
 		}
@@ -369,8 +369,8 @@ func (r *GatewayReconciler) ensureListenerTLSCertificates(
 		r.certificateServiceRequeue(cleanupKey, false, now, certificateServiceIssue{})
 	}
 
-	r.forgetRemovedListeners(upstreamGateway)
-	publishCertificateServiceFailing(upstreamGateway, failing)
+	r.forgetRemovedListeners(upstreamClusterName, upstreamGateway)
+	publishCertificateServiceFailing(upstreamClusterName, upstreamGateway, failing)
 
 	return result, issues
 }
@@ -397,15 +397,15 @@ func (r *GatewayReconciler) listenerHoldsWildcardCertificate(
 // publishCertificateServiceFailing replaces the gateway's failing-listener
 // series with the listeners failing now, so one that recovered or left the
 // service stops reporting.
-func publishCertificateServiceFailing(upstreamGateway *gatewayv1.Gateway, failing map[gatewayv1.SectionName]string) {
-	clearCertificateServiceFailing(upstreamGateway)
+func publishCertificateServiceFailing(project string, upstreamGateway *gatewayv1.Gateway, failing map[gatewayv1.SectionName]string) {
+	clearCertificateServiceFailing(project, upstreamGateway)
 	for listener, reason := range failing {
-		certificateServiceListenerFailing.WithLabelValues(upstreamGateway.Namespace, upstreamGateway.Name, string(listener), reason).Set(1)
+		certificateServiceListenerFailing.WithLabelValues(project, upstreamGateway.Namespace, upstreamGateway.Name, string(listener), reason).Set(1)
 	}
 }
 
-func clearCertificateServiceFailing(upstreamGateway *gatewayv1.Gateway) {
-	certificateServiceListenerFailing.DeletePartialMatch(prometheus.Labels{metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name})
+func clearCertificateServiceFailing(project string, upstreamGateway *gatewayv1.Gateway) {
+	certificateServiceListenerFailing.DeletePartialMatch(prometheus.Labels{metricLabelProject: project, metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name})
 }
 
 // ensureListenerTLSCertificate does one listener's pass: request or confirm
@@ -455,7 +455,7 @@ func requestRefusal(err error) (string, bool) {
 
 // forgetRemovedListeners drops the failure series and tracker entries of
 // listeners the gateway no longer has, so a removed hostname stops reporting.
-func (r *GatewayReconciler) forgetRemovedListeners(upstreamGateway *gatewayv1.Gateway) {
+func (r *GatewayReconciler) forgetRemovedListeners(project string, upstreamGateway *gatewayv1.Gateway) {
 	current := sets.New[gatewayv1.SectionName]()
 	for _, l := range upstreamGateway.Spec.Listeners {
 		current.Insert(l.Name)
@@ -466,7 +466,7 @@ func (r *GatewayReconciler) forgetRemovedListeners(upstreamGateway *gatewayv1.Ga
 				continue
 			}
 			certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{
-				metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name, metricLabelListener: string(listener),
+				metricLabelProject: project, metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name, metricLabelListener: string(listener),
 			})
 			key := certificateServiceKey{gateway: upstreamGateway.UID, listener: listener}
 			r.certificateServiceStates.Delete(key)
@@ -478,7 +478,7 @@ func (r *GatewayReconciler) forgetRemovedListeners(upstreamGateway *gatewayv1.Ga
 
 // forgetGateway drops everything the certificate service step remembers about
 // a gateway that is gone.
-func (r *GatewayReconciler) forgetGateway(upstreamGateway *gatewayv1.Gateway) {
+func (r *GatewayReconciler) forgetGateway(project string, upstreamGateway *gatewayv1.Gateway) {
 	r.certificateServiceStates.Range(func(k, _ any) bool {
 		if k.(certificateServiceKey).gateway == upstreamGateway.UID {
 			r.certificateServiceStates.Delete(k)
@@ -492,8 +492,8 @@ func (r *GatewayReconciler) forgetGateway(upstreamGateway *gatewayv1.Gateway) {
 		return true
 	})
 	r.certificateServiceListeners.Delete(upstreamGateway.UID)
-	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name})
-	clearCertificateServiceFailing(upstreamGateway)
+	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{metricLabelProject: project, metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name})
+	clearCertificateServiceFailing(project, upstreamGateway)
 }
 
 var errTLSCertificateNotOwned = errors.New("TLSCertificate exists but is not controlled by this Gateway")
@@ -875,6 +875,7 @@ func tlsCertificateFailure(cert *certificatesv1alpha1.TLSCertificate, now time.T
 // and counted once per transition.
 func (r *GatewayReconciler) listenerTLSCertificateHealth(
 	ctx context.Context,
+	upstreamClusterName string,
 	upstreamClient client.Client,
 	downstreamClient client.Client,
 	downstreamNamespace string,
@@ -900,7 +901,7 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 			reason = certificateServiceReasonRenewalOverdue
 			secretStatus.renewalBlocked = certificateRenewalOverdueMessage(hostname, leaf.NotAfter)
 		}
-		r.recordCertificateServiceState(upstreamGateway, listenerName, reason)
+		r.recordCertificateServiceState(upstreamClusterName, upstreamGateway, listenerName, reason)
 		if secretStatus.healthy {
 			return secretStatus
 		}
@@ -916,7 +917,7 @@ func (r *GatewayReconciler) listenerTLSCertificateHealth(
 	if reason == "" && secretStatus.healthy && renewalOverdue(leaf, now) {
 		reason = certificateServiceReasonRenewalOverdue
 	}
-	r.recordCertificateServiceState(upstreamGateway, listenerName, reason)
+	r.recordCertificateServiceState(upstreamClusterName, upstreamGateway, listenerName, reason)
 
 	if secretStatus.healthy {
 		switch reason {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,6 +47,7 @@ type NetworkLoadBalancerCellProgrammingReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancercellintents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancercellintents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcattachments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=networkservices,verbs=get;list;watch;create;update;patch;delete
@@ -65,9 +67,14 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if location == "" || intent.Spec.Location != location || !intent.DeletionTimestamp.IsZero() ||
-		intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+	if location == "" || intent.Spec.Location != location {
 		return ctrl.Result{}, r.withdraw(ctx, req.NamespacedName)
+	}
+	if !intent.DeletionTimestamp.IsZero() || intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+		if err := r.withdraw(ctx, req.NamespacedName); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.reportNotServed(ctx, &intent, "Withdrawn", "The intent is withdrawn")
 	}
 
 	backends, rejected, err := r.verifiedBackends(ctx, &intent)
@@ -81,6 +88,9 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	if service == nil {
 		logger.Info("intent not served", "intent", req.NamespacedName, "reason", reason)
 		if err := r.withdraw(ctx, req.NamespacedName); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.reportNotServed(ctx, &intent, "NotServed", reason); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, nil
@@ -99,7 +109,56 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("write gateway service %s: %w", service.Name, err)
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.reportServed(ctx, &intent, current)
+}
+
+func (r *NetworkLoadBalancerCellProgrammingReconciler) reportServed(
+	ctx context.Context,
+	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
+	service *networkv1alpha1.NetworkService,
+) error {
+	programmed := gatewayServiceCondition(service, "Ready")
+	announced := gatewayServiceCondition(service, "Advertised")
+	return r.reportStatus(ctx, intent, programmed, announced)
+}
+
+func (r *NetworkLoadBalancerCellProgrammingReconciler) reportNotServed(
+	ctx context.Context,
+	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
+	reason, message string,
+) error {
+	condition := metav1.Condition{Status: metav1.ConditionFalse, Reason: reason, Message: message}
+	return r.reportStatus(ctx, intent, condition, condition)
+}
+
+func gatewayServiceCondition(service *networkv1alpha1.NetworkService, conditionType string) metav1.Condition {
+	reported := apimeta.FindStatusCondition(service.Status.Conditions, conditionType)
+	if service.Status.ObservedGeneration != service.Generation || reported == nil {
+		return metav1.Condition{Status: metav1.ConditionUnknown, Reason: "Pending", Message: "The gateways have not reported this service"}
+	}
+	return metav1.Condition{Status: reported.Status, Reason: reported.Reason, Message: reported.Message}
+}
+
+func (r *NetworkLoadBalancerCellProgrammingReconciler) reportStatus(
+	ctx context.Context,
+	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
+	programmed, announced metav1.Condition,
+) error {
+	before := intent.DeepCopy()
+	intent.Status.ObservedGeneration = intent.Generation
+	programmed.Type = networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed
+	announced.Type = networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced
+	for _, condition := range []metav1.Condition{programmed, announced} {
+		condition.ObservedGeneration = intent.Generation
+		apimeta.SetStatusCondition(&intent.Status.Conditions, condition)
+	}
+	if equality.Semantic.DeepEqual(before.Status, intent.Status) {
+		return nil
+	}
+	if err := r.Client.Status().Patch(ctx, intent, client.MergeFrom(before)); err != nil {
+		return fmt.Errorf("report intent %s status: %w", intent.Name, err)
+	}
+	return nil
 }
 
 type verifiedNetworkLoadBalancerBackend struct {

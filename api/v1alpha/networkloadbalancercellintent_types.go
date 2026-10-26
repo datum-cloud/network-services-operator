@@ -14,6 +14,11 @@ const (
 	NetworkLoadBalancerCellIntentWithdrawn NetworkLoadBalancerCellIntentState = "Withdrawn"
 )
 
+const (
+	NetworkLoadBalancerCellIntentProgrammed = "Programmed"
+	NetworkLoadBalancerCellIntentAnnounced  = "Announced"
+)
+
 type NetworkLoadBalancerCellIntentSource struct {
 	// +kubebuilder:validation:MinLength=1
 	ProjectCluster string `json:"projectCluster"`
@@ -75,14 +80,29 @@ type NetworkLoadBalancerCellIntentSpec struct {
 	Backends []NetworkLoadBalancerCellIntentBackend `json:"backends,omitempty"`
 }
 
+// NetworkLoadBalancerCellIntentStatus is written by the serving cell and
+// aggregated onto the hub copy. Cells outside the intent's location leave it
+// empty.
+type NetworkLoadBalancerCellIntentStatus struct {
+	// ObservedGeneration is the intent generation the conditions describe.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions include Programmed and Announced.
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // NetworkLoadBalancerCellIntent carries a scoped, non-serving desired state
 // from a project control plane through the hub to the serving cell.
 type NetworkLoadBalancerCellIntent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec NetworkLoadBalancerCellIntentSpec `json:"spec"`
+	Spec   NetworkLoadBalancerCellIntentSpec   `json:"spec"`
+	Status NetworkLoadBalancerCellIntentStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

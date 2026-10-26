@@ -8,9 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// The ownership filter compares the decoded label with the name the provider
-// registers, so a name that does not survive the round trip is never proven
-// owned elsewhere and always passes.
 func TestUpstreamClusterLabelRoundTrips(t *testing.T) {
 	cases := []struct {
 		name       string

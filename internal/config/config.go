@@ -796,6 +796,26 @@ type DownstreamResourceManagementConfig struct {
 	// downstream resources. When not provided, the operator will use the
 	// in-cluster config.
 	KubeconfigPath string `json:"kubeconfigPath"`
+
+	// +default="Disabled"
+	EventOwnership EventOwnershipMode `json:"eventOwnership,omitempty"`
+}
+
+type EventOwnershipMode string
+
+const (
+	EventOwnershipDisabled EventOwnershipMode = "Disabled"
+	EventOwnershipShadow   EventOwnershipMode = "Shadow"
+	EventOwnershipEnforce  EventOwnershipMode = "Enforce"
+)
+
+func (c *DownstreamResourceManagementConfig) validate() error {
+	switch c.EventOwnership {
+	case "", EventOwnershipDisabled, EventOwnershipShadow, EventOwnershipEnforce:
+		return nil
+	}
+	return fmt.Errorf("eventOwnership must be one of %q, %q or %q, got %q",
+		EventOwnershipDisabled, EventOwnershipShadow, EventOwnershipEnforce, c.EventOwnership)
 }
 
 func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) {
@@ -1875,6 +1895,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.NetworkEgress.validate(); err != nil {
 		return fmt.Errorf("networkEgress: %w", err)
+	}
+	if err := c.DownstreamResourceManagement.validate(); err != nil {
+		return fmt.Errorf("downstreamResourceManagement: %w", err)
 	}
 	return nil
 }

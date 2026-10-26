@@ -827,6 +827,7 @@ func (r *GatewayResourceReplicatorReconciler) finalize(
 // SetupWithManager wires the controller for the configured resource types.
 func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 
 	resources := make(map[string]replicationResource)
 
@@ -883,7 +884,8 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		src := mcsource.TypedKind(
 			downstreamWatchObj,
-			typedEnqueueDownstreamGVKRequest(gvk),
+			downstreamclient.OwnedRequestsOnlyFunc(ownership, "gateway_resource_replicator", typedEnqueueDownstreamGVKRequest(gvk)),
+			downstreamclient.OwnedByReplica[*unstructured.Unstructured](ownership, r.DownstreamCluster.GetClient(), "gateway_resource_replicator"),
 		)
 
 		clusterSrc, _, err := src.ForCluster("", r.DownstreamCluster)
@@ -896,7 +898,8 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 		if isSecurityPolicyGVK(gvk) {
 			secretSrc := mcsource.TypedKind(
 				newUnstructuredForGVK(secretGVK),
-				r.enqueueSecurityPoliciesForDownstreamSecret(gvk),
+				downstreamclient.OwnedRequestsOnlyFunc(ownership, "gateway_resource_replicator", r.enqueueSecurityPoliciesForDownstreamSecret(gvk)),
+				downstreamclient.OwnedByReplica[*unstructured.Unstructured](ownership, r.DownstreamCluster.GetClient(), "gateway_resource_replicator"),
 			)
 
 			secretClusterSrc, _, err := secretSrc.ForCluster("", r.DownstreamCluster)

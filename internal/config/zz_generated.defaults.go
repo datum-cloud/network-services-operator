@@ -318,6 +318,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 		in.Connector.Iroh.TTLSeconds = 5
 	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
+	if in.DownstreamResourceManagement.EventOwnership == "" {
+		in.DownstreamResourceManagement.EventOwnership = "Disabled"
+	}
 	SetDefaults_ClientConnectionConfig(&in.Federation.Client)
 	if in.Federation.Client.QPS == 0 {
 		in.Federation.Client.QPS = 50

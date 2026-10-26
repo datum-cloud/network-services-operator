@@ -3167,6 +3167,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	if r.routing == nil {
 		r.routing = newRoutingObserver()
 	}
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 
 	if r.Config.Gateway.PreciseEndpointSliceMapping {
 		if err := addHTTPRouteIndexers(context.Background(), mgr); err != nil {
@@ -3206,6 +3207,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	downstreamGatewaySource := mcsource.TypedKind(
 		&gatewayv1.Gateway{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}),
+		downstreamclient.OwnedByReplica[*gatewayv1.Gateway](ownership, r.DownstreamCluster.GetClient(), "gateway"),
 	)
 
 	downstreamGatewayClusterSource, _, _ := downstreamGatewaySource.ForCluster("", r.DownstreamCluster)
@@ -3213,6 +3215,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	downstreamHTTPRouteSource := mcsource.Kind(
 		&gatewayv1.HTTPRoute{},
 		r.listGatewaysAttachedByDownstreamHTTPRoute,
+		downstreamclient.OwnedByReplica[*gatewayv1.HTTPRoute](ownership, r.DownstreamCluster.GetClient(), "gateway"),
 	)
 
 	downstreamHTTPRouteClusterSource, _, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
@@ -3220,6 +3223,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	downstreamCertificateSource := mcsource.TypedKind(
 		&cmv1.Certificate{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*cmv1.Certificate](&gatewayv1.Gateway{}),
+		downstreamclient.OwnedByReplica[*cmv1.Certificate](ownership, r.DownstreamCluster.GetClient(), "gateway"),
 	)
 
 	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
@@ -3230,8 +3234,13 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// so it maps to Gateways through the downstream routes that name it.
 	downstreamVPCPodEndpointSliceSource := mcsource.Kind(
 		&discoveryv1.EndpointSlice{},
-		endpointSliceMappers.vpcPod,
-		endpointSliceMappers.vpcPodPredicates...,
+		downstreamclient.OwnedRequestsOnlyFunc(ownership, "gateway", endpointSliceMappers.vpcPod),
+		append(
+			[]predicate.TypedPredicate[*discoveryv1.EndpointSlice]{
+				downstreamclient.OwnedByReplica[*discoveryv1.EndpointSlice](ownership, r.DownstreamCluster.GetClient(), "gateway"),
+			},
+			endpointSliceMappers.vpcPodPredicates...,
+		)...,
 	)
 
 	downstreamVPCPodEndpointSliceClusterSource, _, _ := downstreamVPCPodEndpointSliceSource.ForCluster("", r.DownstreamCluster)

@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -25,6 +26,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -44,7 +46,7 @@ type NetworkLoadBalancerCellIntentReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancerroutes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancerroutes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancers;networkservices;networkinterfaces;networks,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancercellintents,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancercellintents,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 func (r *NetworkLoadBalancerCellIntentReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -58,7 +60,10 @@ func (r *NetworkLoadBalancerCellIntentReconciler) Reconcile(ctx context.Context,
 func (r *NetworkLoadBalancerCellIntentReconciler) reconcileIntent(ctx context.Context, project string, projectClient client.Client, key client.ObjectKey) (ctrl.Result, error) {
 	var route networkingv1alpha.NetworkLoadBalancerRoute
 	if err := projectClient.Get(ctx, key, &route); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return r.cleanupOrphanedIntents(ctx, project, key)
+		}
+		return ctrl.Result{}, err
 	}
 	if route.UID == "" {
 		return ctrl.Result{}, fmt.Errorf("route %s has no UID", key)
@@ -93,8 +98,12 @@ func (r *NetworkLoadBalancerCellIntentReconciler) reconcileIntent(ctx context.Co
 			return ctrl.Result{}, err
 		}
 	}
-	if err := reconcileHubCellIntents(ctx, r.HubCluster.GetClient(), hubNamespace, project, &route, desired); err != nil {
+	pending, err := reconcileHubCellIntents(ctx, r.HubCluster.GetClient(), hubNamespace, project, &route, desired)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if pending {
+		return ctrl.Result{RequeueAfter: nlbIntentRetry}, nil
 	}
 	if !route.DeletionTimestamp.IsZero() {
 		controllerutil.RemoveFinalizer(&route, nlbIntentFinalizer)
@@ -305,32 +314,42 @@ func networkLoadBalancerCellIntentName(spec networkingv1alpha.NetworkLoadBalance
 	return "nlb-" + hex.EncodeToString(sum[:16])
 }
 
-func reconcileHubCellIntents(ctx context.Context, hub client.Client, namespace, project string, route *networkingv1alpha.NetworkLoadBalancerRoute, desired []networkingv1alpha.NetworkLoadBalancerCellIntent) error {
+func reconcileHubCellIntents(ctx context.Context, hub client.Client, namespace, project string, route *networkingv1alpha.NetworkLoadBalancerRoute, desired []networkingv1alpha.NetworkLoadBalancerCellIntent) (bool, error) {
 	labels := client.MatchingLabels{
 		downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-" + strings.ReplaceAll(project, "/", "_"),
 		downstreamclient.UpstreamOwnerNamespaceLabel:   route.Namespace,
-		nlbIntentRouteUIDLabel:                         string(route.UID),
 	}
 	var existing networkingv1alpha.NetworkLoadBalancerCellIntentList
 	if err := hub.List(ctx, &existing, client.InNamespace(namespace), labels); err != nil {
-		return fmt.Errorf("list published cell intents: %w", err)
+		return false, fmt.Errorf("list published cell intents: %w", err)
 	}
 	wanted := make(map[string]networkingv1alpha.NetworkLoadBalancerCellIntent, len(desired))
 	for _, intent := range desired {
 		wanted[intent.Name] = intent
 	}
+	pending := false
 	for i := range existing.Items {
 		intent := &existing.Items[i]
+		if intent.Spec.Source.ProjectCluster != project || intent.Spec.Source.Namespace != route.Namespace || intent.Spec.Source.RouteName != route.Name {
+			continue
+		}
 		if _, ok := wanted[intent.Name]; ok {
 			continue
 		}
+		if intentWithdrawalAcknowledged(intent) {
+			if err := deleteAcknowledgedIntent(ctx, hub, intent); err != nil {
+				return false, err
+			}
+			continue
+		}
+		pending = true
 		if intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn && len(intent.Spec.Backends) == 0 {
 			continue
 		}
 		intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
 		intent.Spec.Backends = nil
 		if err := hub.Update(ctx, intent); err != nil {
-			return fmt.Errorf("withdraw old cell intent %s: %w", intent.Name, err)
+			return false, fmt.Errorf("withdraw old cell intent %s: %w", intent.Name, err)
 		}
 	}
 	for _, wantedIntent := range desired {
@@ -344,10 +363,10 @@ func reconcileHubCellIntents(ctx context.Context, hub client.Client, namespace, 
 			return fmt.Errorf("cell intent name %s belongs to another route", intent.Name)
 		})
 		if err != nil {
-			return fmt.Errorf("publish cell intent %s: %w", wantedIntent.Name, err)
+			return false, fmt.Errorf("publish cell intent %s: %w", wantedIntent.Name, err)
 		}
 	}
-	return nil
+	return pending, nil
 }
 
 func (r *NetworkLoadBalancerCellIntentReconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -355,6 +374,21 @@ func (r *NetworkLoadBalancerCellIntentReconciler) SetupWithManager(mgr mcmanager
 		return errors.New("a hub cluster is required")
 	}
 	r.mgr = mgr
+	intentSource, _, err := mcsource.TypedKind(
+		&networkingv1alpha.NetworkLoadBalancerCellIntent{},
+		func(multicluster.ClusterName, cluster.Cluster) handler.TypedEventHandler[*networkingv1alpha.NetworkLoadBalancerCellIntent, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, intent *networkingv1alpha.NetworkLoadBalancerCellIntent) []mcreconcile.Request {
+				src := intent.Spec.Source
+				if src.ProjectCluster == "" || src.Namespace == "" || src.RouteName == "" {
+					return nil
+				}
+				return []mcreconcile.Request{{ClusterName: multicluster.ClusterName(src.ProjectCluster), Request: ctrl.Request{NamespacedName: types.NamespacedName{Namespace: src.Namespace, Name: src.RouteName}}}}
+			})
+		},
+	).ForCluster("", r.HubCluster)
+	if err != nil {
+		return fmt.Errorf("watch hub cell intents: %w", err)
+	}
 	watch := func(mapper func(context.Context, client.Client, client.Object) []ctrl.Request) func(multicluster.ClusterName, cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 		return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
@@ -369,6 +403,7 @@ func (r *NetworkLoadBalancerCellIntentReconciler) SetupWithManager(mgr mcmanager
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkLoadBalancerRoute{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		WatchesRawSource(intentSource).
 		Watches(&networkingv1alpha.NetworkLoadBalancerRoute{}, watch(siblingRoutesForRouteEvent)).
 		Watches(&networkingv1alpha.NetworkLoadBalancer{}, watch(routesForLoadBalancerEvent)).
 		Watches(&networkingv1alpha.NetworkService{}, watch(routesForNetworkServiceEvent)).
@@ -376,4 +411,54 @@ func (r *NetworkLoadBalancerCellIntentReconciler) SetupWithManager(mgr mcmanager
 		Watches(&networkingv1alpha.Network{}, watch(routesForInterfaceEvent)).
 		Named("networkloadbalancercellintent").
 		Complete(r)
+}
+
+func intentWithdrawalAcknowledged(intent *networkingv1alpha.NetworkLoadBalancerCellIntent) bool {
+	return intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn && len(intent.Spec.Backends) == 0 &&
+		reportedIntentCondition(intent, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed).Status == metav1.ConditionFalse &&
+		reportedIntentCondition(intent, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced).Status == metav1.ConditionFalse
+}
+
+func deleteAcknowledgedIntent(ctx context.Context, hub client.Client, intent *networkingv1alpha.NetworkLoadBalancerCellIntent) error {
+	if err := hub.Delete(ctx, intent, client.Preconditions{UID: &intent.UID, ResourceVersion: &intent.ResourceVersion}); client.IgnoreNotFound(err) != nil {
+		return fmt.Errorf("delete withdrawn cell intent %s: %w", intent.Name, err)
+	}
+	return nil
+}
+
+func (r *NetworkLoadBalancerCellIntentReconciler) cleanupOrphanedIntents(ctx context.Context, project string, key client.ObjectKey) (ctrl.Result, error) {
+	hub := r.HubCluster.GetClient()
+	var intents networkingv1alpha.NetworkLoadBalancerCellIntentList
+	if err := hub.List(ctx, &intents, client.MatchingLabels{
+		downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-" + strings.ReplaceAll(project, "/", "_"),
+		downstreamclient.UpstreamOwnerNamespaceLabel:   key.Namespace,
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+	pending := false
+	for i := range intents.Items {
+		intent := &intents.Items[i]
+		src := intent.Spec.Source
+		if src.ProjectCluster != project || src.Namespace != key.Namespace || src.RouteName != key.Name {
+			continue
+		}
+		if intentWithdrawalAcknowledged(intent) {
+			if err := deleteAcknowledgedIntent(ctx, hub, intent); err != nil {
+				return ctrl.Result{}, err
+			}
+			continue
+		}
+		pending = true
+		if intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn || len(intent.Spec.Backends) != 0 {
+			intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
+			intent.Spec.Backends = nil
+			if err := hub.Update(ctx, intent); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	if pending {
+		return ctrl.Result{RequeueAfter: nlbIntentRetry}, nil
+	}
+	return ctrl.Result{}, nil
 }

@@ -27,7 +27,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.datum.net/datumctl v0.18.1
-	go.datum.net/galactic v0.6.3-0.20261021151056-bb0b4c057338
+	go.datum.net/galactic v0.7.3-0.20261026190205-a34ce1c36b46
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
 	go.miloapis.com/instrumentation v0.6.0
@@ -253,7 +253,7 @@ require (
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.59.1 // indirect
+	github.com/quic-go/quic-go v0.63.0 // indirect
 	github.com/replicatedhq/troubleshoot v0.129.1 // indirect
 	github.com/rubenv/sql-migrate v1.8.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
@@ -300,7 +300,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/crypto/x509roots/fallback v0.0.0-20250406160420-959f8f3db0fb // indirect
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261020153306-9f2b28d4331a // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect

@@ -56,9 +56,6 @@ func (r *NetworkLoadBalancerDataPlaneReconciler) reconcileDataPlane(
 	if err := projectClient.Get(ctx, key, &lb); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	if !lb.DeletionTimestamp.IsZero() {
-		return nil
-	}
 
 	hub := r.HubCluster.GetClient()
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(project, projectClient, hub)
@@ -158,7 +155,7 @@ func addressDataPlane(
 			combineIntentConditions(serving, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced), true
 	}
 	for _, intent := range withdrawn {
-		if reported := reportedIntentCondition(intent, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed); reported.Status != metav1.ConditionFalse {
+		if !intentWithdrawalAcknowledged(intent) {
 			return metav1.Condition{}, metav1.Condition{}, false
 		}
 	}

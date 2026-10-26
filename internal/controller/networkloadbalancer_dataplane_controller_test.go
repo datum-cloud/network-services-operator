@@ -3,7 +3,12 @@
 package controller
 
 import (
+	"context"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -141,4 +146,20 @@ func TestNLBRouteProgrammedFollowsListenerAddresses(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, metav1.ConditionFalse, programmed.Status)
 	require.Equal(t, nlbRouteReasonAwaitingDataPlane, programmed.Reason)
+}
+
+func TestNLBDataPlaneClearsTerminatingLoadBalancerStatus(t *testing.T) {
+	lb, intent := dataPlaneFixture()
+	reportIntent(&intent, metav1.ConditionTrue, metav1.ConditionTrue)
+	applyNetworkLoadBalancerDataPlane(lb, []networkingv1alpha.NetworkLoadBalancerCellIntent{intent})
+	lb.Finalizers = []string{"networking.test/hold"}
+	now := metav1.Now()
+	lb.DeletionTimestamp = &now
+	project := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(lb, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: lb.Namespace, UID: "project-ns"}}).WithStatusSubresource(lb).Build()
+	hub := fake.NewClientBuilder().WithScheme(project.Scheme()).WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-project-ns"}}).Build()
+	r := NetworkLoadBalancerDataPlaneReconciler{HubCluster: &fakeCluster{cl: hub}}
+	require.NoError(t, r.reconcileDataPlane(context.Background(), "project", project, client.ObjectKeyFromObject(lb)))
+	require.NoError(t, project.Get(context.Background(), client.ObjectKeyFromObject(lb), lb))
+	require.False(t, lb.Status.Endpoints[0].Addresses[0].Announced)
+	require.True(t, apimeta.IsStatusConditionFalse(lb.Status.Conditions, networkingv1alpha.NetworkLoadBalancerReady))
 }

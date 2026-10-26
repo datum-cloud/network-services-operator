@@ -58,7 +58,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	var intent networkingv1alpha.NetworkLoadBalancerCellIntent
 	if err := r.Client.Get(ctx, req.NamespacedName, &intent); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, r.withdraw(ctx, req.NamespacedName)
+			return r.withdrawResult(ctx, req.NamespacedName)
 		}
 		return ctrl.Result{}, err
 	}
@@ -68,11 +68,11 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, err
 	}
 	if location == "" || intent.Spec.Location != location {
-		return ctrl.Result{}, r.withdraw(ctx, req.NamespacedName)
+		return r.withdrawResult(ctx, req.NamespacedName)
 	}
 	if !intent.DeletionTimestamp.IsZero() || intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
-		if err := r.withdraw(ctx, req.NamespacedName); err != nil {
-			return ctrl.Result{}, err
+		if done, err := r.withdraw(ctx, req.NamespacedName); err != nil || !done {
+			return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, err
 		}
 		return ctrl.Result{}, r.reportNotServed(ctx, &intent, "Withdrawn", "The intent is withdrawn")
 	}
@@ -87,8 +87,8 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	service, reason := desiredNetworkLoadBalancerService(&intent, backends)
 	if service == nil {
 		logger.Info("intent not served", "intent", req.NamespacedName, "reason", reason)
-		if err := r.withdraw(ctx, req.NamespacedName); err != nil {
-			return ctrl.Result{}, err
+		if done, err := r.withdraw(ctx, req.NamespacedName); err != nil || !done {
+			return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, err
 		}
 		if err := r.reportNotServed(ctx, &intent, "NotServed", reason); err != nil {
 			return ctrl.Result{}, err
@@ -133,7 +133,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportNotServed(
 
 func gatewayServiceCondition(service *networkv1alpha1.NetworkService, conditionType string) metav1.Condition {
 	reported := apimeta.FindStatusCondition(service.Status.Conditions, conditionType)
-	if service.Status.ObservedGeneration != service.Generation || reported == nil {
+	if reported == nil || reported.ObservedGeneration != service.Generation {
 		return metav1.Condition{Status: metav1.ConditionUnknown, Reason: "Pending", Message: "The gateways have not reported this service"}
 	}
 	return metav1.Condition{Status: reported.Status, Reason: reported.Reason, Message: reported.Message}
@@ -164,6 +164,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportStatus(
 type verifiedNetworkLoadBalancerBackend struct {
 	attachment *cloudv1alpha1.VPCAttachment
 	port       int32
+	probe      networkingv1alpha.NetworkLoadBalancerCellIntentProbe
 }
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) verifiedBackends(
@@ -181,7 +182,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) verifiedBackends(
 			rejected = append(rejected, fmt.Sprintf("%s/%s: %s", backend.SourceNamespace, backend.SourceName, reason))
 			continue
 		}
-		verified = append(verified, verifiedNetworkLoadBalancerBackend{attachment: attachment, port: backend.Port})
+		verified = append(verified, verifiedNetworkLoadBalancerBackend{attachment: attachment, port: backend.Port, probe: backend.Probe})
 	}
 	return verified, rejected, nil
 }
@@ -275,8 +276,15 @@ func desiredNetworkLoadBalancerService(
 	default:
 		return nil, fmt.Sprintf("protocol %q is not served", intent.Spec.Protocol)
 	}
+	probe := backends[0].probe
+	if probe.Protocol != "TCP" || probe.Port < 1 || probe.Port > 65535 || probe.Path != "" {
+		return nil, "serving requires a valid TCP health probe; HTTP and HTTPS probes are not supported by this dataplane"
+	}
 	vpc, port := backends[0].attachment.Status.VPC, backends[0].port
 	for _, backend := range backends[1:] {
+		if backend.probe != probe {
+			return nil, "backends require different health probes"
+		}
 		if backend.attachment.Status.VPC != vpc {
 			return nil, "backends span more than one VPC"
 		}
@@ -292,6 +300,9 @@ func desiredNetworkLoadBalancerService(
 			Protocol:     protocol,
 			Port:         intent.Spec.ListenerPort,
 			BackendPort:  port,
+			HealthCheck: &networkv1alpha1.NetworkServiceHealthCheck{
+				FailurePolicy: networkv1alpha1.NetworkServiceHealthFailClosed, Port: probe.Port, IntervalSeconds: 5, TimeoutSeconds: 2, HealthyThreshold: 2, UnhealthyThreshold: 1,
+			},
 			BackendSelector: metav1.LabelSelector{MatchLabels: map[string]string{
 				networkLoadBalancerBackendLabel(intent.Name): nlbProgrammingBackendLabelValue,
 			}},
@@ -349,21 +360,38 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) unlabelBackends(
 	return nil
 }
 
-func (r *NetworkLoadBalancerCellProgrammingReconciler) withdraw(ctx context.Context, key types.NamespacedName) error {
+func (r *NetworkLoadBalancerCellProgrammingReconciler) withdraw(ctx context.Context, key types.NamespacedName) (bool, error) {
 	service := &networkv1alpha1.NetworkService{}
 	err := r.Client.Get(ctx, key, service)
 	switch {
 	case apierrors.IsNotFound(err):
+		return true, r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil)
 	case err != nil:
-		return fmt.Errorf("read gateway service %s: %w", key, err)
+		return false, fmt.Errorf("read gateway service %s: %w", key, err)
 	case !ownedByCellIntent(service, key.Name):
-		return fmt.Errorf("gateway service %s is not owned by its cell intent", key)
-	default:
-		if err := r.Client.Delete(ctx, service); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("delete gateway service %s: %w", key, err)
+		return false, fmt.Errorf("gateway service %s is not owned by its cell intent", key)
+	}
+	if service.DeletionTimestamp.IsZero() {
+		if err := r.Client.Delete(ctx, service, client.Preconditions{UID: &service.UID}); client.IgnoreNotFound(err) != nil {
+			return false, fmt.Errorf("delete gateway service %s: %w", key, err)
 		}
 	}
-	return r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil)
+	// A successful delete request does not acknowledge gateway teardown.
+	// Retain selectors and status until Galactic's finalizers have completed.
+	if err := r.Client.Get(ctx, key, &networkv1alpha1.NetworkService{}); apierrors.IsNotFound(err) {
+		return true, r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil)
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (r *NetworkLoadBalancerCellProgrammingReconciler) withdrawResult(ctx context.Context, key types.NamespacedName) (ctrl.Result, error) {
+	done, err := r.withdraw(ctx, key)
+	if err != nil || !done {
+		return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 func ownedByCellIntent(service *networkv1alpha1.NetworkService, intentName string) bool {

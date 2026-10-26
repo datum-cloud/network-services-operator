@@ -817,6 +817,13 @@ func controllerRegistrations(
 				ManagedDomain:   serverConfig.Gateway.TargetDomain,
 			}).SetupWithManager(mgr)
 		}},
+		{"networkloadbalancerdns", true, func() error {
+			return (&controller.NetworkLoadBalancerDNSReconciler{
+				HubCluster:          deps.downstreamCluster,
+				Enabled:             serverConfig.NetworkLoadBalancer.DNS.Enabled,
+				PublishOnAllocation: serverConfig.NetworkLoadBalancer.DNS.PublishOnAllocation,
+			}).SetupWithManager(mgr)
+		}},
 		{"networkloadbalancerroute", true, func() error {
 			return (&controller.NetworkLoadBalancerRouteReconciler{}).SetupWithManager(mgr)
 		}},

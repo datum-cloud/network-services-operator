@@ -1581,7 +1581,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	listOpts := []client.ListOption{
 		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
 		client.MatchingLabels{
-			downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+			downstreamclient.UpstreamOwnerClusterNameLabel: downstreamclient.UpstreamClusterNameLabelValue(upstreamClusterName),
 			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 		},
@@ -2014,7 +2014,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	listOpts := []client.ListOption{
 		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
 		client.MatchingLabels{
-			downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+			downstreamclient.UpstreamOwnerClusterNameLabel: downstreamclient.UpstreamClusterNameLabelValue(upstreamClusterName),
 			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 		},

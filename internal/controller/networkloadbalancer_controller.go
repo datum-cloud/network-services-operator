@@ -314,6 +314,7 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 	}
 	selected := map[string]bool{}
 	attached := false
+	unresolved := false
 	for _, listener := range lb.Spec.Listeners {
 		if !slices.Contains(listener.AddressRefs, addressName) {
 			continue
@@ -333,7 +334,8 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 		}
 		if winner == nil {
-			return nil, nil
+			unresolved = true
+			continue
 		}
 		attached = true
 		for _, backend := range winner.Spec.Backends {
@@ -344,7 +346,8 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 			if err := cl.Get(ctx, key, &service); err != nil {
 				if apierrors.IsNotFound(err) {
-					return nil, nil
+					unresolved = true
+					continue
 				}
 				return nil, fmt.Errorf("get backend NetworkService %s: %w", key, err)
 			}
@@ -370,7 +373,16 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 		}
 	}
-	if !attached {
+	if unresolved {
+		for _, prior := range lb.Status.AddressRequests {
+			if prior.Name == addressName {
+				for _, location := range prior.ResolvedLocations {
+					selected[location] = true
+				}
+			}
+		}
+	}
+	if !attached && !unresolved {
 		return nil, nil
 	}
 	names := make([]string, 0, len(selected))
@@ -506,6 +518,7 @@ func appendAddressStatus(status *[]networkingv1alpha.NetworkLoadBalancerEndpoint
 		for _, old := range prior {
 			if old.RequestName == requestName && old.Location == location {
 				entry.CanonicalHostname = old.CanonicalHostname
+				entry.Listeners = old.DeepCopy().Listeners
 				break
 			}
 		}
@@ -520,7 +533,7 @@ func addressAnnounced(address networkingv1alpha.NetworkLoadBalancerAddressStatus
 }
 
 func addressPendingWithdrawal(address networkingv1alpha.NetworkLoadBalancerAddressStatus) bool {
-	return addressAnnounced(address) || address.DNSPublished ||
+	return address.WithdrawalPending || addressAnnounced(address) || address.DNSPublished ||
 		apimeta.IsStatusConditionTrue(address.Conditions, networkingv1alpha.NetworkLoadBalancerProgrammed)
 }
 

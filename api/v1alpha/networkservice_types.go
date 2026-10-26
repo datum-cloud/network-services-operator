@@ -114,6 +114,8 @@ type NetworkServiceInterfaceSelector struct {
 }
 
 // NetworkServicePort is one port the service's members answer on.
+// +kubebuilder:validation:XValidation:rule="has(self.port) != has(self.portRange)",message="exactly one of port and portRange is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.portRange) || self.portRange.start == self.portRange.end || self.protocol == 'UDP'",message="true port ranges require UDP"
 type NetworkServicePort struct {
 	// name identifies the port within the service, and is what a backend
 	// referencing this service names. Naming a port rather than a number lets
@@ -130,12 +132,14 @@ type NetworkServicePort struct {
 	// port is the port number every member answers on. It is the port on the
 	// member itself, not one the platform publishes.
 	//
-	// Unique within the service.
+	// Intervals on the same protocol cannot overlap within the service.
 	//
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port"`
+	Port int32 `json:"port,omitempty"`
+	// +optional
+	PortRange *PortRange `json:"portRange,omitempty"`
 
 	// protocol is the transport the port carries: TCP or UDP. TCP is the
 	// default and is required for backends served through an HTTPProxy.
@@ -198,7 +202,7 @@ type NetworkServiceSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=16
 	// +kubebuilder:validation:XValidation:message="Port name must be unique within the service",rule="self.all(p1, self.exists_one(p2, p2.name == p1.name))"
-	// +kubebuilder:validation:XValidation:message="Port number must be unique within the service",rule="self.all(p1, self.exists_one(p2, p2.port == p1.port))"
+	// +kubebuilder:validation:XValidation:message="service ports cannot overlap on the same protocol",rule="self.all(a, self.all(b, a.name == b.name || a.protocol != b.protocol || (has(a.portRange) ? a.portRange.end : a.port) < (has(b.portRange) ? b.portRange.start : b.port) || (has(b.portRange) ? b.portRange.end : b.port) < (has(a.portRange) ? a.portRange.start : a.port)))"
 	Ports []NetworkServicePort `json:"ports"`
 
 	// trafficDistribution is how traffic is spread across the locations the

@@ -139,6 +139,25 @@ spec:
                       maximum: 65535
                       minimum: 1
                       type: integer
+                    portRange:
+                      properties:
+                        end:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        start:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - end
+                      - start
+                      type: object
+                      x-kubernetes-validations:
+                      - message: port range start must not exceed end
+                        rule: self.start <= self.end
                     protocol:
                       description: NetworkLoadBalancerProtocol is the transport accepted
                         by a listener.
@@ -180,9 +199,14 @@ spec:
                   required:
                   - addressRefs
                   - name
-                  - port
                   - protocol
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of port and portRange is required
+                    rule: has(self.port) != has(self.portRange)
+                  - message: true port ranges require UDP
+                    rule: '!has(self.portRange) || self.portRange.start == self.portRange.end
+                      || self.protocol == ''UDP'''
                 maxItems: 16
                 minItems: 1
                 type: array
@@ -210,11 +234,14 @@ spec:
             - message: each listener address reference must name an address request
               rule: self.listeners.all(l, l.addressRefs.all(r, r in self.exposure.addresses.map(a,
                 a.name)))
-            - message: listeners sharing an address cannot use the same protocol and
-                port
-              rule: self.listeners.all(l1, self.listeners.all(l2, l1.name == l2.name
-                || l1.protocol != l2.protocol || l1.port != l2.port || !l1.addressRefs.exists(r,
-                r in l2.addressRefs)))
+            - message: listeners sharing an address cannot have overlapping transport
+                ports
+              rule: 'self.listeners.all(a, self.listeners.all(b, a.name == b.name
+                || (a.protocol == ''UDP'') != (b.protocol == ''UDP'') || !a.addressRefs.exists(r,
+                r in b.addressRefs) || (has(a.portRange) ? a.portRange.end : a.port)
+                < (has(b.portRange) ? b.portRange.start : b.port) || (has(b.portRange)
+                ? b.portRange.end : b.port) < (has(a.portRange) ? a.portRange.start
+                : a.port)))'
             - message: TLS configuration is required only for TLS listeners
               rule: 'self.listeners.all(l, l.protocol == ''TLS'' ? has(l.tls) : !has(l.tls))'
           status:
@@ -421,6 +448,8 @@ spec:
                             type: string
                           value:
                             type: string
+                          withdrawalPending:
+                            type: boolean
                         required:
                         - family
                         type: object
@@ -430,6 +459,79 @@ spec:
                       x-kubernetes-list-type: map
                     canonicalHostname:
                       type: string
+                    listeners:
+                      items:
+                        properties:
+                          conditions:
+                            items:
+                              description: Condition contains details for one aspect
+                                of the current state of this API Resource.
+                              properties:
+                                lastTransitionTime:
+                                  description: |-
+                                    lastTransitionTime is the last time the condition transitioned from one status to another.
+                                    This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                                  format: date-time
+                                  type: string
+                                message:
+                                  description: |-
+                                    message is a human readable message indicating details about the transition.
+                                    This may be an empty string.
+                                  maxLength: 32768
+                                  type: string
+                                observedGeneration:
+                                  description: |-
+                                    observedGeneration represents the .metadata.generation that the condition was set based upon.
+                                    For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                                    with respect to the current state of the instance.
+                                  format: int64
+                                  minimum: 0
+                                  type: integer
+                                reason:
+                                  description: |-
+                                    reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                                    Producers of specific condition types may define expected values and meanings for this field,
+                                    and whether the values are considered a guaranteed API.
+                                    The value should be a CamelCase string.
+                                    This field may not be empty.
+                                  maxLength: 1024
+                                  minLength: 1
+                                  pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                                  type: string
+                                status:
+                                  description: status of the condition, one of True,
+                                    False, Unknown.
+                                  enum:
+                                  - "True"
+                                  - "False"
+                                  - Unknown
+                                  type: string
+                                type:
+                                  description: type of condition in CamelCase or in
+                                    foo.example.com/CamelCase.
+                                  maxLength: 316
+                                  pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                                  type: string
+                              required:
+                              - lastTransitionTime
+                              - message
+                              - reason
+                              - status
+                              - type
+                              type: object
+                            type: array
+                            x-kubernetes-list-map-keys:
+                            - type
+                            x-kubernetes-list-type: map
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      type: array
+                      x-kubernetes-list-map-keys:
+                      - name
+                      x-kubernetes-list-type: map
                     location:
                       type: string
                     requestName:

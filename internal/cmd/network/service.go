@@ -161,6 +161,9 @@ func runServiceDescribe(cmd *cobra.Command, args []string) error {
 	ports := make([]string, 0, len(d.Ports))
 	for _, p := range d.Ports {
 		port := fmt.Sprintf("%s → %d/%s", p.Name, p.Port, util.OrDash(p.Protocol))
+		if p.PortRange != nil {
+			port = fmt.Sprintf("%s → %d-%d/%s", p.Name, p.PortRange.Start, p.PortRange.End, util.OrDash(p.Protocol))
+		}
 		if p.AppProtocol != "" {
 			port += " (" + networkagent.AppProtocolLabel(p.AppProtocol) + ")"
 		}
@@ -385,6 +388,11 @@ func runServiceUpdate(cmd *cobra.Command, args []string) error {
 		return notFound("network service", name, listServices, err)
 	}
 
+	for _, port := range svc.Spec.Ports {
+		if port.PortRange != nil {
+			return util.UsageErrorf("network service %q contains portRange; use a range-aware manifest update", name)
+		}
+	}
 	in, err := serviceInput(cmd, name)
 	if err != nil {
 		return err

@@ -155,6 +155,9 @@ func summarizeService(s *networkingv1alpha.NetworkService, e *evidence, now time
 	ports := make([]string, 0, len(d.Ports))
 	for _, p := range d.Ports {
 		port := fmt.Sprintf("%s:%d", p.Name, p.Port)
+		if p.PortRange != nil {
+			port = fmt.Sprintf("%s:%d-%d", p.Name, p.PortRange.Start, p.PortRange.End)
+		}
 		if p.AppProtocol != "" {
 			port += " (" + AppProtocolLabel(p.AppProtocol) + ")"
 		}

@@ -214,12 +214,6 @@ func TestNetworkLoadBalancerRouteUnsupportedListenerDoesNotHaveOwner(t *testing.
 		{name: "TLS", mutate: func(parent *networkingv1alpha.NetworkLoadBalancer) {
 			parent.Spec.Listeners[0].Protocol = networkingv1alpha.NetworkLoadBalancerProtocolTLS
 		}},
-		{name: "shared address", mutate: func(parent *networkingv1alpha.NetworkLoadBalancer) {
-			parent.Spec.Listeners = append(parent.Spec.Listeners, networkingv1alpha.NetworkLoadBalancerListener{
-				Name: "other", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP,
-				Port: 444, AddressRefs: []string{"regional"},
-			})
-		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			parent := testRouteLoadBalancer()
@@ -421,7 +415,7 @@ func TestNetworkLoadBalancerRouteRejectsSameRouteBackendSocketReuseAcrossNLBs(t 
 		apimeta.FindStatusCondition(got.Status.Parents[1].Conditions, networkingv1alpha.NetworkLoadBalancerRouteResolvedRefs).Reason)
 }
 
-func TestNetworkLoadBalancerRouteIgnoresRejectedSharedAddressClaim(t *testing.T) {
+func TestNetworkLoadBalancerRouteSharedAddressRetainsBackendOwnership(t *testing.T) {
 	ctx := context.Background()
 	older := testLoadBalancerRoute("older", time.Unix(10, 0))
 	newer := testLoadBalancerRoute("newer", time.Unix(20, 0))
@@ -442,9 +436,9 @@ func TestNetworkLoadBalancerRouteIgnoresRejectedSharedAddressClaim(t *testing.T)
 	var gotOlder, gotNewer networkingv1alpha.NetworkLoadBalancerRoute
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(older), &gotOlder))
 	require.NoError(t, cl.Get(ctx, client.ObjectKeyFromObject(newer), &gotNewer))
-	require.Equal(t, nlbRouteReasonUnsupportedCapability,
+	require.Equal(t, nlbRouteReasonAttached,
 		apimeta.FindStatusCondition(gotOlder.Status.Parents[0].Conditions, networkingv1alpha.NetworkLoadBalancerRouteAccepted).Reason)
-	require.Equal(t, nlbRouteReasonResolved,
+	require.Equal(t, nlbRouteReasonBackendClaimConflict,
 		apimeta.FindStatusCondition(gotNewer.Status.Parents[0].Conditions, networkingv1alpha.NetworkLoadBalancerRouteResolvedRefs).Reason)
 }
 

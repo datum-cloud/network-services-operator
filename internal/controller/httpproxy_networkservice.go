@@ -43,6 +43,12 @@ func (e *errNetworkServiceBackendNotFound) Error() string {
 	return fmt.Sprintf("referenced NetworkService %q not found", e.service)
 }
 
+type errNetworkServiceBackendUnsupportedRange struct{ service, port string }
+
+func (e *errNetworkServiceBackendUnsupportedRange) Error() string {
+	return fmt.Sprintf("NetworkService %q port %q is a range; HTTPProxy requires a singleton TCP port", e.service, e.port)
+}
+
 type errNetworkServiceBackendUnsupportedProtocol struct {
 	service  string
 	port     string
@@ -94,6 +100,10 @@ func resolveNetworkServiceBackend(
 		return nil, &errNetworkServiceBackendNotFound{service: ref.Name, port: ref.Port}
 	}
 
+	interval := networkingv1alpha.PortInterval(service.Spec.Ports[portIndex].Port, service.Spec.Ports[portIndex].PortRange)
+	if !interval.Valid() || !interval.Singleton() {
+		return nil, &errNetworkServiceBackendUnsupportedRange{service: ref.Name, port: ref.Port}
+	}
 	protocol := service.Spec.Ports[portIndex].Protocol
 	if protocol != "" && protocol != networkingv1alpha.NetworkServiceProtocolTCP {
 		return nil, &errNetworkServiceBackendUnsupportedProtocol{service: ref.Name, port: ref.Port, protocol: protocol}
@@ -114,7 +124,7 @@ func resolveNetworkServiceBackend(
 	})
 
 	resolved := &resolvedNetworkService{
-		port:        service.Spec.Ports[portIndex].Port,
+		port:        interval.Start,
 		appProtocol: networkServiceAppProtocol(service.Spec.Ports[portIndex]),
 		addressType: preferredAddressType(members),
 	}

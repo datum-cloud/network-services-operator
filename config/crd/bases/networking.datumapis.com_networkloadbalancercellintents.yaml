@@ -43,6 +43,74 @@ spec:
               NetworkLoadBalancerCellIntentSpec is a validation request to one location.
               The cell must independently verify the live interface, attachment, and VPC.
             properties:
+              addressGroup:
+                properties:
+                  generation:
+                    format: int64
+                    type: integer
+                  listenerName:
+                    type: string
+                  listeners:
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        port:
+                          format: int32
+                          type: integer
+                        portRange:
+                          properties:
+                            end:
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                            start:
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                          required:
+                          - end
+                          - start
+                          type: object
+                          x-kubernetes-validations:
+                          - message: port range start must not exceed end
+                            rule: self.start <= self.end
+                        protocol:
+                          description: NetworkLoadBalancerProtocol is the transport
+                            accepted by a listener.
+                          enum:
+                          - TCP
+                          - UDP
+                          - TLS
+                          type: string
+                      required:
+                      - name
+                      - protocol
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one port or portRange is required
+                        rule: has(self.port) != has(self.portRange)
+                      - message: true ranges require UDP
+                        rule: '!has(self.portRange) || self.portRange.start == self.portRange.end
+                          || self.protocol == ''UDP'''
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  revision:
+                    type: string
+                  uid:
+                    type: string
+                required:
+                - generation
+                - listenerName
+                - listeners
+                - revision
+                - uid
+                type: object
               backends:
                 items:
                   properties:
@@ -60,6 +128,25 @@ spec:
                     port:
                       format: int32
                       type: integer
+                    portRange:
+                      properties:
+                        end:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        start:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - end
+                      - start
+                      type: object
+                      x-kubernetes-validations:
+                      - message: port range start must not exceed end
+                        rule: self.start <= self.end
                     probe:
                       properties:
                         path:
@@ -85,17 +172,38 @@ spec:
                   required:
                   - address
                   - family
-                  - port
                   - probe
                   - sourceName
                   - sourceNamespace
                   - sourceUID
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one port or portRange is required
+                    rule: has(self.port) != has(self.portRange)
                 maxItems: 1024
                 type: array
               listenerPort:
                 format: int32
                 type: integer
+              listenerPortRange:
+                properties:
+                  end:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  start:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                required:
+                - end
+                - start
+                type: object
+                x-kubernetes-validations:
+                - message: port range start must not exceed end
+                  rule: self.start <= self.end
               location:
                 type: string
               networkName:
@@ -171,7 +279,6 @@ spec:
                 - IPv6
                 type: string
             required:
-            - listenerPort
             - location
             - networkName
             - protocol
@@ -184,6 +291,11 @@ spec:
             - message: Validate needs backends; Withdrawn must have none
               rule: 'self.state == ''Validate'' ? has(self.backends) && size(self.backends)
                 > 0 : !has(self.backends) || size(self.backends) == 0'
+            - message: exactly one listenerPort or listenerPortRange is required
+              rule: has(self.listenerPort) != has(self.listenerPortRange)
+            - message: true listener ranges require UDP and address inventory
+              rule: '!has(self.listenerPortRange) || self.listenerPortRange.start
+                == self.listenerPortRange.end || (self.protocol == ''UDP'' && has(self.addressGroup))'
           status:
             description: |-
               NetworkLoadBalancerCellIntentStatus is written by the serving cell and

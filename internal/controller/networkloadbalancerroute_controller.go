@@ -61,6 +61,7 @@ type networkLoadBalancerRouteEndpoint struct {
 	Location        string
 	Address         string
 	Port            int32
+	PortRange       *networkingv1alpha.PortRange
 	Probe           networkingv1alpha.NetworkLoadBalancerCellIntentProbe
 }
 
@@ -175,7 +176,7 @@ func reconcileRouteParent(
 	setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteAccepted,
 		metav1.ConditionTrue, nlbRouteReasonAttached, "Route is attached to the listener")
 	listener := &parent.Spec.Listeners[listenerIndex]
-	if message := unsupportedRouteListenerCapability(route, &parent, listener); message != "" {
+	if message := unsupportedRouteListenerCapability(route, listener); message != "" {
 		setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteAccepted,
 			metav1.ConditionFalse, nlbRouteReasonUnsupportedCapability, message)
 		return status, nil
@@ -241,6 +242,51 @@ func reconcileRouteParent(
 func listenerAddressesProgrammed(
 	parent *networkingv1alpha.NetworkLoadBalancer, listener *networkingv1alpha.NetworkLoadBalancerListener,
 ) (metav1.Condition, bool) {
+	var listenerConditions []metav1.Condition
+	grouped := listener.PortRange != nil
+	for _, other := range parent.Spec.Listeners {
+		if other.Name != listener.Name {
+			for _, ref := range other.AddressRefs {
+				if slices.Contains(listener.AddressRefs, ref) {
+					grouped = true
+				}
+			}
+		}
+	}
+	hasListenerStatus := false
+	seen := map[string]bool{}
+	for _, endpoint := range parent.Status.Endpoints {
+		if !slices.Contains(listener.AddressRefs, endpoint.RequestName) || !routeLocationSelected(parent, listener, endpoint.Location) {
+			continue
+		}
+		seen[endpoint.RequestName+"/"+endpoint.Location] = true
+		condition := metav1.Condition{Status: metav1.ConditionUnknown, Reason: nlbRouteReasonAwaitingDataPlane, Message: "Waiting for current listener programming in " + endpoint.Location}
+		for _, status := range endpoint.Listeners {
+			if status.Name == listener.Name {
+				hasListenerStatus = true
+				if c := apimeta.FindStatusCondition(status.Conditions, networkingv1alpha.NetworkLoadBalancerProgrammed); c != nil && c.ObservedGeneration == parent.Generation {
+					condition = *c
+				}
+			}
+		}
+		listenerConditions = append(listenerConditions, condition)
+	}
+	for _, request := range parent.Status.AddressRequests {
+		if !slices.Contains(listener.AddressRefs, request.Name) {
+			continue
+		}
+		for _, location := range request.ResolvedLocations {
+			if !seen[request.Name+"/"+location] {
+				listenerConditions = append(listenerConditions, metav1.Condition{Status: metav1.ConditionUnknown, Reason: nlbRouteReasonAwaitingDataPlane, Message: "Waiting for listener endpoint in " + location})
+			}
+		}
+	}
+	if grouped || hasListenerStatus {
+		if len(listenerConditions) == 0 {
+			return metav1.Condition{Status: metav1.ConditionUnknown, Reason: nlbRouteReasonAwaitingDataPlane, Message: "Waiting for listener locations"}, true
+		}
+		return combineConditions(listenerConditions, networkingv1alpha.NetworkLoadBalancerProgrammed), true
+	}
 	var addresses []*networkingv1alpha.NetworkLoadBalancerAddressStatus
 	for i := range parent.Status.Endpoints {
 		endpoint := &parent.Status.Endpoints[i]
@@ -265,18 +311,10 @@ func listenerAddressesProgrammed(
 }
 
 func unsupportedRouteListenerCapability(route *networkingv1alpha.NetworkLoadBalancerRoute,
-	parent *networkingv1alpha.NetworkLoadBalancer,
 	listener *networkingv1alpha.NetworkLoadBalancerListener,
 ) string {
 	if listener.Protocol == networkingv1alpha.NetworkLoadBalancerProtocolTLS || len(route.Spec.SNIHostnames) > 0 {
 		return "TLS listener and SNI routing require a proxy-capable edge path"
-	}
-	for _, addressName := range listener.AddressRefs {
-		if slices.ContainsFunc(parent.Spec.Listeners, func(other networkingv1alpha.NetworkLoadBalancerListener) bool {
-			return other.Name != listener.Name && slices.Contains(other.AddressRefs, addressName)
-		}) {
-			return "Address sharing across listeners requires coordinated readiness"
-		}
 	}
 	return ""
 }
@@ -353,7 +391,7 @@ func findOlderRouteClaimingBackend(ctx context.Context, cl client.Client,
 				continue
 			}
 			otherListener := &otherParent.Spec.Listeners[otherIndex]
-			if unsupportedRouteListenerCapability(peer, &otherParent, otherListener) != "" || len(otherListener.AddressRefs) != 1 {
+			if unsupportedRouteListenerCapability(peer, otherListener) != "" || len(otherListener.AddressRefs) != 1 {
 				continue
 			}
 			if peer.UID == route.UID {
@@ -382,7 +420,7 @@ func findOlderRouteClaimingBackend(ctx context.Context, cl client.Client,
 			}
 			for _, endpoint := range endpoints {
 				if slices.ContainsFunc(otherEndpoints, func(other networkLoadBalancerRouteEndpoint) bool {
-					return other.Location == endpoint.Location && other.Address == endpoint.Address && other.Port == endpoint.Port
+					return other.Location == endpoint.Location && other.Address == endpoint.Address && networkingv1alpha.PortInterval(other.Port, other.PortRange).Overlaps(networkingv1alpha.PortInterval(endpoint.Port, endpoint.PortRange))
 				}) {
 					return peer.Name, nil
 				}
@@ -465,7 +503,7 @@ func ResolveNetworkLoadBalancerRouteListener(parent *networkingv1alpha.NetworkLo
 	}
 	name := ""
 	for _, listener := range parent.Spec.Listeners {
-		if listener.Port == *ref.Port {
+		if listener.PortRange == nil && listener.Port == *ref.Port {
 			if name != "" {
 				return "", false
 			}
@@ -492,7 +530,7 @@ func oldestRouteForListener(routes []networkingv1alpha.NetworkLoadBalancerRoute,
 		listenerIndex := slices.IndexFunc(parent.Spec.Listeners, func(l networkingv1alpha.NetworkLoadBalancerListener) bool {
 			return l.Name == listener
 		})
-		if listenerIndex < 0 || unsupportedRouteListenerCapability(candidate, parent, &parent.Spec.Listeners[listenerIndex]) != "" {
+		if listenerIndex < 0 || unsupportedRouteListenerCapability(candidate, &parent.Spec.Listeners[listenerIndex]) != "" {
 			continue
 		}
 		if oldest == nil || candidate.CreationTimestamp.Before(&oldest.CreationTimestamp) ||
@@ -559,6 +597,24 @@ func resolveNetworkLoadBalancerRouteBackends(
 				fmt.Sprintf("NetworkService %q has no port named %q", ref.Name, ref.Port)}
 		}
 		port := service.Spec.Ports[portIndex]
+		frontend := networkingv1alpha.PortInterval(listener.Port, listener.PortRange)
+		backendInterval := networkingv1alpha.PortInterval(port.Port, port.PortRange)
+		if !frontend.Valid() || !backendInterval.Valid() {
+			return nil, &networkLoadBalancerRouteReferenceError{nlbRouteReasonPortNotFound, "Listener and backend require a valid port or portRange"}
+		}
+		if !frontend.Singleton() {
+			if listener.Protocol != networkingv1alpha.NetworkLoadBalancerProtocolUDP || port.PortRange == nil || !backendInterval.Contains(frontend) {
+				return nil, &networkLoadBalancerRouteReferenceError{nlbRouteReasonProtocolMismatch, "UDP range backend must cover the entire exposed range without port translation"}
+			}
+			port.Port = 0
+			port.PortRange = &frontend
+		} else {
+			if !backendInterval.Singleton() {
+				return nil, &networkLoadBalancerRouteReferenceError{nlbRouteReasonProtocolMismatch, "Singleton listeners require a singleton backend port"}
+			}
+			port.Port = backendInterval.Start
+			port.PortRange = nil
+		}
 		protocol := port.Protocol
 		if protocol == "" {
 			protocol = networkingv1alpha.NetworkServiceProtocolTCP
@@ -591,7 +647,7 @@ func resolveNetworkLoadBalancerRouteBackends(
 			probe.Path = check.Path
 			if check.Port != "" {
 				probeIndex := slices.IndexFunc(service.Spec.Ports, func(p networkingv1alpha.NetworkServicePort) bool { return p.Name == check.Port })
-				probe.Port = service.Spec.Ports[probeIndex].Port
+				probe.Port = networkingv1alpha.PortInterval(service.Spec.Ports[probeIndex].Port, service.Spec.Ports[probeIndex].PortRange).Start
 			}
 		}
 		for i := range members {
@@ -615,6 +671,7 @@ func resolveNetworkLoadBalancerRouteBackends(
 				Location:        location,
 				Address:         address,
 				Port:            port.Port,
+				PortRange:       port.PortRange,
 				Probe:           probe,
 			})
 		}
@@ -678,6 +735,10 @@ func validateNetworkLoadBalancerHealthCheck(
 	if probeIndex < 0 {
 		return &networkLoadBalancerRouteReferenceError{nlbRouteReasonHealthCheckInvalid,
 			fmt.Sprintf("NetworkService %q has no health check port named %q", backend.NetworkService.Name, check.Port)}
+	}
+	probeInterval := networkingv1alpha.PortInterval(service.Spec.Ports[probeIndex].Port, service.Spec.Ports[probeIndex].PortRange)
+	if !probeInterval.Singleton() || !probeInterval.Valid() {
+		return &networkLoadBalancerRouteReferenceError{nlbRouteReasonHealthCheckInvalid, "Health checks require a named singleton TCP port"}
 	}
 	probeProtocol := service.Spec.Ports[probeIndex].Protocol
 	if probeProtocol != "" && probeProtocol != networkingv1alpha.NetworkServiceProtocolTCP {

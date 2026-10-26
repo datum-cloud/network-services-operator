@@ -614,7 +614,7 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr)
 		}},
 		{"NetworkLoadBalancer", true, func() error {
-			return networkingv1alphawebhooks.SetupNetworkLoadBalancerWebhookWithManager(mgr)
+			return networkingv1alphawebhooks.SetupNetworkLoadBalancerWebhookWithManager(mgr, serverConfig.NetworkLoadBalancer)
 		}},
 		{"NetworkLoadBalancerRoute", true, func() error {
 			return networkingv1alphawebhooks.SetupNetworkLoadBalancerRouteWebhookWithManager(mgr)

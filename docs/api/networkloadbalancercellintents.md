@@ -57,7 +57,7 @@ from a project control plane through the hub to the serving cell.
           NetworkLoadBalancerCellIntentSpec is a validation request to one location.
 The cell must independently verify the live interface, attachment, and VPC.<br/>
           <br/>
-            <i>Validations</i>:<li>self.state == 'Validate' ? has(self.backends) && size(self.backends) > 0 : !has(self.backends) || size(self.backends) == 0: Validate needs backends; Withdrawn must have none</li>
+            <i>Validations</i>:<li>self.state == 'Validate' ? has(self.backends) && size(self.backends) > 0 : !has(self.backends) || size(self.backends) == 0: Validate needs backends; Withdrawn must have none</li><li>has(self.listenerPort) != has(self.listenerPortRange): exactly one listenerPort or listenerPortRange is required</li><li>!has(self.listenerPortRange) || self.listenerPortRange.start == self.listenerPortRange.end || (self.protocol == 'UDP' && has(self.addressGroup)): true listener ranges require UDP and address inventory</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -91,15 +91,6 @@ The cell must independently verify the live interface, attachment, and VPC.
         </tr>
     </thead>
     <tbody><tr>
-        <td><b>listenerPort</b></td>
-        <td>integer</td>
-        <td>
-          <br/>
-          <br/>
-            <i>Format</i>: int32<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
         <td><b>location</b></td>
         <td>string</td>
         <td>
@@ -157,10 +148,35 @@ family; the serving cell must support that family pair before programming.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#networkloadbalancercellintentspecaddressgroup">addressGroup</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkloadbalancercellintentspecbackendsindex">backends</a></b></td>
         <td>[]object</td>
         <td>
           <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>listenerPort</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancercellintentspeclistenerportrange">listenerPortRange</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.start <= self.end: port range start must not exceed end</li>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -261,6 +277,159 @@ family; the serving cell must support that family pair before programming.<br/>
 </table>
 
 
+### NetworkLoadBalancerCellIntent.spec.addressGroup
+<sup><sup>[↩ Parent](#networkloadbalancercellintentspec)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>generation</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>listenerName</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancercellintentspecaddressgrouplistenersindex">listeners</a></b></td>
+        <td>[]object</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>revision</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>uid</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancerCellIntent.spec.addressGroup.listeners[index]
+<sup><sup>[↩ Parent](#networkloadbalancercellintentspecaddressgroup)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>protocol</b></td>
+        <td>enum</td>
+        <td>
+          NetworkLoadBalancerProtocol is the transport accepted by a listener.<br/>
+          <br/>
+            <i>Enum</i>: TCP, UDP, TLS<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancercellintentspecaddressgrouplistenersindexportrange">portRange</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.start <= self.end: port range start must not exceed end</li>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancerCellIntent.spec.addressGroup.listeners[index].portRange
+<sup><sup>[↩ Parent](#networkloadbalancercellintentspecaddressgrouplistenersindex)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>end</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>start</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
 ### NetworkLoadBalancerCellIntent.spec.backends[index]
 <sup><sup>[↩ Parent](#networkloadbalancercellintentspec)</sup></sup>
 
@@ -295,15 +464,6 @@ public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.<br/>
         </td>
         <td>true</td>
       </tr><tr>
-        <td><b>port</b></td>
-        <td>integer</td>
-        <td>
-          <br/>
-          <br/>
-            <i>Format</i>: int32<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
         <td><b><a href="#networkloadbalancercellintentspecbackendsindexprobe">probe</a></b></td>
         <td>object</td>
         <td>
@@ -331,6 +491,24 @@ public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.<br/>
           <br/>
         </td>
         <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancercellintentspecbackendsindexportrange">portRange</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.start <= self.end: port range start must not exceed end</li>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -374,6 +552,90 @@ public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.<br/>
           <br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancerCellIntent.spec.backends[index].portRange
+<sup><sup>[↩ Parent](#networkloadbalancercellintentspecbackendsindex)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>end</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>start</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancerCellIntent.spec.listenerPortRange
+<sup><sup>[↩ Parent](#networkloadbalancercellintentspec)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>end</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>start</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

@@ -39,9 +39,13 @@ const (
 )
 
 type NetworkLoadBalancerCellProgrammingReconciler struct {
-	Client   client.Client
-	Scheme   *runtime.Scheme
-	Location config.LocationConfig
+	Client                 client.Client
+	APIReader              client.Reader
+	Scheme                 *runtime.Scheme
+	Location               config.LocationConfig
+	MaxExposedPorts        int32
+	SharedAddressListeners bool
+	UDPPortRanges          bool
 
 	resolveLocation func(context.Context) (string, error)
 }
@@ -50,6 +54,8 @@ type NetworkLoadBalancerCellProgrammingReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancercellintents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcattachments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=networkgateways,verbs=get;list;watch
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=networkserviceaddresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=networkservices,verbs=get;list;watch;create;update;patch;delete
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
@@ -77,6 +83,14 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, r.reportNotServed(ctx, &intent, "Withdrawn", "The intent is withdrawn")
 	}
 
+	if reason, err := r.requiredCapabilities(ctx, &intent); err != nil {
+		return ctrl.Result{}, err
+	} else if reason != "" {
+		if done, err := r.withdraw(ctx, req.NamespacedName); err != nil || !done {
+			return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, err
+		}
+		return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, r.reportNotServed(ctx, &intent, "UnsupportedCapability", reason)
+	}
 	backends, rejected, err := r.verifiedBackends(ctx, &intent)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -96,6 +110,12 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, nil
 	}
 
+	if err := r.ensureAddress(ctx, service); err != nil {
+		if done, withdrawErr := r.withdraw(ctx, req.NamespacedName); withdrawErr != nil || !done {
+			return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, withdrawErr
+		}
+		return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, r.reportNotServed(ctx, &intent, "AddressInventoryConflict", err.Error())
+	}
 	if err := r.labelBackends(ctx, &intent, backends); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -103,6 +123,15 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, current, func() error {
 		if !current.CreationTimestamp.IsZero() && !metav1.IsControlledBy(current, &intent) {
 			return fmt.Errorf("gateway service %s belongs to another owner", current.Name)
+		}
+		if r.APIReader != nil {
+			var latest networkingv1alpha.NetworkLoadBalancerCellIntent
+			if err := r.APIReader.Get(ctx, req.NamespacedName, &latest); err != nil {
+				return err
+			}
+			if latest.UID != intent.UID || !latest.DeletionTimestamp.IsZero() || !equality.Semantic.DeepEqual(latest.Spec, intent.Spec) {
+				return fmt.Errorf("serving intent changed during verification")
+			}
 		}
 		current.Spec = service.Spec
 		return controllerutil.SetControllerReference(&intent, current, r.Scheme)
@@ -164,6 +193,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportStatus(
 type verifiedNetworkLoadBalancerBackend struct {
 	attachment *cloudv1alpha1.VPCAttachment
 	port       int32
+	portRange  *networkingv1alpha.PortRange
 	probe      networkingv1alpha.NetworkLoadBalancerCellIntentProbe
 }
 
@@ -182,7 +212,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) verifiedBackends(
 			rejected = append(rejected, fmt.Sprintf("%s/%s: %s", backend.SourceNamespace, backend.SourceName, reason))
 			continue
 		}
-		verified = append(verified, verifiedNetworkLoadBalancerBackend{attachment: attachment, port: backend.Port, probe: backend.Probe})
+		verified = append(verified, verifiedNetworkLoadBalancerBackend{attachment: attachment, port: backend.Port, portRange: backend.PortRange, probe: backend.Probe})
 	}
 	return verified, rejected, nil
 }
@@ -261,6 +291,9 @@ func desiredNetworkLoadBalancerService(
 	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
 	backends []verifiedNetworkLoadBalancerBackend,
 ) (*networkv1alpha1.NetworkService, string) {
+	if reason := validateAddressGroup(intent); reason != "" {
+		return nil, reason
+	}
 	if len(backends) == 0 {
 		return nil, "no backend passed verification"
 	}
@@ -280,7 +313,20 @@ func desiredNetworkLoadBalancerService(
 	if probe.Protocol != "TCP" || probe.Port < 1 || probe.Port > 65535 || probe.Path != "" {
 		return nil, "serving requires a valid TCP health probe; HTTP and HTTPS probes are not supported by this dataplane"
 	}
-	vpc, port := backends[0].attachment.Status.VPC, backends[0].port
+	frontend := networkingv1alpha.PortInterval(intent.Spec.ListenerPort, intent.Spec.ListenerPortRange)
+	if !frontend.Valid() {
+		return nil, "invalid frontend port interval"
+	}
+	if !frontend.Singleton() && (protocol != networkv1alpha1.NetworkServiceProtocolUDP || intent.Spec.AddressGroup == nil) {
+		return nil, "UDP ranges require a complete address inventory"
+	}
+	for _, backend := range backends {
+		interval := networkingv1alpha.PortInterval(backend.port, backend.portRange)
+		if !interval.Valid() || (frontend.Singleton() && !interval.Singleton()) || (!frontend.Singleton() && interval != frontend) {
+			return nil, "backend port interval does not match the forwarding contract"
+		}
+	}
+	vpc, port := backends[0].attachment.Status.VPC, networkingv1alpha.PortInterval(backends[0].port, backends[0].portRange).Start
 	for _, backend := range backends[1:] {
 		if backend.probe != probe {
 			return nil, "backends require different health probes"
@@ -288,17 +334,18 @@ func desiredNetworkLoadBalancerService(
 		if backend.attachment.Status.VPC != vpc {
 			return nil, "backends span more than one VPC"
 		}
-		if backend.port != port {
+		if networkingv1alpha.PortInterval(backend.port, backend.portRange).Start != port {
 			return nil, "backends listen on different ports"
 		}
 	}
-	return &networkv1alpha1.NetworkService{
+	service := &networkv1alpha1.NetworkService{
 		ObjectMeta: metav1.ObjectMeta{Namespace: intent.Namespace, Name: intent.Name},
 		Spec: networkv1alpha1.NetworkServiceSpec{
 			VPCRef:       vpc,
 			VIPAddresses: []string{intent.Spec.VIP},
 			Protocol:     protocol,
-			Port:         intent.Spec.ListenerPort,
+			Port:         frontend.Start,
+			AddressGroup: galacticAddressGroup(intent.Spec.AddressGroup),
 			BackendPort:  port,
 			HealthCheck: &networkv1alpha1.NetworkServiceHealthCheck{
 				FailurePolicy: networkv1alpha1.NetworkServiceHealthFailClosed, Port: probe.Port, IntervalSeconds: 5, TimeoutSeconds: 2, HealthyThreshold: 2, UnhealthyThreshold: 1,
@@ -307,7 +354,13 @@ func desiredNetworkLoadBalancerService(
 				networkLoadBalancerBackendLabel(intent.Name): nlbProgrammingBackendLabelValue,
 			}},
 		},
-	}, ""
+	}
+	if !frontend.Singleton() {
+		service.Spec.Port = 0
+		service.Spec.BackendPort = 0
+		service.Spec.PortRange = &networkv1alpha1.PortRange{Start: frontend.Start, End: frontend.End}
+	}
+	return service, ""
 }
 
 func networkLoadBalancerBackendLabel(intentName string) string {
@@ -361,11 +414,18 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) unlabelBackends(
 }
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) withdraw(ctx context.Context, key types.NamespacedName) (bool, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
 	service := &networkv1alpha1.NetworkService{}
-	err := r.Client.Get(ctx, key, service)
+	err := reader.Get(ctx, key, service)
 	switch {
 	case apierrors.IsNotFound(err):
-		return true, r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil)
+		if err := r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil); err != nil {
+			return false, err
+		}
+		return r.cleanupAddresses(ctx, key.Namespace)
 	case err != nil:
 		return false, fmt.Errorf("read gateway service %s: %w", key, err)
 	case !ownedByCellIntent(service, key.Name):
@@ -378,8 +438,11 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) withdraw(ctx context.Cont
 	}
 	// A successful delete request does not acknowledge gateway teardown.
 	// Retain selectors and status until Galactic's finalizers have completed.
-	if err := r.Client.Get(ctx, key, &networkv1alpha1.NetworkService{}); apierrors.IsNotFound(err) {
-		return true, r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil)
+	if err := reader.Get(ctx, key, &networkv1alpha1.NetworkService{}); apierrors.IsNotFound(err) {
+		if err := r.unlabelBackends(ctx, key.Namespace, networkLoadBalancerBackendLabel(key.Name), nil); err != nil {
+			return false, err
+		}
+		return r.cleanupAddresses(ctx, key.Namespace)
 	} else if err != nil {
 		return false, err
 	}
@@ -428,12 +491,27 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) intentsInNamespace(ctx co
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Client = mgr.GetClient()
+	r.APIReader = mgr.GetAPIReader()
 	r.Scheme = mgr.GetScheme()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkLoadBalancerCellIntent{}).
 		Watches(&networkingv1alpha.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(r.intentsInNamespace)).
 		Watches(&cloudv1alpha1.VPCAttachment{}, handler.EnqueueRequestsFromMapFunc(r.intentsInNamespace)).
+		Watches(&networkv1alpha1.NetworkServiceAddress{}, handler.EnqueueRequestsFromMapFunc(r.intentsInNamespace)).
+		Watches(&networkv1alpha1.NetworkGateway{}, handler.EnqueueRequestsFromMapFunc(r.allIntents)).
 		Owns(&networkv1alpha1.NetworkService{}).
 		Named("networkloadbalancercellprogramming").
 		Complete(r)
+}
+
+func (r *NetworkLoadBalancerCellProgrammingReconciler) allIntents(ctx context.Context, _ client.Object) []reconcile.Request {
+	var intents networkingv1alpha.NetworkLoadBalancerCellIntentList
+	if err := r.Client.List(ctx, &intents); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(intents.Items))
+	for _, intent := range intents.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&intent)})
+	}
+	return requests
 }

@@ -46,6 +46,7 @@ type NetworkLoadBalancerCellIntentProbe struct {
 	Path     string `json:"path,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:message="exactly one port or portRange is required",rule="has(self.port) != has(self.portRange)"
 type NetworkLoadBalancerCellIntentBackend struct {
 	// +kubebuilder:validation:MinLength=1
 	SourceNamespace string `json:"sourceNamespace"`
@@ -57,25 +58,50 @@ type NetworkLoadBalancerCellIntentBackend struct {
 	// public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.
 	Family IPFamily `json:"family"`
 	// +kubebuilder:validation:MinLength=1
-	Address string                             `json:"address"`
-	Port    int32                              `json:"port"`
-	Probe   NetworkLoadBalancerCellIntentProbe `json:"probe"`
+	Address   string                             `json:"address"`
+	Port      int32                              `json:"port,omitempty"`
+	PortRange *PortRange                         `json:"portRange,omitempty"`
+	Probe     NetworkLoadBalancerCellIntentProbe `json:"probe"`
+}
+
+type NetworkLoadBalancerCellIntentAddressGroup struct {
+	UID          string `json:"uid"`
+	Generation   int64  `json:"generation"`
+	Revision     string `json:"revision"`
+	ListenerName string `json:"listenerName"`
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=name
+	Listeners []NetworkLoadBalancerCellIntentAddressListener `json:"listeners"`
+}
+
+// +kubebuilder:validation:XValidation:message="exactly one port or portRange is required",rule="has(self.port) != has(self.portRange)"
+// +kubebuilder:validation:XValidation:message="true ranges require UDP",rule="!has(self.portRange) || self.portRange.start == self.portRange.end || self.protocol == 'UDP'"
+type NetworkLoadBalancerCellIntentAddressListener struct {
+	Name      string                      `json:"name"`
+	Protocol  NetworkLoadBalancerProtocol `json:"protocol"`
+	Port      int32                       `json:"port,omitempty"`
+	PortRange *PortRange                  `json:"portRange,omitempty"`
 }
 
 // NetworkLoadBalancerCellIntentSpec is a validation request to one location.
 // The cell must independently verify the live interface, attachment, and VPC.
 // +kubebuilder:validation:XValidation:message="Validate needs backends; Withdrawn must have none",rule="self.state == 'Validate' ? has(self.backends) && size(self.backends) > 0 : !has(self.backends) || size(self.backends) == 0"
+// +kubebuilder:validation:XValidation:message="exactly one listenerPort or listenerPortRange is required",rule="has(self.listenerPort) != has(self.listenerPortRange)"
+// +kubebuilder:validation:XValidation:message="true listener ranges require UDP and address inventory",rule="!has(self.listenerPortRange) || self.listenerPortRange.start == self.listenerPortRange.end || (self.protocol == 'UDP' && has(self.addressGroup))"
 type NetworkLoadBalancerCellIntentSpec struct {
-	Source      NetworkLoadBalancerCellIntentSource `json:"source"`
-	Location    string                              `json:"location"`
-	NetworkName string                              `json:"networkName"`
+	AddressGroup *NetworkLoadBalancerCellIntentAddressGroup `json:"addressGroup,omitempty"`
+	Source       NetworkLoadBalancerCellIntentSource        `json:"source"`
+	Location     string                                     `json:"location"`
+	NetworkName  string                                     `json:"networkName"`
 	// VIPFamily selects the ingress packet path. It may differ from a backend's
 	// family; the serving cell must support that family pair before programming.
-	VIPFamily    IPFamily                           `json:"vipFamily"`
-	VIP          string                             `json:"vip"`
-	Protocol     NetworkLoadBalancerProtocol        `json:"protocol"`
-	ListenerPort int32                              `json:"listenerPort"`
-	State        NetworkLoadBalancerCellIntentState `json:"state"`
+	VIPFamily         IPFamily                           `json:"vipFamily"`
+	VIP               string                             `json:"vip"`
+	Protocol          NetworkLoadBalancerProtocol        `json:"protocol"`
+	ListenerPort      int32                              `json:"listenerPort,omitempty"`
+	ListenerPortRange *PortRange                         `json:"listenerPortRange,omitempty"`
+	State             NetworkLoadBalancerCellIntentState `json:"state"`
 	// +kubebuilder:validation:MaxItems=1024
 	Backends []NetworkLoadBalancerCellIntentBackend `json:"backends,omitempty"`
 }

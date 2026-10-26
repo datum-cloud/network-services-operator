@@ -25,7 +25,7 @@ func TestNetworkLoadBalancerAdmission(t *testing.T) {
 	}
 
 	crds := make([]*apiextensionsv1.CustomResourceDefinition, 0, 2)
-	for _, name := range []string{"networkloadbalancers", "networkloadbalancerroutes"} {
+	for _, name := range []string{"networkloadbalancers", "networkloadbalancerroutes", "networkservices", "networkloadbalancercellintents"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "networking.datumapis.com_"+name+".yaml"))
 		require.NoError(t, err)
 		var crd apiextensionsv1.CustomResourceDefinition
@@ -64,6 +64,37 @@ func TestNetworkLoadBalancerAdmission(t *testing.T) {
 		valid  bool
 	}{
 		{name: "TCP and UDP share a port", valid: true},
+		{name: "UDP range", valid: true, mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners[1].Port = 0
+			lb.Spec.Listeners[1].PortRange = &networkingv1alpha.PortRange{Start: 10000, End: 10127}
+		}},
+		{name: "equal TCP range", valid: true, mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners[0].Port = 0
+			lb.Spec.Listeners[0].PortRange = &networkingv1alpha.PortRange{Start: 443, End: 443}
+		}},
+		{name: "TCP true range rejected", mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners[0].Port = 0
+			lb.Spec.Listeners[0].PortRange = &networkingv1alpha.PortRange{Start: 443, End: 444}
+		}},
+		{name: "both port forms rejected", mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners[1].PortRange = &networkingv1alpha.PortRange{Start: 443, End: 444}
+		}},
+		{name: "neither port form rejected", mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) { lb.Spec.Listeners[1].Port = 0 }},
+		{name: "reversed range rejected", mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners[1].Port = 0
+			lb.Spec.Listeners[1].PortRange = &networkingv1alpha.PortRange{Start: 444, End: 443}
+		}},
+		{name: "out of bounds range rejected", mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners[1].Port = 0
+			lb.Spec.Listeners[1].PortRange = &networkingv1alpha.PortRange{Start: 1, End: 65536}
+		}},
+		{name: "range singleton overlap rejected", mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners = append(lb.Spec.Listeners, networkingv1alpha.NetworkLoadBalancerListener{Name: "other", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 400, End: 443}, AddressRefs: []string{"regional"}})
+		}},
+		{name: "adjacent ranges", valid: true, mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
+			lb.Spec.Listeners = append(lb.Spec.Listeners, networkingv1alpha.NetworkLoadBalancerListener{Name: "other", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 444, End: 500}, AddressRefs: []string{"regional"}})
+		}},
+
 		{name: "IPv4 retained in API for capability gating", valid: true, mutate: func(lb *networkingv1alpha.NetworkLoadBalancer) {
 			lb.Spec.Exposure.Addresses[0].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol}
 		}},
@@ -98,6 +129,27 @@ func TestNetworkLoadBalancerAdmission(t *testing.T) {
 					{RequestName: "regional", Location: "us-west-1", Addresses: []networkingv1alpha.NetworkLoadBalancerAddressStatus{{Family: networkingv1alpha.IPv6Protocol, Value: "2001:db8::20"}}},
 				}
 				require.NoError(t, k8sClient.Status().Update(context.Background(), lb))
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+
+	for i, tc := range []struct {
+		name  string
+		ports []networkingv1alpha.NetworkServicePort
+		valid bool
+	}{
+		{"same numeric port distinct protocol", []networkingv1alpha.NetworkServicePort{{Name: "tcp", Port: 443}, {Name: "udp", Port: 443, Protocol: networkingv1alpha.NetworkServiceProtocolUDP}}, true},
+		{"overlapping UDP intervals", []networkingv1alpha.NetworkServicePort{{Name: "first", Protocol: networkingv1alpha.NetworkServiceProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127}}, {Name: "second", Protocol: networkingv1alpha.NetworkServiceProtocolUDP, Port: 10127}}, false},
+		{"adjacent UDP intervals", []networkingv1alpha.NetworkServicePort{{Name: "first", Protocol: networkingv1alpha.NetworkServiceProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127}}, {Name: "second", Protocol: networkingv1alpha.NetworkServiceProtocolUDP, Port: 10128}}, true},
+		{"TCP true range", []networkingv1alpha.NetworkServicePort{{Name: "tcp", PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127}}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &networkingv1alpha.NetworkService{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("service-%d", i), Namespace: "default"}, Spec: networkingv1alpha.NetworkServiceSpec{NetworkInterfaces: networkingv1alpha.NetworkServiceInterfaceSelector{Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "media"}}}, Ports: tc.ports}}
+			err := k8sClient.Create(context.Background(), service)
+			if tc.valid {
+				require.NoError(t, err)
 			} else {
 				require.Error(t, err)
 			}

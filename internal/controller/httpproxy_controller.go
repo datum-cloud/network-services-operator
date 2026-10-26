@@ -121,6 +121,14 @@ func collectDesiredResourcesErrorResult(err error, programmedCondition *metav1.C
 		return ctrl.Result{RequeueAfter: retryAfterConflict}, nil, true
 	}
 
+	var unsupportedRange *errNetworkServiceBackendUnsupportedRange
+	if errors.As(err, &unsupportedRange) {
+		programmedCondition.Status = metav1.ConditionFalse
+		programmedCondition.Reason = "UnsupportedBackendPortRange"
+		programmedCondition.Message = unsupportedRange.Error()
+		return ctrl.Result{RequeueAfter: retryAfterInvalid}, nil, true
+	}
+
 	var unsupportedProtocol *errNetworkServiceBackendUnsupportedProtocol
 	if errors.As(err, &unsupportedProtocol) {
 		programmedCondition.Status = metav1.ConditionFalse

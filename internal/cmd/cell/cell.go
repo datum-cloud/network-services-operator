@@ -405,7 +405,10 @@ func controllerRegistrations(
 			return false, nil
 		}
 		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
-			Location: serverConfig.Location,
+			Location:               serverConfig.Location,
+			MaxExposedPorts:        serverConfig.NetworkLoadBalancer.MaxExposedPorts,
+			SharedAddressListeners: serverConfig.NetworkLoadBalancer.SharedAddressListeners,
+			UDPPortRanges:          serverConfig.NetworkLoadBalancer.UDPPortRanges,
 		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 

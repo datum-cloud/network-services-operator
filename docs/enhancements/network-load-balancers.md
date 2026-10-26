@@ -155,11 +155,18 @@ still serve through another backend. Interface presence selects locations;
 health and programming determine announcement. With no attached route,
 placement is pending and no location IP is allocated.
 
-For a future address shared by several listeners, placement must be decided
-across all listeners using that address, and announcement requires every
-listener to be ready in the location. Sharing an address across listeners and
-selecting multiple address requests on one listener are capability-gated in
-the first release, while the API retains both shapes for later support.
+For an address shared by several listeners, placement is the union of backend
+locations across its attached listeners. Missing routes or backend services
+retain the address request's previously resolved locations until placement can
+be resolved again. A healthy listener can serve while another is unresolved or
+unhealthy. Each endpoint reports current-generation listener conditions;
+`Programmed` requires all desired listeners, while address announcement and
+`Ready` require at least one serving listener at every selected address.
+`Degraded=True` identifies a reachable load balancer with incomplete listener
+programming. Pending withdrawal is tracked independently from readiness and
+prevents allocation release until all serving obligations are acknowledged.
+Sharing remains disabled by default and requires the capabilities below.
+Selecting multiple address requests on one listener remains unsupported.
 
 A route without an allocated IPv6 VIP in a location owns no Galactic backend
 socket there. Once a VIP is allocated, an effective route with resolved
@@ -528,7 +535,7 @@ routing and termination remain with `HTTPProxy`.
 ### Initial Delivery and Capability Gates
 
 The API fields above describe the long-term consumer contract. Galactic's
-current one-protocol, one-VIP-port, one-backend-port `NetworkService` is
+per-listener `NetworkService` is
 an internal programming unit, not a limit on the public `NetworkService` or
 `NetworkLoadBalancerRoute` schema. NSO may create several Galactic resources
 for one NLB. It must not silently alter route selection or drop a backend to
@@ -546,7 +553,8 @@ the broader field shapes:
 | TLS listener, SNI match, or backend TLS transport | Reject with `UnsupportedCapability`; opaque TLS on a TCP listener remains valid. | Proxy-capable edge path, certificate lifecycle, and TLS route programming. |
 | More than one backend entry on a route, including entries with different resolved port numbers | Reject until the cell can program the complete set. Keep `backends` as a list of named-port references. | Galactic intent that represents every selected endpoint and its destination port, plus health and selection behavior. |
 | Reuse one backend address, port, and protocol in multiple forwarding rules of the same address family | Reject a conflicting attachment or report `BackendClaimConflict` if changing membership creates it later. | Galactic backend return-path support for multiple rules and VIPs on one socket. |
-| One address request shared by multiple listeners | Reject until announcements can be gated on every listener's readiness in the location. | Aggregate VIP readiness and coordinated advertisement. |
+| One address request shared by multiple listeners | Disabled by default; listeners become ready independently when enabled. | Explicit manager/cell configuration and current `SharedAddressListeners` capability on every nonterminating gateway. |
+| UDP port range | Disabled by default; preserve destination ports when enabled. | Explicit manager/cell configuration and current `UDPPortRanges` and address coordination capabilities on every nonterminating gateway. |
 | IPv4 in `families` | Reject where the public pool, backend bindings, or Galactic IPv4 feature gate is unavailable. | Capability reported by every serving cell in the location. |
 
 Validation returns the unsupported field and reason when a consumer submits
@@ -556,6 +564,100 @@ address, and withdraws affected announcements. An unsupported route is not
 partially programmed; health-driven exclusion of individual endpoints remains
 valid. Consistent per-flow selection and flow affinity across gateway nodes are
 required before any NLB listener serves traffic.
+
+### Shared addresses and UDP ranges
+
+Listeners and named `NetworkService` ports accept exactly one of `port` or
+`portRange: {start: 10000, end: 10127}`. Endpoints are inclusive and must be
+between 1 and 65535. Equal endpoints normalize to a singleton. True ranges
+require UDP. Intervals on the same address and wire protocol must not overlap;
+adjacent intervals and TCP/UDP using the same numbers are valid. Range-form
+listeners require name-based route parent references, including equal-endpoint
+ranges. Existing numeric parent selectors continue to select scalar listeners.
+
+A range route's named backend must declare a UDP range covering every exposed
+port. A packet to port `p` goes to backend port `p`; offset translation,
+range-to-singleton translation, and singleton-to-range translation are rejected.
+Existing singleton port remapping remains supported. The entire backend interval
+is reserved within the network, location, address and protocol return-path scope;
+dynamic overlaps report a backend claim conflict and cannot silently overwrite
+another listener's return mapping. Each range is one intent and one Galactic
+service, without expanding ports into Kubernetes resources.
+
+UDP ranges require an explicit health-check reference to a separate named
+singleton TCP port. The health of that probe applies to the whole range; it does
+not prove that each UDP port responds. HTTPProxy rejects true ranges with
+`UnsupportedBackendPortRange`. The scalar-only service CLI refuses to update a
+service containing a range; use a range-aware manifest update. Service listing
+and diagnosis display both range endpoints.
+
+```yaml
+listeners:
+  - name: control
+    protocol: TCP
+    port: 443
+    addressRefs: [public]
+  - name: media
+    protocol: UDP
+    portRange: {start: 10000, end: 10127}
+    addressRefs: [public]
+```
+
+The corresponding `NetworkService` can declare `control:443/TCP`, a `media`
+UDP range covering `10000..10127`, and `health:8080/TCP`. The media route names
+listener `media`, backend port `media`, and health-check port `health`.
+
+For coordinated addresses, NSO publishes a durable Galactic
+`NetworkServiceAddress` before publishing listener services. Its allocation UID
+includes the parent, request, location and claim UID; its generation and inventory
+revision cover every declared listener, including listeners without a service.
+Monotonic generation checks and equal-generation content checks reject stale
+writers. Each listener service identifies the same inventory and its own listener.
+The anchor survives transient health and resolution failures. Withdrawal removes
+the listener service first; the last withdrawal also deletes the anchor and waits
+for Galactic's forwarding/advertisement finalizers before acknowledging release.
+Readiness booleans are never proof that this teardown completed.
+
+Configure `networkLoadBalancer.sharedAddressListeners` and
+`networkLoadBalancer.udpPortRanges` independently on the manager and serving cell.
+Both default to false. A range-only address still requires Galactic address
+coordination capability. `networkLoadBalancer.maxExposedPorts` defaults to 1024
+when unset on either process. Admission counts inclusive interval width for each
+address reference across the NLB, and the cell checks the complete address
+inventory against its own limit. There are at most 16 listener descriptors per
+NLB/address inventory. This conservative quota is an operational guard, not a
+measured throughput or map-capacity guarantee.
+
+Install both repositories' new CRDs before deploying producers: older schemas
+may prune range or inventory fields. Upgrade Galactic controllers, gateways and
+routers before enabling NSO flags. Every nonterminating gateway must report its
+current generation, fail-closed backend health filtering, and required
+capabilities; absent or stale evidence prevents materialization. Validate Linux
+forward/reverse packet translation, unsupported-packet handling, route withdrawal
+and capacity under load before enabling a production cell. Unchanged scalar-only
+listeners continue through the legacy path without new capabilities.
+
+To roll back, disable admission for new shared/range configurations, withdraw
+existing affected intents and wait for service and address-anchor finalizers and
+allocation withdrawal acknowledgments. Only then downgrade serving binaries or
+schemas. Removing a range or reducing an inventory does not authorize stale
+siblings to restore an earlier revision. A transition back to a legacy singleton
+waits for the prior coordinated inventory and its advertisements to disappear.
+
+For development before publishing the Galactic dependency, create a temporary
+workspace outside either checkout (with the Go version required by NSO):
+
+```sh
+mkdir -p /tmp/nlb-validation
+cd /tmp/nlb-validation
+GOTOOLCHAIN=go1.26.4 go work init /absolute/path/to/network-services-operator /absolute/path/to/galactic
+cd /absolute/path/to/network-services-operator
+GOWORK=/tmp/nlb-validation/go.work go test ./internal/controller ./internal/webhook/v1alpha ./internal/networkagent ./internal/cmd/network ./internal/cmd/alb/util ./internal/config
+```
+
+Release Galactic first, then pin NSO's `go.mod` to the published Galactic
+revision and run the normal standalone checks. Do not commit a local filesystem
+`replace` or an unpublished synthetic version.
 
 ### Gateway API L4 Compatibility
 

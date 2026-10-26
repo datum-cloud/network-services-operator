@@ -52,6 +52,9 @@ func EnsureNetworkServicePort(service *networkingv1alpha.NetworkService, port st
 	names := make([]string, 0, len(service.Spec.Ports))
 	for _, p := range service.Spec.Ports {
 		if p.Name == port {
+			if p.PortRange != nil && !networkingv1alpha.PortInterval(p.Port, p.PortRange).Singleton() {
+				return fmt.Errorf("NetworkService port %q is a range; ALB backends require a singleton", port)
+			}
 			return nil
 		}
 		names = append(names, p.Name)

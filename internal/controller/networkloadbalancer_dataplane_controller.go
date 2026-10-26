@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -95,13 +96,29 @@ func applyNetworkLoadBalancerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer
 	var addresses []*networkingv1alpha.NetworkLoadBalancerAddressStatus
 	for i := range lb.Status.Endpoints {
 		endpoint := &lb.Status.Endpoints[i]
+		endpoint.Listeners = listenerDataPlane(lb, endpoint, intents)
 		for j := range endpoint.Addresses {
 			address := &endpoint.Addresses[j]
 			if address.Value == "" {
 				continue
 			}
 			addresses = append(addresses, address)
+			address.WithdrawalPending = false
+			for j := range intents {
+				intent := &intents[j]
+				if intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.VIP == address.Value && (intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate || !intentWithdrawalAcknowledged(intent)) {
+					address.WithdrawalPending = true
+				}
+			}
 			programmed, announced, known := addressDataPlane(intents, endpoint.RequestName, endpoint.Location, address.Value)
+			if len(endpoint.Listeners) > 0 {
+				var conditions []metav1.Condition
+				for _, listener := range endpoint.Listeners {
+					conditions = append(conditions, *apimeta.FindStatusCondition(listener.Conditions, networkingv1alpha.NetworkLoadBalancerProgrammed))
+				}
+				programmed = combineConditions(conditions, networkingv1alpha.NetworkLoadBalancerProgrammed)
+				setLoadBalancerCondition(&address.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerProgrammed, programmed.Status, programmed.Reason, programmed.Message)
+			}
 			if !known {
 				continue
 			}
@@ -119,13 +136,15 @@ func applyNetworkLoadBalancerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer
 	programmed := combineAddressConditions(addresses, networkingv1alpha.NetworkLoadBalancerProgrammed)
 	setLoadBalancerCondition(&lb.Status.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerProgrammed,
 		programmed.Status, programmed.Reason, programmed.Message)
-	ready := programmed
-	if programmed.Status == metav1.ConditionTrue {
-		ready = combineAddressConditions(addresses, networkingv1alpha.NetworkLoadBalancerAnnounced)
+	ready := combineAddressConditions(addresses, networkingv1alpha.NetworkLoadBalancerAnnounced)
+	degraded := metav1.ConditionFalse
+	if ready.Status == metav1.ConditionTrue && programmed.Status != metav1.ConditionTrue {
+		degraded = metav1.ConditionTrue
 	}
+	setLoadBalancerCondition(&lb.Status.Conditions, lb.Generation, "Degraded", degraded, "ListenerReadiness", "Listener programming is reported independently of address reachability")
 	if ready.Status == metav1.ConditionTrue {
 		ready.Reason = "Ready"
-		ready.Message = "Every address is programmed and announced"
+		ready.Message = "Every selected address has a serving listener"
 	}
 	setLoadBalancerCondition(&lb.Status.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerReady,
 		ready.Status, ready.Reason, ready.Message)
@@ -152,7 +171,7 @@ func addressDataPlane(
 	}
 	if len(serving) > 0 {
 		return combineIntentConditions(serving, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed),
-			combineIntentConditions(serving, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced), true
+			anyIntentCondition(serving, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced), true
 	}
 	for _, intent := range withdrawn {
 		if !intentWithdrawalAcknowledged(intent) {
@@ -249,4 +268,44 @@ func loadBalancerForCellIntent(intent *networkingv1alpha.NetworkLoadBalancerCell
 		ClusterName: multicluster.ClusterName(source.ProjectCluster),
 		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: source.Namespace, Name: source.ParentName}},
 	}}
+}
+
+func anyIntentCondition(intents []*networkingv1alpha.NetworkLoadBalancerCellIntent, conditionType string) metav1.Condition {
+	result := metav1.Condition{Status: metav1.ConditionFalse, Reason: "NotServed", Message: "No listener is serving"}
+	for _, intent := range intents {
+		c := reportedIntentCondition(intent, conditionType)
+		if c.Status == metav1.ConditionTrue {
+			return c
+		}
+		if c.Status == metav1.ConditionUnknown {
+			result = c
+		}
+	}
+	return result
+}
+
+func listenerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer, endpoint *networkingv1alpha.NetworkLoadBalancerEndpointStatus, intents []networkingv1alpha.NetworkLoadBalancerCellIntent) []networkingv1alpha.NetworkLoadBalancerListenerStatus {
+	var statuses []networkingv1alpha.NetworkLoadBalancerListenerStatus
+	for _, listener := range lb.Spec.Listeners {
+		if !slices.Contains(listener.AddressRefs, endpoint.RequestName) {
+			continue
+		}
+		status := networkingv1alpha.NetworkLoadBalancerListenerStatus{Name: listener.Name}
+		var selected []*networkingv1alpha.NetworkLoadBalancerCellIntent
+		for i := range intents {
+			intent := &intents[i]
+			if intent.Spec.Source.ListenerName == listener.Name && intent.Spec.Source.ParentGeneration == lb.Generation && intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+				selected = append(selected, intent)
+			}
+		}
+		for _, typ := range []string{networkingv1alpha.NetworkLoadBalancerProgrammed, networkingv1alpha.NetworkLoadBalancerAnnounced} {
+			condition := metav1.Condition{Status: metav1.ConditionFalse, Reason: "NoServingIntent", Message: "No current serving intent exists for this listener"}
+			if len(selected) > 0 {
+				condition = combineIntentConditions(selected, typ)
+			}
+			setLoadBalancerCondition(&status.Conditions, lb.Generation, typ, condition.Status, condition.Reason, condition.Message)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
 }

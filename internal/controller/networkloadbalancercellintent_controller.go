@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -148,7 +149,7 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 			continue
 		}
 		listener := &parent.Spec.Listeners[listenerIndex]
-		if unsupportedRouteListenerCapability(route, &parent, listener) != "" || len(listener.AddressRefs) != 1 {
+		if unsupportedRouteListenerCapability(route, listener) != "" || len(listener.AddressRefs) != 1 {
 			continue
 		}
 		var network networkingv1alpha.Network
@@ -239,8 +240,13 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 						},
 						Location: location, NetworkName: parent.Spec.NetworkRef.Name,
 						VIPFamily: allocation.Family, VIP: vip.String(), Protocol: listener.Protocol, ListenerPort: listener.Port,
-						State: networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn,
+						State:             networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn,
+						ListenerPortRange: listener.PortRange,
+						AddressGroup:      networkLoadBalancerAddressGroup(&parent, listener, addressRef, location, allocation),
 					}}
+					if intent.Spec.AddressGroup != nil && allocation.ClaimRef.UID == "" {
+						continue
+					}
 					for _, endpoint := range endpoints {
 						if endpoint.Location != location {
 							continue
@@ -248,7 +254,7 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 						intent.Spec.Backends = append(intent.Spec.Backends, networkingv1alpha.NetworkLoadBalancerCellIntentBackend{
 							SourceNamespace: endpoint.SourceNamespace, SourceName: endpoint.Interface,
 							SourceUID: endpoint.SourceUID, Family: networkingv1alpha.IPv6Protocol,
-							Address: endpoint.Address, Port: endpoint.Port,
+							Address: endpoint.Address, Port: endpoint.Port, PortRange: endpoint.PortRange,
 							Probe: endpoint.Probe,
 						})
 					}
@@ -275,34 +281,29 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 // address request during replacement. Withdraw all conflicting intents
 // until Galactic can reuse backends across VIPs.
 func withdrawConflictingCellIntents(desired []networkingv1alpha.NetworkLoadBalancerCellIntent) {
-	claims := make(map[string]int)
-	for _, intent := range desired {
-		if intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
-			continue
-		}
-		for _, backend := range intent.Spec.Backends {
-			claims[cellIntentBackendClaimKey(&intent, &backend)]++
-		}
-	}
+	conflicts := make([]bool, len(desired))
 	for i := range desired {
-		intent := &desired[i]
-		if intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
-			continue
-		}
-		if slices.ContainsFunc(intent.Spec.Backends, func(backend networkingv1alpha.NetworkLoadBalancerCellIntentBackend) bool {
-			return claims[cellIntentBackendClaimKey(intent, &backend)] > 1
-		}) {
-			intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
-			intent.Spec.Backends = nil
+		for j := 0; j < i; j++ {
+			a, b := &desired[i], &desired[j]
+			if a.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate || b.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate || a.Spec.NetworkName != b.Spec.NetworkName || a.Spec.Location != b.Spec.Location || a.Spec.Protocol != b.Spec.Protocol {
+				continue
+			}
+			for _, x := range a.Spec.Backends {
+				for _, y := range b.Spec.Backends {
+					if x.Address == y.Address && networkingv1alpha.PortInterval(x.Port, x.PortRange).Overlaps(networkingv1alpha.PortInterval(y.Port, y.PortRange)) {
+						conflicts[i] = true
+						conflicts[j] = true
+					}
+				}
+			}
 		}
 	}
-}
-
-func cellIntentBackendClaimKey(intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
-	backend *networkingv1alpha.NetworkLoadBalancerCellIntentBackend,
-) string {
-	return fmt.Sprintf("%s/%s/%s/%s/%d", intent.Spec.NetworkName, intent.Spec.Location,
-		intent.Spec.Protocol, backend.Address, backend.Port)
+	for i, conflict := range conflicts {
+		if conflict {
+			desired[i].Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
+			desired[i].Spec.Backends = nil
+		}
+	}
 }
 
 func networkLoadBalancerCellIntentName(spec networkingv1alpha.NetworkLoadBalancerCellIntentSpec) string {
@@ -310,6 +311,9 @@ func networkLoadBalancerCellIntentName(spec networkingv1alpha.NetworkLoadBalance
 		spec.Source.RouteUID, spec.Source.ParentUID, spec.Source.ListenerName, spec.Source.AddressRequest,
 		spec.Location, spec.VIP, spec.ListenerPort)
 	identity += "/" + string(spec.Protocol)
+	if spec.ListenerPortRange != nil {
+		identity += fmt.Sprintf("/%d-%d", spec.ListenerPortRange.Start, spec.ListenerPortRange.End)
+	}
 	sum := sha256.Sum256([]byte(identity))
 	return "nlb-" + hex.EncodeToString(sum[:16])
 }
@@ -461,4 +465,27 @@ func (r *NetworkLoadBalancerCellIntentReconciler) cleanupOrphanedIntents(ctx con
 		return ctrl.Result{RequeueAfter: nlbIntentRetry}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func networkLoadBalancerAddressGroup(parent *networkingv1alpha.NetworkLoadBalancer, listener *networkingv1alpha.NetworkLoadBalancerListener, request, location string, allocation networkingv1alpha.NetworkLoadBalancerAddressStatus) *networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup {
+	var listeners []networkingv1alpha.NetworkLoadBalancerCellIntentAddressListener
+	for _, candidate := range parent.Spec.Listeners {
+		if slices.Contains(candidate.AddressRefs, request) {
+			listeners = append(listeners, networkingv1alpha.NetworkLoadBalancerCellIntentAddressListener{Name: candidate.Name, Protocol: candidate.Protocol, Port: candidate.Port, PortRange: candidate.PortRange})
+		}
+	}
+	if len(listeners) < 2 && networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Singleton() {
+		return nil
+	}
+	slices.SortFunc(listeners, func(a, b networkingv1alpha.NetworkLoadBalancerCellIntentAddressListener) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	data, _ := json.Marshal(listeners)
+	revision := sha256.Sum256(data)
+	claimUID := ""
+	if allocation.ClaimRef != nil {
+		claimUID = allocation.ClaimRef.UID
+	}
+	uid := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s/%s", parent.UID, request, location, claimUID)))
+	return &networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup{UID: hex.EncodeToString(uid[:]), Generation: parent.Generation, Revision: hex.EncodeToString(revision[:]), ListenerName: listener.Name, Listeners: listeners}
 }

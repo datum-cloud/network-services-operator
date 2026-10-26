@@ -75,7 +75,10 @@ type CellControllerManager struct {
 // +k8s:deepcopy-gen=true
 
 type NetworkLoadBalancerCellConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	MaxExposedPorts        int32 `json:"maxExposedPorts,omitempty"`
+	SharedAddressListeners bool  `json:"sharedAddressListeners,omitempty"`
+	UDPPortRanges          bool  `json:"udpPortRanges,omitempty"`
+	Enabled                bool  `json:"enabled,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

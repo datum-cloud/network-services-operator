@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func TestNetworkLoadBalancerCapabilityValidation(t *testing.T) {
@@ -16,7 +17,7 @@ func TestNetworkLoadBalancerCapabilityValidation(t *testing.T) {
 		Name: "regional", Families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 	}}
 	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{
-		Name: "game", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, AddressRefs: []string{"regional"},
+		Name: "game", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, Port: 5001, AddressRefs: []string{"regional"},
 	}}
 	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb))
 	lb.Spec.Listeners[0].AddressRefs = []string{"regional", "second"}
@@ -29,7 +30,7 @@ func TestNetworkLoadBalancerCapabilityValidation(t *testing.T) {
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "proxy-capable")
 	lb.Spec.Listeners[0].Protocol = networkingv1alpha.NetworkLoadBalancerProtocolTCP
 	lb.Spec.Listeners = append(lb.Spec.Listeners, networkingv1alpha.NetworkLoadBalancerListener{
-		Name: "other", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, AddressRefs: []string{"regional"},
+		Name: "other", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, Port: 4443, AddressRefs: []string{"regional"},
 	})
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "shared")
 }
@@ -61,4 +62,17 @@ func TestNetworkLoadBalancerRouteRejectsDuplicateParents(t *testing.T) {
 	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "Duplicate value")
 	route.Spec.ParentRefs[1].Listener = "udp"
 	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route))
+}
+
+func TestNLBSharedRangeCapabilityAndQuota(t *testing.T) {
+	lb := &networkingv1alpha.NetworkLoadBalancer{}
+	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{Name: "web", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP, Port: 443, AddressRefs: []string{"public"}}, {Name: "media", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127}, AddressRefs: []string{"public"}}}
+	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "not enabled")
+	cfg := config.NetworkLoadBalancerConfig{SharedAddressListeners: true, UDPPortRanges: true, MaxExposedPorts: 129}
+	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb, cfg))
+	cfg.MaxExposedPorts = 128
+	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb, cfg), "capacity")
+	cfg.MaxExposedPorts = 129
+	cfg.UDPPortRanges = false
+	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb, cfg), "UDP port ranges")
 }

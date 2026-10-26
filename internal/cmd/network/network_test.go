@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -372,21 +371,27 @@ func TestServiceDeleteNamesTheLoadBalancersUsingIt(t *testing.T) {
 	assert.Contains(t, r.err, "Load balancers that stop reaching it: shop")
 }
 
-func TestInterfaceReleaseOnlyReleasesKeptInterfaces(t *testing.T) {
+func TestInterfaceReleaseRefusesAndKeepsTheInterface(t *testing.T) {
 	c := newTestClient(t,
 		iface("api-0", "default", "api", networkingv1alpha.NetworkInterfacePhaseBound),
 		iface("old-0", "default", "old", networkingv1alpha.NetworkInterfacePhaseAvailable))
 
-	r := run(t, c, "", "interface", "release", "api-0", "--yes")
-	assert.Equal(t, util.ExitConflict, r.code)
-	assert.Contains(t, r.err, "held by a running instance")
-
-	r = run(t, c, "", "interface", "list", "--kept", "-o", "name")
+	r := run(t, c, "", "interface", "list", "--kept", "-o", "name")
 	require.Zero(t, r.code, r.err)
 	assert.Equal(t, "old-0\n", r.out)
 
-	r = run(t, c, "", "interface", "release", "old-0", "--yes")
+	for _, name := range []string{"old-0", "api-0"} {
+		r = run(t, c, "", "interface", "release", name, "--yes")
+		assert.Equal(t, util.ExitUnavailable, r.code, name)
+		assert.Contains(t, r.err, "cannot be released", name)
+		assert.Contains(t, r.err, "until an instance of the same name comes back", name)
+		err := c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &networkingv1alpha.NetworkInterface{})
+		assert.NoError(t, err, "%s should still exist", name)
+	}
+}
+
+func TestInterfaceHelpOffersNoRelease(t *testing.T) {
+	r := run(t, newTestClient(t), "", "interface", "--help")
 	require.Zero(t, r.code, r.err)
-	err := c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "old-0"}, &networkingv1alpha.NetworkInterface{})
-	assert.True(t, apierrors.IsNotFound(err), "the kept interface should be gone: %v", err)
+	assert.NotContains(t, r.out, "release")
 }

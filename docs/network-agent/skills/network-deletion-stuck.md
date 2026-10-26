@@ -10,7 +10,8 @@ and any kept interfaces, and say what happens to each:
 
 - Workloads on it lose their network. Their instances cannot be addressed.
 - Network services on it stop serving.
-- Kept interfaces hold addresses in the network; their addresses go with it.
+- Kept interfaces hold addresses in the network. They cannot be released yet, so
+  the network cannot finish deleting while one of them holds an address in it.
 
 Then plan, show, agree, apply — like any other change.
 
@@ -31,7 +32,8 @@ those addresses to someone else while they are still in use.
 1. **Workloads** — delete them, or move them to another network. Each instance
    gives its address back as it goes.
 2. **Kept interfaces** — these hold addresses with no instance behind them.
-   Deleting one gives its addresses up for good; say so and get agreement.
+   They cannot be released yet, so this wait does not end on its own. It is
+   Datum's: quote the network, its location and the kept interfaces.
 
 Removal finishes on its own once the last address is released. Nothing needs to
 be re-applied.

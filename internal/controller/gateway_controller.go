@@ -3547,7 +3547,8 @@ func (r *GatewayReconciler) listGatewaysForHTTPRouteFilterFunc(clusterName multi
 					for _, filter := range backendRef.Filters {
 						if filter.ExtensionRef != nil &&
 							filter.ExtensionRef.Group == envoygatewayv1alpha1.GroupName &&
-							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter {
+							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter &&
+							string(filter.ExtensionRef.Name) == httpRouteFilter.Name {
 							for _, parentRef := range route.Spec.ParentRefs {
 								if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
 									ptr.Deref(parentRef.Kind, KindGateway) == KindGateway {

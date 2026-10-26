@@ -173,6 +173,13 @@ GitHub Actions enforce the same commands locally available:
 (lint.yml), and kustomize validation (validate-kustomize.yaml). Run them
 locally before pushing.
 
+### Metrics and logs
+Create every metric and logger through go.miloapis.com/instrumentation (Go)
+or @miloapis/instrumentation (TypeScript), naming labels with its labels
+constants. The instrumentation adoption test enforces this. When it fails,
+follow its message, which links to
+https://github.com/milo-os/instrumentation/blob/main/ADOPTING.md.
+
 ## Git Commit Message Format
 
 Follow this format for all commits:

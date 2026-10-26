@@ -32,10 +32,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"go.miloapis.com/instrumentation/logging"
+
 	agentdocs "go.datum.net/network-services-operator/docs/agent"
 	"go.datum.net/network-services-operator/internal/agent"
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
-	"go.datum.net/network-services-operator/internal/logging"
 	"go.datum.net/network-services-operator/internal/mcpserver"
 )
 

@@ -22,7 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"go.miloapis.com/instrumentation/labels"
+	"go.miloapis.com/instrumentation/metrics"
 )
 
 // Cluster is what Remove needs of the cluster that holds the object: the client
@@ -49,19 +51,15 @@ const (
 	outcomeError   = "error"
 )
 
-var removals = prometheus.NewCounterVec(
+var removals = metrics.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "nso_finalizer_removals_total",
 		Help: "Finalizer removals by field manager and outcome: patched, already removed, object gone, " +
 			"object replaced under its name, conflict (the list or the object changed after the read), " +
 			"invalid (refused by validation or admission), or another error.",
 	},
-	[]string{"field_manager", "outcome"},
+	[]string{"field_manager", labels.Outcome},
 )
-
-func init() {
-	ctrlmetrics.Registry.MustRegister(removals)
-}
 
 // Add makes name one of obj's finalizers by applying it under fieldOwner. The
 // apply carries obj's UID, so it never creates an object that was deleted.

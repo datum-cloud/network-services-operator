@@ -32,7 +32,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -42,6 +41,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/instrumentation/logging"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
@@ -50,10 +50,10 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/cmd/clusterdiscovery"
+	"go.datum.net/network-services-operator/internal/cmd/manager/secondary"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
-	"go.datum.net/network-services-operator/internal/logging"
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
 	networkinggatewayv1webhooks "go.datum.net/network-services-operator/internal/webhook/v1"
 	networkingv1alphawebhooks "go.datum.net/network-services-operator/internal/webhook/v1alpha"
@@ -339,7 +339,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 			if enableClusterSharding {
 				singletonMgr, err = manager.New(cfg, manager.Options{
 					Scheme:                        scheme,
-					Metrics:                       metricsserver.Options{BindAddress: "0"},
+					Metrics:                       secondary.MetricsServerOptions(),
 					WebhookServer:                 webhook.NewServer(webhook.Options{Port: 0}),
 					HealthProbeBindAddress:        "0",
 					LeaderElection:                singletonControllersLeaderElection,
@@ -367,7 +367,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				}
 				federationMgr, err = manager.New(federationConfig, manager.Options{
 					Scheme:                        scheme,
-					Metrics:                       metricsserver.Options{BindAddress: "0"},
+					Metrics:                       secondary.MetricsServerOptions(),
 					WebhookServer:                 webhook.NewServer(webhook.Options{Port: 0}),
 					HealthProbeBindAddress:        "0",
 					LeaderElection:                singletonControllersLeaderElection,

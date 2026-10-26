@@ -70,11 +70,6 @@ const (
 	labelValueTrue = "true"
 )
 
-// Metric label name constants.
-const (
-	metricLabelResourceKind = "resource_kind"
-)
-
 // API group constants for networking.datumapis.com resources.
 const (
 	groupNetworkingDatumAPIs = "networking.datumapis.com"

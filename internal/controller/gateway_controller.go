@@ -427,6 +427,7 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	result = result.Merge(r.reconcileDNSStatus(upstreamClient, upstreamGateway, hostnameStatuses))
 
 	gatewayStatusResult := r.reconcileGatewayStatus(
+		upstreamClusterName,
 		upstreamClient,
 		upstreamGateway,
 		downstreamGateway,
@@ -561,7 +562,7 @@ const listenerReasonIssuanceFailing = "IssuanceFailing"
 // so a removed listener never leaves a series stuck at its last value. The gating
 // counter is left alone because it is cumulative.
 func clearListenerCertMetrics(namespace, name string) {
-	labels := prometheus.Labels{jsonKeyNamespace: namespace, jsonKeyName: name}
+	labels := prometheus.Labels{metricLabelResourceNamespace: namespace, metricLabelResourceName: name}
 	gatewayListenerCertWithheld.DeletePartialMatch(labels)
 	gatewayListenerCertExpiryTime.DeletePartialMatch(labels)
 	gatewayListenerCertManaged.DeletePartialMatch(labels)
@@ -1377,6 +1378,7 @@ func clearReissuanceCount(gw *gatewayv1.Gateway, certName string) bool {
 }
 
 func (r *GatewayReconciler) reconcileGatewayStatus(
+	upstreamClusterName string,
 	upstreamClient client.Client,
 	upstreamGateway *gatewayv1.Gateway,
 	downstreamGateway *gatewayv1.Gateway,
@@ -1438,13 +1440,11 @@ func (r *GatewayReconciler) reconcileGatewayStatus(
 	}
 
 	// Track per-gateway programmed state. Set 1 when programmed, 0 when not.
-	// Dashboard: sum(nso_gateway_programmed_total) gives fleet-wide count;
-	// a value below total gateway count indicates partial fleet failures.
 	programmedValue := 0.0
 	if programmedReady {
 		programmedValue = 1.0
 	}
-	gatewayProgrammedTotal.WithLabelValues(upstreamGateway.Namespace, upstreamGateway.Name).Set(programmedValue)
+	gatewayProgrammed.WithLabelValues(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name).Set(programmedValue)
 
 	return result
 }
@@ -1918,7 +1918,7 @@ func (r *GatewayReconciler) finalizeGateway(
 
 	// Remove per-gateway metric series so deleted gateways do not leave stale
 	// label sets that misrepresent fleet state.
-	gatewayProgrammedTotal.DeleteLabelValues(upstreamGateway.Namespace, upstreamGateway.Name)
+	gatewayProgrammed.DeleteLabelValues(upstreamClusterName, upstreamGateway.Namespace, upstreamGateway.Name)
 	// Clear this gateway's cert-health series now that it is gone.
 	clearListenerCertMetrics(upstreamGateway.Namespace, upstreamGateway.Name)
 	r.forgetGateway(upstreamGateway)

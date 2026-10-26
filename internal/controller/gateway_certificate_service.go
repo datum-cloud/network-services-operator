@@ -405,7 +405,7 @@ func publishCertificateServiceFailing(upstreamGateway *gatewayv1.Gateway, failin
 }
 
 func clearCertificateServiceFailing(upstreamGateway *gatewayv1.Gateway) {
-	certificateServiceListenerFailing.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
+	certificateServiceListenerFailing.DeletePartialMatch(prometheus.Labels{metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name})
 }
 
 // ensureListenerTLSCertificate does one listener's pass: request or confirm
@@ -466,7 +466,7 @@ func (r *GatewayReconciler) forgetRemovedListeners(upstreamGateway *gatewayv1.Ga
 				continue
 			}
 			certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{
-				jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name, metricLabelListener: string(listener),
+				metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name, metricLabelListener: string(listener),
 			})
 			key := certificateServiceKey{gateway: upstreamGateway.UID, listener: listener}
 			r.certificateServiceStates.Delete(key)
@@ -492,7 +492,7 @@ func (r *GatewayReconciler) forgetGateway(upstreamGateway *gatewayv1.Gateway) {
 		return true
 	})
 	r.certificateServiceListeners.Delete(upstreamGateway.UID)
-	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{jsonKeyNamespace: upstreamGateway.Namespace, jsonKeyName: upstreamGateway.Name})
+	certificateServiceFailuresTotal.DeletePartialMatch(prometheus.Labels{metricLabelResourceNamespace: upstreamGateway.Namespace, metricLabelResourceName: upstreamGateway.Name})
 	clearCertificateServiceFailing(upstreamGateway)
 }
 

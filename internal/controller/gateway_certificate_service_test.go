@@ -721,7 +721,7 @@ func seriesInNamespace(t *testing.T, vec prometheus.Collector, namespace string)
 		var m dto.Metric
 		require.NoError(t, metric.Write(&m))
 		for _, label := range m.GetLabel() {
-			if label.GetName() == jsonKeyNamespace && label.GetValue() == namespace {
+			if label.GetName() == metricLabelResourceNamespace && label.GetValue() == namespace {
 				count++
 			}
 		}

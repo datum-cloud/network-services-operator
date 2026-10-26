@@ -191,13 +191,13 @@ spec:
         service: network-services
         team: sre
       annotations:
-        summary: "Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} has an unusable TLS certificate"
-        description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
+        summary: "Gateway listener {{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} has an unusable TLS certificate"
+        description: "NSO has withheld listener {{ $labels.listener }} (hostname {{ $labels.hostname }}) on Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} because its TLS certificate is unusable (reason: {{ $labels.reason }}). The customer cannot serve HTTPS on this hostname. Check the cert-manager Certificate and Secret in the downstream cluster."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#gatewaylistenercertunusable"
 
     # Fires when a managed TLS certificate is within 7 days of expiry while it
     # is still healthy. cert-manager renews automatically, but renewal fails if
-    # the domain's DNS no longer points to Datum. Acting here avoids a future
+    # the domain's DNS no longer points to this gateway. Acting here avoids a future
     # GatewayListenerCertUnusable alert.
     - alert: GatewayListenerCertExpiringSoon
       expr: |
@@ -208,8 +208,8 @@ spec:
         service: network-services
         team: sre
       annotations:
-        summary: "TLS certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} expires in less than 7 days"
-        description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to Datum. Verify the Certificate is Ready=True in the downstream cluster."
+        summary: "TLS certificate for Gateway listener {{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} expires in less than 7 days"
+        description: "The cert-manager Certificate for listener {{ $labels.listener }} (hostname {{ $labels.hostname }}, secret {{ $labels.secret }}) on Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} expires within 7 days. cert-manager should renew it automatically, but renewal fails if the domain's DNS no longer points to this gateway. Verify the Certificate is Ready=True in the downstream cluster."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#gatewaylistenercertexpiringsoon"
 
     # Fires when the extension server is actively dropping broken certificates
@@ -233,7 +233,7 @@ spec:
     # Fires when the extension server could not protect a listener because every
     # certificate on it is broken. It never removes a listener entirely, so the
     # edge will reject the update for that listener — EnvoyListenerUpdateRejected
-    # (infra) confirms it. It means the controller did not withhold the listener
+    # on the edge gateway confirms it. It means the controller did not withhold the listener
     # before it reached the edge.
     - alert: TLSBackstopListenerAllCertsBroken
       expr: |
@@ -256,15 +256,15 @@ spec:
     # certificate, so this fires weeks before that certificate expires.
     - alert: CertificateServiceIssuanceFailing
       expr: |
-        max by (namespace, name, listener, reason) (nso_certificate_service_listener_failing) > 0
+        max by (resource_namespace, resource_name, listener, reason) (nso_certificate_service_listener_failing) > 0
         or
-        sum by (namespace, name, listener, reason) (increase(nso_certificate_service_failures_total[1h])) > 0
+        sum by (resource_namespace, resource_name, listener, reason) (increase(nso_certificate_service_failures_total[1h])) > 0
       for: 2h
       labels:
         severity: warning
         service: network-services
         team: sre
       annotations:
-        summary: "Certificate for Gateway listener {{ $labels.namespace }}/{{ $labels.name }}/{{ $labels.listener }} cannot be issued or renewed"
-        description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.name }} in namespace {{ $labels.namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
+        summary: "Certificate for Gateway listener {{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} cannot be issued or renewed"
+        description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"

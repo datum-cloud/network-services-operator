@@ -60,7 +60,7 @@ func TestNLBDNSPublishesAnnouncedAddress(t *testing.T) {
 	ctx := context.Background()
 	lb := dnsTestLoadBalancer(true)
 	project, hub := dnsTestClients(t, lb)
-	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}}
+	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, Enabled: true}
 
 	_, err := reconciler.reconcileDNS(ctx, "project", project, client.ObjectKeyFromObject(lb))
 	require.NoError(t, err)
@@ -83,7 +83,7 @@ func TestNLBDNSWaitsForAnnouncement(t *testing.T) {
 	ctx := context.Background()
 	lb := dnsTestLoadBalancer(false)
 	project, hub := dnsTestClients(t, lb)
-	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}}
+	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, Enabled: true}
 
 	_, err := reconciler.reconcileDNS(ctx, "project", project, client.ObjectKeyFromObject(lb))
 	require.NoError(t, err)
@@ -98,7 +98,7 @@ func TestNLBDNSPublishOnAllocationLeavesReleaseUnblocked(t *testing.T) {
 	ctx := context.Background()
 	lb := dnsTestLoadBalancer(false)
 	project, hub := dnsTestClients(t, lb)
-	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, PublishOnAllocation: true}
+	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, Enabled: true, PublishOnAllocation: true}
 
 	_, err := reconciler.reconcileDNS(ctx, "project", project, client.ObjectKeyFromObject(lb))
 	require.NoError(t, err)
@@ -113,7 +113,7 @@ func TestNLBDNSWithdrawsWhenAnnouncementEnds(t *testing.T) {
 	ctx := context.Background()
 	lb := dnsTestLoadBalancer(true)
 	project, hub := dnsTestClients(t, lb)
-	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}}
+	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, Enabled: true}
 	key := client.ObjectKeyFromObject(lb)
 
 	_, err := reconciler.reconcileDNS(ctx, "project", project, key)
@@ -135,7 +135,7 @@ func TestNLBDNSWithdrawsBeforeDeletion(t *testing.T) {
 	ctx := context.Background()
 	lb := dnsTestLoadBalancer(true)
 	project, hub := dnsTestClients(t, lb)
-	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}}
+	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, Enabled: true}
 	key := client.ObjectKeyFromObject(lb)
 
 	_, err := reconciler.reconcileDNS(ctx, "project", project, key)
@@ -155,4 +155,32 @@ func TestNLBDNSWithdrawsBeforeDeletion(t *testing.T) {
 	require.False(t, lb.Status.Endpoints[0].Addresses[0].DNSPublished)
 	require.False(t, lb.DeletionTimestamp.IsZero())
 	require.WithinDuration(t, time.Now(), lb.DeletionTimestamp.Time, time.Minute)
+}
+
+func TestNLBDNSWithdrawsAndReleasesWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	lb := dnsTestLoadBalancer(true)
+	project, hub := dnsTestClients(t, lb)
+	reconciler := &NetworkLoadBalancerDNSReconciler{HubCluster: &fakeCluster{cl: hub}, Enabled: true}
+	key := client.ObjectKeyFromObject(lb)
+
+	_, err := reconciler.reconcileDNS(ctx, "project", project, key)
+	require.NoError(t, err)
+	_, err = hubDNSEndpoint(t, hub)
+	require.NoError(t, err)
+
+	reconciler.Enabled = false
+	_, err = reconciler.reconcileDNS(ctx, "project", project, key)
+	require.NoError(t, err)
+
+	_, err = hubDNSEndpoint(t, hub)
+	require.True(t, apierrors.IsNotFound(err))
+	require.NoError(t, project.Get(ctx, key, lb))
+	require.NotContains(t, lb.Finalizers, nlbDNSFinalizer)
+	require.False(t, lb.Status.Endpoints[0].Addresses[0].DNSPublished)
+
+	_, err = reconciler.reconcileDNS(ctx, "project", project, key)
+	require.NoError(t, err)
+	require.NoError(t, project.Get(ctx, key, lb))
+	require.NotContains(t, lb.Finalizers, nlbDNSFinalizer)
 }

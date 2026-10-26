@@ -22,4 +22,4 @@ Each name has one writer.
 
 ## Network load balancer names
 
-A network load balancer location's generated name, such as `<location>.<label>.datumproxy.net`, is published the same way as a gateway's own name: from a `DNSEndpoint` on the hub, written by `NetworkLoadBalancerDNSReconciler`, once the address is announced. It is off unless `networkLoadBalancer.dns.enabled` is set, and it is temporary until load balancer names move to Datum DNS registrations.
+A network load balancer location's generated name, such as `<location>.<label>.datumproxy.net`, is published the same way as a gateway's own name: from a `DNSEndpoint` on the hub, written by `NetworkLoadBalancerDNSReconciler`, once the address is announced. It is off unless `networkLoadBalancer.dns.enabled` is set; turning it off withdraws the records it published, and it is temporary until load balancer names move to Datum DNS registrations.

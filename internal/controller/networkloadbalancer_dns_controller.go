@@ -40,6 +40,9 @@ var dnsEndpointGVK = schema.GroupVersionKind{Group: "externaldns.k8s.io", Versio
 // a gateway's own names take.
 type NetworkLoadBalancerDNSReconciler struct {
 	HubCluster cluster.Cluster
+	// Enabled publishes hostnames. When false, the reconciler only withdraws
+	// what an earlier enabled run published and releases its finalizer.
+	Enabled bool
 	// PublishOnAllocation publishes an address as soon as it is allocated
 	// instead of once it is announced, and leaves dnsPublished unset so that
 	// address release never waits on DNS.
@@ -65,7 +68,7 @@ func (r *NetworkLoadBalancerDNSReconciler) reconcileDNS(ctx context.Context, pro
 	if err := projectClient.Get(ctx, key, &lb); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	deleting := !lb.DeletionTimestamp.IsZero()
+	deleting := !lb.DeletionTimestamp.IsZero() || !r.Enabled
 	if deleting && !controllerutil.ContainsFinalizer(&lb, nlbDNSFinalizer) {
 		return ctrl.Result{}, nil
 	}

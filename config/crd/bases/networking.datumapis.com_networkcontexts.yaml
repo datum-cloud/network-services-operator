@@ -167,6 +167,13 @@ spec:
                 required:
                 - name
                 type: object
+              networkDeleting:
+                description: |-
+                  NetworkDeleting says the Network itself is being deleted, so this location
+                  gives up what it keeps for the network, such as an interface kept after its
+                  instance went. A context removed because the network left this location
+                  does not carry it, and the location keeps those interfaces.
+                type: boolean
               networkGeneration:
                 description: |-
                   The Network generation the projected fields were read from, so an operator

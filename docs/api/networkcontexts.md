@@ -141,6 +141,16 @@ the same as a network that carries nothing.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>networkDeleting</b></td>
+        <td>boolean</td>
+        <td>
+          NetworkDeleting says the Network itself is being deleted, so this location
+gives up what it keeps for the network, such as an interface kept after its
+instance went. A context removed because the network left this location
+does not carry it, and the location keeps those interfaces.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>networkGeneration</b></td>
         <td>integer</td>
         <td>

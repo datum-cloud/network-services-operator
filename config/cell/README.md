@@ -25,8 +25,8 @@ credentials. The same ownership model applies to staging and production.
 
 `config/crd` is the NSO API set for project control planes. It omits
 NetworkLoadBalancerCellIntent, which only the hub and cells serve through
-`crd/downstream`. Do not apply
-it alongside `crd/downstream` through a second reconciler on the same cell.
+`crd/downstream`. Do not apply it alongside `crd/downstream` through a second
+reconciler on the same cell.
 The composed development and e2e overlays install their prerequisites in one
 render and use the cell controller component directly.
 

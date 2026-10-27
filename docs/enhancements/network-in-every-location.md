@@ -565,6 +565,10 @@ spec:
   # The Network generation these were read from. An operator comparing this to
   # the Network answers "has this location caught up" without guessing.
   networkGeneration: 7
+
+  # Set only while the Network itself is being deleted. The location gives up
+  # what it keeps for the network, such as an interface kept after its instance.
+  networkDeleting: true
 status:
   conditions:
     - type: IPAMAllocated
@@ -577,6 +581,11 @@ A reader treats an absent `ipFamilies` as "not yet carried" and refuses, with a 
 says so, rather than defaulting to something and attaching to the wrong rules.
 
 The `network-uid` label is not decoration. It is what garbage collection keys on, below.
+
+`networkDeleting` is the one fact that flows the other way in time: it tells the location the
+network is going, on the context the location already reads. Only the network's deletion sets
+it. A presence that ends because nothing declares it any more does not carry it, and the
+location keeps what it keeps.
 
 `Ready` is what every consumer waits on, and it says one thing: whether this location has
 the address space the network needs there. A location that needs none — an IPv4-only network,
@@ -666,11 +675,13 @@ network becomes usable.
 
 ### Garbage collection
 
-Deleting a network takes its presences with it, everywhere. The context is a child of the
-network, in the same control plane, so this is the platform's ordinary deletion behaviour
-rather than a mechanism of its own: no finalizer to get stuck, no sweep to fall behind, and
-no way for a presence to outlive the network it describes. The copies on the hub and at each
-location follow.
+Deleting a network takes its presences with it, everywhere. To the presence controller a
+deleting network is a presence nothing declares, with no wait: it marks each context
+`networkDeleting`, so every location gives up what it keeps for the network, and it deletes
+each context once its location holds no interface of the network (below). The network's
+finalizer waits until its contexts are gone, and its `Ready` message names each location it
+still waits on. The context is a child of the network, so no presence outlives the network it
+describes. The copies on the hub and at each location follow.
 
 A network deleted and recreated under the same name is a different network with a different
 address space. Ownership is by identity, not by name, so the new network never adopts its
@@ -692,7 +703,8 @@ retention exists to serve.
 The location cannot report upward. So the decision is made in two halves, on either side of a
 one-way propagation.
 
-**On the hub, the last binding going away deletes the context**, after a short wait. The
+**On the hub, the last binding going away deletes the context**, after a short wait and only
+once the location holds no interface of the network. The
 presence controller reconciles what the declarations say, and when nothing declares the
 network is needed there, the hub says it is not — but a workload being replaced deletes its
 binding and creates the replacement's a few seconds later, and acting on the first observation
@@ -709,34 +721,39 @@ A day is a retention policy rather than a race window. A location keeps the addr
 was given until the period expires, so a project that redeploys neither loses the network in
 that location nor is addressed from a different prefix afterwards — rebuilding the presence
 would draw a new one. The cost is that a location a project has genuinely finished with holds
-its prefix for a day. Deleting the Network itself is unaffected: its contexts are owned by it
-and go with it immediately.
+its prefix for a day. Deleting the Network itself does not wait out the period: its contexts
+are marked at once, and each goes once its location is empty.
+
+**The location's interfaces decide when the presence ends.** Each location publishes its
+interfaces to the hub (the copies a consumer is shown), labelled with the location. The
+presence controller reads them before it deletes a context, and watches them, so the last one
+going brings the presence back. A failed read deletes nothing, and a copy being deleted counts
+as gone. A location that keeps a retained interface therefore keeps its presence, live, for as
+long as it keeps the interface.
 
 **At the location, a local finalizer holds the copy while addresses are held.** The
 federation control plane preserves what a local controller adds to a propagated object. The
 location adds a finalizer
 to its `NetworkContext` while any `NetworkInterface` on that network exists in that namespace,
-and removes it when the last one is released. A hub deletion therefore removes the copy
-promptly in the ordinary case and blocks on a retained address in the case that matters.
+and removes it when the last one is released. The hub deletes the context only once the
+location publishes no interface of the network, so the hold is the location's own guard: it
+keeps the copy while an address is still being freed.
 
-When a retained slot comes back, its consumer creates a binding again, the presence controller
-writes the context under the same deterministic name, and propagation, which already runs
-`conflictResolution: Overwrite`, adopts the lingering copy. The retained interface never lost
+When a retained slot comes back, its consumer creates a binding again, and the presence
+controller finds the context still live and clears its stamp. The retained interface never lost
 its context.
 
-The honest cost: between the hub deleting and the location releasing, the copy is a
-terminating object that no hub declaration backs. It is readable, its spec is whatever it was
-last given, and it will not receive updates until a binding brings it back. For a context
-carrying two scalars that is acceptable. It would not be acceptable for an object carrying
-something that has to stay current, which is an argument for keeping `NetworkContext` as thin
-as it is.
+The honest cost: a location keeps its presence (the context, its subnet and its address space)
+for as long as it keeps an interface of the network. That is what retention asks for, and it
+ends when the interface is given up, at the latest when the network is deleted.
 
 The rejected alternative is simpler and worse: leave every context in place forever and
 reclaim on a slow sweep. It never wrongly tears down a retained address, and it also never
 tears anything down. A project that stops using a location keeps its presence, its subnet
 allocation, and its address space held there indefinitely, and the sweep needed to fix that
 is exactly the location-side liveness signal the finalizer already provides, minus the
-promptness.
+promptness. The design takes that signal one hop earlier: the interfaces each location
+publishes to the hub decide when its presence ends.
 
 ### The address family default
 

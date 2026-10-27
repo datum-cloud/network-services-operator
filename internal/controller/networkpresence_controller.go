@@ -115,6 +115,7 @@ type NetworkPresenceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -198,10 +199,6 @@ func (r *NetworkPresenceReconciler) holders(ctx context.Context, req ctrl.Reques
 // replicated copy under the same name and the same labels, and reaping that copy
 // would take the network's rules away from every cell reading them.
 //
-// At the location a local finalizer holds the propagated copy while addresses
-// are still held, so this is prompt in the ordinary case and blocks where it
-// must.
-//
 // Nothing declaring the presence is not on its own enough to remove it. A
 // workload being replaced stops declaring it for a few seconds, and the removal
 // waits out that gap before it commits.
@@ -209,6 +206,11 @@ func (r *NetworkPresenceReconciler) holders(ctx context.Context, req ctrl.Reques
 // A network being deleted ends every presence of it, declared or not. Its
 // contexts are marked first, so each location gives up what it keeps for the
 // network.
+//
+// Either way the context goes only once its location holds no interface of the
+// network. Until then the location still reads it: an interface kept there stays
+// addressed from its range, and a deleting network's mark still has a context to
+// arrive on. The location's own hold on its copy stays as its guard.
 func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	projectClient, networkContext, err := r.ownContext(ctx, req)
 	if err != nil || networkContext == nil {
@@ -220,12 +222,67 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 		return result, err
 	}
 
+	held, err := r.heldAtLocation(ctx, req.Namespace, networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(held) > 0 {
+		// The copies are watched, so the last one going brings this back.
+		log.FromContext(ctx).Info("network presence ends once its location gives up the network's interfaces",
+			"hub namespace", req.Namespace, "name", networkContext.Name, "interfaces", held)
+		return ctrl.Result{}, nil
+	}
+
 	log.FromContext(ctx).Info("network presence ends, removing it",
 		"hub namespace", req.Namespace, "namespace", networkContext.Namespace, "name", networkContext.Name)
-	if err := projectClient.Delete(ctx, networkContext); err != nil {
+	if err := projectClient.Delete(ctx, networkContext, client.Preconditions{UID: &networkContext.UID}); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// heldAtLocation names the interfaces of the network that the presence's
+// location still holds, read from the copies its cell publishes to the hub. A
+// copy being deleted is going with its interface, so it holds nothing.
+func (r *NetworkPresenceReconciler) heldAtLocation(
+	ctx context.Context,
+	hubNamespace string,
+	networkContext *networkingv1alpha.NetworkContext,
+) ([]string, error) {
+	var copies networkingv1alpha.NetworkInterfaceList
+	if err := r.hub.List(ctx, &copies, client.InNamespace(hubNamespace), client.MatchingLabels{
+		networkingv1alpha.NetworkInterfaceProjectionLabel: "true",
+		networkingv1alpha.NetworkInterfaceLocationLabel:   networkContext.Spec.Location.Name,
+	}); err != nil {
+		return nil, fmt.Errorf("failed listing the interfaces location %q publishes: %w",
+			networkContext.Spec.Location.Name, err)
+	}
+
+	var held []string
+	for i := range copies.Items {
+		copied := &copies.Items[i]
+		if copied.Spec.Network.Name == networkContext.Spec.Network.Name && copied.DeletionTimestamp.IsZero() {
+			held = append(held, copied.Name)
+		}
+	}
+	return held, nil
+}
+
+// presenceOfInterfaceCopy maps an interface a cell published to the hub onto
+// the presence of its network in that cell's location.
+func presenceOfInterfaceCopy(_ context.Context, obj client.Object) []reconcile.Request {
+	copied, ok := obj.(*networkingv1alpha.NetworkInterface)
+	if !ok || !isProjection(copied) {
+		return nil
+	}
+	location := copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]
+	if location == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Namespace: copied.Namespace,
+		Name:      networkContextName(copied.Spec.Network.Name, locationsv1alpha1.LocationReference{Name: location}),
+	}}}
 }
 
 // ownContext reads the context a presence left in its project when it is this
@@ -785,6 +842,9 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 					Name:      networkContextNameForBinding(binding),
 				}}}
 			})).
+		// A presence ends only once its location holds no interface of the
+		// network, and the copies each cell publishes here are how the hub sees it.
+		Watches(&networkingv1alpha.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(presenceOfInterfaceCopy)).
 		Named("networkpresence")
 
 	return builder.Complete(r)

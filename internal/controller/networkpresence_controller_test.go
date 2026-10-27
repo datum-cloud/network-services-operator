@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -859,6 +860,192 @@ func TestNetworkPresenceMarksAContextInItsGraceWhenTheNetworkIsDeleted(t *testin
 	require.True(t, ok)
 	require.True(t, networkContext.Spec.NetworkDeleting,
 		"the network's deletion does not wait out a grace kept for the network's own return")
+}
+
+// publishInterface stands in for a cell publishing an interface to the hub,
+// where the presence reads what its location still holds.
+func (s *presenceScenario) publishInterface(name, network, location string) *networkingv1alpha.NetworkInterface {
+	s.t.Helper()
+	copied := &networkingv1alpha.NetworkInterface{}
+	copied.Namespace = s.hubNamespace
+	copied.Name = name
+	copied.Labels = map[string]string{
+		networkingv1alpha.NetworkInterfaceProjectionLabel: "true",
+		networkingv1alpha.NetworkInterfaceLocationLabel:   location,
+	}
+	copied.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network}
+	require.NoError(s.t, s.hub.Create(s.ctx, copied))
+	return copied
+}
+
+func (s *presenceScenario) expireGrace() {
+	s.t.Helper()
+	networkContext, ok := s.networkContext()
+	require.True(s.t, ok)
+	networkContext.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation] =
+		time.Now().Add(-2 * s.reconciler.UnclaimedGracePeriod).UTC().Format(time.RFC3339)
+	require.NoError(s.t, s.hub.Update(s.ctx, networkContext))
+}
+
+func (s *presenceScenario) requireContextLive(why string) *networkingv1alpha.NetworkContext {
+	s.t.Helper()
+	networkContext, ok := s.networkContext()
+	require.True(s.t, ok, why)
+	require.True(s.t, networkContext.DeletionTimestamp.IsZero(), why)
+	return networkContext
+}
+
+func (s *presenceScenario) requireContextGone(why string) {
+	s.t.Helper()
+	networkContext, ok := s.networkContext()
+	require.True(s.t, !ok || !networkContext.DeletionTimestamp.IsZero(), why)
+}
+
+// A deleting network's presence stays live and marked until its location gives
+// up the network's interfaces. Deleting it sooner leaves the location's copy to
+// arrive without the mark, and a kept interface held there for good.
+func TestNetworkPresenceOfADeletingNetworkWaitsForItsLocationsInterfaces(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+	kept := s.publishInterface("kept-eth0", s.networkName, s.locationName)
+
+	s.deleteNetwork()
+	s.reconcile()
+
+	networkContext := s.requireContextLive("the location still holds an interface of the network")
+	require.True(t, networkContext.Spec.NetworkDeleting)
+
+	require.NoError(t, s.hub.Delete(s.ctx, kept))
+	s.reconcile()
+	s.requireContextGone("the location holds nothing of the network any more")
+}
+
+// Where the location holds nothing of the network, its presence ends as fast as
+// it does today. Another location's interfaces and another network's are not
+// this presence's.
+func TestNetworkPresenceOfADeletingNetworkEndsAtOnceWhereItsLocationHoldsNothing(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Hour})
+	s.createBinding("consumer-a")
+	s.reconcile()
+	s.publishInterface("elsewhere-eth0", s.networkName, "another-location")
+	s.publishInterface("other-network-eth0", "another-network", s.locationName)
+
+	s.deleteNetwork()
+	s.reconcile()
+
+	s.requireContextGone("nothing at this location belongs to the network")
+}
+
+// A copy is collected as soon as its interface starts going, so one being
+// deleted is not an interface the location still holds.
+func TestNetworkPresenceCountsACopyBeingDeletedAsGone(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+	going := s.publishInterface("going-eth0", s.networkName, s.locationName)
+	going.Finalizers = []string{"test.datumapis.com/hold"}
+	require.NoError(t, s.hub.Update(s.ctx, going))
+	require.NoError(t, s.hub.Delete(s.ctx, going))
+
+	s.deleteNetwork()
+	s.reconcile()
+
+	s.requireContextGone("a copy being deleted holds nothing")
+}
+
+// unreadableCopies is a hub whose interface copies cannot be listed.
+type unreadableCopies struct {
+	client.Client
+}
+
+func (c unreadableCopies) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*networkingv1alpha.NetworkInterfaceList); ok {
+		return fmt.Errorf("the hub cannot be reached")
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+// A location that cannot be read may still hold interfaces, so a failed read
+// ends nothing.
+func TestNetworkPresenceEndsNothingWhenItCannotReadItsLocation(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+	s.reconciler.hub = unreadableCopies{Client: s.hub}
+
+	s.deleteNetwork()
+	_, err := s.reconciler.Reconcile(s.ctx, s.request())
+
+	require.Error(t, err)
+	s.requireContextLive("an unread location is not an empty one")
+}
+
+// Retain keeps an interface past its instance, and the location keeps its
+// presence for as long as it keeps the interface: the network stays there, and
+// so does the range the interface is addressed from.
+func TestNetworkPresencePastItsGraceWaitsForItsLocationsInterfaces(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	kept := s.publishInterface("kept-eth0", s.networkName, s.locationName)
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconcile()
+	s.expireGrace()
+
+	s.reconcile()
+
+	networkContext := s.requireContextLive("a location that keeps an interface keeps its presence")
+	require.NotEmpty(t, networkContext.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation],
+		"the stamp still says when nothing declared the presence")
+	require.False(t, networkContext.Spec.NetworkDeleting, "the network stays, so its location keeps what it keeps")
+
+	require.NoError(t, s.hub.Delete(s.ctx, kept))
+	s.reconcile()
+	s.requireContextGone("nothing declares the presence, and its location holds nothing of the network")
+}
+
+// A slot that comes back after the grace finds its presence where it left it.
+func TestNetworkPresenceKeptPastItsGraceServesAReturningBinding(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	before := s.requireContextLive("the presence is declared")
+	s.publishInterface("kept-eth0", s.networkName, s.locationName)
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconcile()
+	s.expireGrace()
+	s.reconcile()
+
+	s.createBinding("consumer-b")
+	s.reconcile()
+
+	after := s.requireContextLive("the returning binding is served")
+	require.Equal(t, before.UID, after.UID, "the presence the kept interface is addressed from serves it")
+	require.Empty(t, after.Annotations[networkingv1alpha.NetworkContextUnclaimedSinceAnnotation])
+}
+
+func TestAnInterfaceCopyMapsToThePresenceOfItsNetworkInItsLocation(t *testing.T) {
+	copied := &networkingv1alpha.NetworkInterface{}
+	copied.Namespace = "hub-namespace"
+	copied.Name = "kept-eth0"
+	copied.Labels = map[string]string{
+		networkingv1alpha.NetworkInterfaceProjectionLabel: "true",
+		networkingv1alpha.NetworkInterfaceLocationLabel:   "us-east-1",
+	}
+	copied.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "default"}
+
+	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Namespace: "hub-namespace",
+		Name: networkContextName("default", locationsv1alpha1.LocationReference{
+			Name: "us-east-1",
+		}),
+	}}}, presenceOfInterfaceCopy(context.Background(), copied))
+
+	original := copied.DeepCopy()
+	delete(original.Labels, networkingv1alpha.NetworkInterfaceProjectionLabel)
+	require.Empty(t, presenceOfInterfaceCopy(context.Background(), original),
+		"only a published copy speaks for a location")
 }
 
 func projectedLocation(name string) *locationsv1alpha1.Location {

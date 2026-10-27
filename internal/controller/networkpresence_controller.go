@@ -365,10 +365,10 @@ func (r *NetworkPresenceReconciler) ends(
 	return ctrl.Result{RequeueAfter: remaining}, remaining == 0, nil
 }
 
-// networkDeleting reports whether the network a context was written for is
-// being deleted. Only the network itself says so: a network that cannot be read,
-// or one of the same name with another UID, is not evidence, and what the mark
-// sets in motion at the location cannot be taken back.
+// networkDeleting reports whether the network a context names is being deleted.
+// Only the network itself says so: a network that cannot be read is not
+// evidence, and what the mark sets in motion at the location cannot be taken
+// back.
 func networkDeleting(
 	ctx context.Context,
 	projectClient client.Client,
@@ -379,8 +379,7 @@ func networkDeleting(
 	if err := projectClient.Get(ctx, key, &network); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
-	return string(network.UID) == networkContext.Labels[networkingv1alpha.NetworkUIDLabel] &&
-		!network.DeletionTimestamp.IsZero(), nil
+	return !network.DeletionTimestamp.IsZero(), nil
 }
 
 // markNetworkDeleting tells the location that the network is being deleted, so

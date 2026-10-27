@@ -158,6 +158,10 @@ install-network-plugin: build-network-plugin ## Install the datumctl-network plu
 
 GORELEASER ?= goreleaser
 
+.PHONY: build-nlb-plugin
+build-nlb-plugin: $(LOCALBIN) ## Build the datumctl-nlb plugin.
+	go build -ldflags "-X main.version=$(PLUGIN_VERSION)" -o $(LOCALBIN)/datumctl-nlb ./cmd/datumctl-nlb
+
 .PHONY: release-plugin-snapshot
 release-plugin-snapshot: ## Build the plugin release archives locally into dist/ (no publish).
 	@command -v $(GORELEASER) >/dev/null 2>&1 || { \

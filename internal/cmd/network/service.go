@@ -209,7 +209,7 @@ func addSelectorFlags(cmd *cobra.Command) {
 	cmd.Flags().String("workload", "", "Workload whose instances answer for the service")
 	cmd.Flags().StringToString("selector", nil, "Labels an instance's network interface must carry, e.g. app=api,tier=web; instead of --workload")
 	cmd.Flags().StringArray("port", nil, "Port as name:number, e.g. http:8080. For a port that speaks HTTP/2, "+
-		"which gRPC needs, use the long form: name=grpc,port=9090,app-protocol=h2c. Repeat for more")
+		"which gRPC needs, use name=grpc,port=9090,app-protocol=h2c. For UDP use name=media,port-range=10000-10127,protocol=UDP. Repeat for more")
 	cmd.MarkFlagsMutuallyExclusive("workload", "selector")
 }
 
@@ -229,7 +229,7 @@ func parsePorts(raw []string) ([]networkagent.RenderPort, error) {
 // name=…,port=…,app-protocol=…, which carries what the short form cannot.
 func parsePort(raw string) (networkagent.RenderPort, error) {
 	usage := util.UsageErrorf("--port %q must be name:number, e.g. http:8080, "+
-		"or name=<name>,port=<number>,app-protocol=h2c", raw)
+		"or name=<name>,port=<number>,protocol=TCP|UDP; use port-range=START-END for UDP ranges", raw)
 
 	if !strings.Contains(raw, "=") {
 		name, number, ok := strings.Cut(raw, ":")
@@ -260,13 +260,23 @@ func parsePort(raw string) (networkagent.RenderPort, error) {
 				return networkagent.RenderPort{}, usage
 			}
 			port.Port = int32(n)
+		case "protocol":
+			port.Protocol = strings.ToUpper(value)
+		case "port-range":
+			start, end, ok := strings.Cut(value, "-")
+			a, e1 := strconv.ParseInt(start, 10, 32)
+			b, e2 := strconv.ParseInt(end, 10, 32)
+			if !ok || e1 != nil || e2 != nil || a < 1 || b > 65535 || a > b {
+				return networkagent.RenderPort{}, usage
+			}
+			port.PortRange = &networkingv1alpha.PortRange{Start: int32(a), End: int32(b)}
 		case "app-protocol":
 			port.AppProtocol = value
 		default:
-			return networkagent.RenderPort{}, util.UsageErrorf("--port %q has an unknown key %q: use name, port and app-protocol", raw, key)
+			return networkagent.RenderPort{}, util.UsageErrorf("--port %q has an unknown key %q: use name, port, port-range, protocol and app-protocol", raw, key)
 		}
 	}
-	if port.Name == "" || port.Port == 0 {
+	if port.Name == "" || seen["port"] && seen["port-range"] || (port.Port == 0) == (port.PortRange == nil) {
 		return networkagent.RenderPort{}, usage
 	}
 	return port, nil
@@ -388,18 +398,17 @@ func runServiceUpdate(cmd *cobra.Command, args []string) error {
 		return notFound("network service", name, listServices, err)
 	}
 
-	for _, port := range svc.Spec.Ports {
-		if port.PortRange != nil {
-			return util.UsageErrorf("network service %q contains portRange; use a range-aware manifest update", name)
-		}
-	}
 	in, err := serviceInput(cmd, name)
 	if err != nil {
 		return err
 	}
 	if !cmd.Flags().Changed("port") {
 		for _, p := range svc.Spec.Ports {
-			in.Ports = append(in.Ports, networkagent.RenderPort{Name: p.Name, Port: p.Port})
+			rendered := networkagent.RenderPort{Name: p.Name, Port: p.Port, PortRange: p.PortRange, Protocol: string(p.Protocol)}
+			if p.AppProtocol != nil {
+				rendered.AppProtocol = string(*p.AppProtocol)
+			}
+			in.Ports = append(in.Ports, rendered)
 		}
 	}
 	if in.Workload == "" && len(in.MatchLabels) == 0 {
@@ -423,7 +432,7 @@ func runServiceUpdate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("port") {
 		svc.Spec.Ports = nil
 		for _, p := range in.Ports {
-			port := networkingv1alpha.NetworkServicePort{Name: p.Name, Port: p.Port}
+			port := networkingv1alpha.NetworkServicePort{Name: p.Name, Port: p.Port, PortRange: p.PortRange, Protocol: networkingv1alpha.NetworkServiceProtocol(strings.ToUpper(p.Protocol))}
 			// Render has already validated the value.
 			if appProtocol, _ := networkagent.AppProtocol(p.AppProtocol); appProtocol != "" {
 				port.AppProtocol = ptr.To(networkingv1alpha.NetworkServiceAppProtocol(appProtocol))

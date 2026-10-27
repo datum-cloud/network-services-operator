@@ -32,9 +32,11 @@ const (
 var portNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type RenderPort struct {
-	Name        string `json:"name" jsonschema:"Port name, a lowercase DNS label such as \"http\". A load balancer names this, not the number, so pick something that says what it carries."`
-	Port        int32  `json:"port" jsonschema:"Port number the workload's instances listen on, 1 to 65535. This is the port on the instance itself, not one Datum publishes."`
-	AppProtocol string `json:"appProtocol,omitempty" jsonschema:"Leave unset for HTTP/1.1, which suits most servers. Set h2c for servers that speak HTTP/2, such as gRPC servers. Every request on the port then reaches them as HTTP/2, so WebSockets belong on a different port."`
+	Protocol    string                       `json:"protocol,omitempty" jsonschema:"Transport protocol: TCP (default) or UDP."`
+	PortRange   *networkingv1alpha.PortRange `json:"portRange,omitempty" jsonschema:"Inclusive UDP range. Set this or port, never both."`
+	Name        string                       `json:"name" jsonschema:"Port name, a lowercase DNS label such as \"http\". A load balancer names this, not the number, so pick something that says what it carries."`
+	Port        int32                        `json:"port,omitempty" jsonschema:"Port number the workload's instances listen on, 1 to 65535. This is the port on the instance itself, not one Datum publishes."`
+	AppProtocol string                       `json:"appProtocol,omitempty" jsonschema:"Leave unset for HTTP/1.1, which suits most servers. Set h2c for servers that speak HTTP/2, such as gRPC servers. Every request on the port then reaches them as HTTP/2, so WebSockets belong on a different port."`
 }
 
 // AppProtocol returns the API value for a port's application protocol, given
@@ -167,27 +169,58 @@ func renderService(in RenderInput) (map[string]any, []string, error) {
 		return nil, nil, fmt.Errorf("a service needs between 1 and %d ports, not %d", maxPorts, len(in.Ports))
 	}
 
-	names, numbers := map[string]bool{}, map[int32]bool{}
+	names := map[string]bool{}
 	ports := make([]map[string]any, 0, len(in.Ports))
-	for _, p := range in.Ports {
+	for i, p := range in.Ports {
 		if len(p.Name) > validation.DNS1123LabelMaxLength || !portNamePattern.MatchString(p.Name) {
 			return nil, nil, fmt.Errorf("port name %q must be a lowercase DNS label", p.Name)
 		}
-		if p.Port < 1 || p.Port > 65535 {
-			return nil, nil, fmt.Errorf("port %q must be between 1 and 65535, not %d", p.Name, p.Port)
+		if (p.Port != 0) == (p.PortRange != nil) {
+			return nil, nil, fmt.Errorf("port %q needs exactly one number or range", p.Name)
+		}
+		interval := networkingv1alpha.PortInterval(p.Port, p.PortRange)
+		if !interval.Valid() {
+			return nil, nil, fmt.Errorf("port %q must be between 1 and 65535", p.Name)
+		}
+		protocol := strings.ToUpper(p.Protocol)
+		if protocol == "" {
+			protocol = "TCP"
+		}
+		if protocol != "TCP" && protocol != "UDP" {
+			return nil, nil, fmt.Errorf("port %q protocol must be TCP or UDP", p.Name)
+		}
+		if !interval.Singleton() && protocol != "UDP" {
+			return nil, nil, fmt.Errorf("port ranges require UDP")
+		}
+		if protocol == "UDP" && p.AppProtocol != "" {
+			return nil, nil, fmt.Errorf("UDP ports cannot set an HTTP app protocol")
+		}
+		for _, prior := range in.Ports[:i] {
+			pp := strings.ToUpper(prior.Protocol)
+			if pp == "" {
+				pp = "TCP"
+			}
+			if pp == protocol && interval.Overlaps(networkingv1alpha.PortInterval(prior.Port, prior.PortRange)) {
+				return nil, nil, fmt.Errorf("port %q overlaps %q on %s", p.Name, prior.Name, protocol)
+			}
 		}
 		if names[p.Name] {
 			return nil, nil, fmt.Errorf("port name %q is used twice", p.Name)
-		}
-		if numbers[p.Port] {
-			return nil, nil, fmt.Errorf("port number %d is used twice", p.Port)
 		}
 		appProtocol, err := AppProtocol(p.AppProtocol)
 		if err != nil {
 			return nil, nil, fmt.Errorf("port %q: %w", p.Name, err)
 		}
-		names[p.Name], numbers[p.Port] = true, true
-		port := map[string]any{"name": p.Name, "port": p.Port}
+		names[p.Name] = true
+		port := map[string]any{"name": p.Name}
+		if p.PortRange != nil {
+			port["portRange"] = map[string]any{"start": p.PortRange.Start, "end": p.PortRange.End}
+		} else {
+			port["port"] = p.Port
+		}
+		if p.Protocol != "" {
+			port["protocol"] = protocol
+		}
 		if appProtocol != "" {
 			port["appProtocol"] = appProtocol
 		}
@@ -196,8 +229,7 @@ func renderService(in RenderInput) (map[string]any, []string, error) {
 
 	matchLabels := in.MatchLabels
 	notes := []string{
-		"Traffic is served from the location nearest whoever is asking, falling back to the next nearest. " +
-			"That is the only behaviour today and needs no setting.",
+		"ALBs choose the nearest serving location. NLBs use backends in the location where traffic arrives.",
 		"A service only reaches instances on one network. If what it selects spans two, it serves neither.",
 		fmt.Sprintf("Pass this manifest to %s. The service can be created before the workload behind it exists; "+
 			"it serves once matching instances report themselves ready.", baseToolResourcesPlan),

@@ -1,0 +1,34 @@
+@startuml DomainVerificationContainers
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Container View — Domain verification by delegation
+
+Person(user, "Platform User", "Creates zones and Gateways;\nsets nameservers at the registrar")
+
+System_Ext(registrar, "Registrar and Registry", "Publishes the domain's\ndelegation in the parent zone")
+System_Ext(parent, "Parent Zone Nameservers", "TLD servers, or the servers\nfor a subdomain's parent zone")
+System_Ext(recursive, "Recursive Resolvers", "Find the parent zone\nand its servers")
+System_Ext(rdap, "RDAP / WHOIS", "Registration data; fallback\nnameservers for a registered domain")
+System_Ext(dns, "DNS Service (DNS operator)", "Admits zones by claim and serves\nthem; see Zone claims")
+
+System_Boundary(tenant, "Tenant Control Planes") {
+    Container(cp, "Project Control Plane", "Kubernetes API", "Domain, DNSZone,\nGateway, HTTPProxy")
+}
+
+System_Boundary(nsoBoundary, "Network Services") {
+    Container(nso, "Network Services Operator", "Go / multicluster-runtime", "Verifies Domains; admits Gateway\nhostnames on verified Domains")
+}
+
+Rel(user, cp, "Creates DNSZone, Gateway", "kubectl / API")
+Rel(user, registrar, "Sets the zone's nameservers")
+Rel(registrar, parent, "Publishes NS records")
+Rel(dns, cp, "Writes DNSZone Accepted, Programmed,\nnameservers, domainRef", "patch")
+Rel(nso, cp, "Watches DNSZone and Domain;\nwrites Domain status;\nadmits hostnames", "watch / patch")
+Rel(nso, recursive, "SOA and NS of the parent zone", "DNS")
+Rel(nso, parent, "NS query for the name,\nrecursion off", "DNS, UDP/TCP :53")
+Rel(nso, rdap, "Registration lookup;\nnameserver fallback", "HTTPS / WHOIS")
+
+SHOW_LEGEND()
+@enduml

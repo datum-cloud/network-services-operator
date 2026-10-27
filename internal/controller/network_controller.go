@@ -182,13 +182,7 @@ func terminatingMessage(networkContexts []networkingv1alpha.NetworkContext) stri
 			location = networkContext.Name
 		}
 
-		wait := "waiting on " + location + ": it is being removed"
-		if allocated := apimeta.FindStatusCondition(
-			networkContext.Status.Conditions, networkingv1alpha.NetworkContextIPAMAllocated,
-		); allocated != nil && allocated.Status == metav1.ConditionFalse && allocated.Message != "" {
-			wait = "waiting on " + location + ": " + allocated.Message
-		}
-		waits = append(waits, wait)
+		waits = append(waits, "waiting on "+location+": "+terminatingWait(networkContext))
 	}
 	slices.Sort(waits)
 
@@ -196,6 +190,21 @@ func terminatingMessage(networkContexts []networkingv1alpha.NetworkContext) stri
 		return "The network is being deleted"
 	}
 	return "The network is being deleted and is " + strings.Join(waits, "; ")
+}
+
+// terminatingWait says why the network still waits on one of its contexts. A
+// live one is a presence whose location has not yet given up the network's
+// interfaces; the presence controller ends it once it has.
+func terminatingWait(networkContext *networkingv1alpha.NetworkContext) string {
+	if networkContext.DeletionTimestamp.IsZero() {
+		return "it still holds interfaces of the network"
+	}
+	if allocated := apimeta.FindStatusCondition(
+		networkContext.Status.Conditions, networkingv1alpha.NetworkContextIPAMAllocated,
+	); allocated != nil && allocated.Status == metav1.ConditionFalse && allocated.Message != "" {
+		return allocated.Message
+	}
+	return "it is being removed"
 }
 
 // stampInternetEgressMode writes the platform default into a network that has
@@ -559,7 +568,10 @@ func finalizeNetworkContexts(
 
 	for i := range networkContexts {
 		networkContext := &networkContexts[i]
-		if networkContext.DeletionTimestamp.IsZero() {
+		// The presence controller ends the contexts it wrote, once their location
+		// holds nothing of the network. A context without the label is not a
+		// presence's, and nothing else ends it.
+		if networkContext.DeletionTimestamp.IsZero() && networkContext.Labels[networkingv1alpha.NetworkUIDLabel] == "" {
 			logger.Info("deleting network context", "network context", networkContext.Name)
 			if err := cl.Delete(ctx, networkContext); client.IgnoreNotFound(err) != nil {
 				return finalizer.Result{}, fmt.Errorf("failed deleting network context: %w", err)

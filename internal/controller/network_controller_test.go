@@ -644,8 +644,11 @@ func TestNetworkWaitingOnALocationIsTerminating(t *testing.T) {
 }
 
 func TestTerminatingMessageNamesEachLocation(t *testing.T) {
+	removing := metav1.Now()
+
 	occupied := networkingv1alpha.NetworkContext{}
 	occupied.Name = "vpc-us-central-1"
+	occupied.DeletionTimestamp = &removing
 	occupied.Spec.Location.Name = "us-central-1"
 	occupied.Status.Conditions = []metav1.Condition{{
 		Type:    networkingv1alpha.NetworkContextIPAMAllocated,
@@ -656,10 +659,82 @@ func TestTerminatingMessageNamesEachLocation(t *testing.T) {
 
 	unlocated := networkingv1alpha.NetworkContext{}
 	unlocated.Name = "vpc-elsewhere"
+	unlocated.DeletionTimestamp = &removing
+
+	holding := networkingv1alpha.NetworkContext{}
+	holding.Name = "vpc-us-east-1"
+	holding.Spec.Location.Name = "us-east-1"
 
 	require.Equal(t, "The network is being deleted", terminatingMessage(nil))
 	require.Equal(t,
 		"The network is being deleted and is waiting on us-central-1: its subnet still has an address in use; "+
+			"waiting on us-east-1: it still holds interfaces of the network; "+
 			"waiting on vpc-elsewhere: it is being removed",
-		terminatingMessage([]networkingv1alpha.NetworkContext{unlocated, occupied}))
+		terminatingMessage([]networkingv1alpha.NetworkContext{unlocated, occupied, holding}))
+}
+
+// newLocationOf adds the network's context in the test location, written the
+// way a presence or a legacy binding writes it.
+func (s *networkScenario) newLocationOf(labels map[string]string) *networkingv1alpha.NetworkContext {
+	s.t.Helper()
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = s.namespace
+	networkContext.Name = testNetworkName + "-" + testLocationName
+	networkContext.Labels = labels
+	networkContext.Spec = networkingv1alpha.NetworkContextSpec{
+		Network:    networkingv1alpha.LocalNetworkRef{Name: testNetworkName},
+		Location:   locationsv1alpha1.LocationReference{Name: testLocationName},
+		IPFamilies: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		MTU:        1440,
+	}
+	require.NoError(s.t, s.client.Create(s.ctx, networkContext))
+	return networkContext
+}
+
+func (s *networkScenario) finalizeWithContexts() {
+	s.t.Helper()
+	s.reconciler.finalizers = finalizer.NewFinalizers()
+	require.NoError(s.t, s.reconciler.finalizers.Register(networkControllerFinalizer,
+		garbageCollectedNetworkContexts{client: s.client}))
+}
+
+// A context the presence controller wrote is that controller's to end, once
+// its location holds nothing of the network. Deleting it here would take the
+// mark away before the location reads it.
+func TestNetworkLeavesItsPresencesToThePresenceController(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+	s.finalizeWithContexts()
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	presence := s.newLocationOf(map[string]string{networkingv1alpha.NetworkUIDLabel: string(s.get().UID)})
+
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(presence), presence))
+	require.True(t, presence.DeletionTimestamp.IsZero(), "the presence ends when its location is empty")
+	ready := s.readyCondition()
+	require.Equal(t, networkingv1alpha.NetworkReadyReasonTerminating, ready.Reason)
+	require.Contains(t, ready.Message, "waiting on "+testLocationName+": it still holds interfaces of the network")
+
+	require.NoError(t, s.client.Delete(s.ctx, presence))
+	s.reconcile()
+	_, present := s.find()
+	require.False(t, present, "the network goes once its presences do")
+}
+
+// A context nothing labelled was written before presences were: no presence
+// controller ends it, so the network's deletion still does.
+func TestNetworkStillDeletesAContextNoPresenceWrote(t *testing.T) {
+	s := newNetworkScenario(t, newFakeIPAM(t))
+	s.finalizeWithContexts()
+	s.createNetwork(networkingv1alpha.IPv6Protocol)
+	s.reconcile()
+	legacy := s.newLocationOf(nil)
+
+	require.NoError(t, s.client.Delete(s.ctx, s.get()))
+	s.reconcile()
+
+	err := s.client.Get(s.ctx, client.ObjectKeyFromObject(legacy), legacy)
+	require.True(t, apierrors.IsNotFound(err), "the legacy context goes with its network: %v", err)
 }

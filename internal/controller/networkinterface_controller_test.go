@@ -96,11 +96,11 @@ type bindingClient struct {
 func (c *bindingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
 	if iface, ok := obj.(*networkingv1alpha.NetworkInterface); ok {
 		var live networkingv1alpha.NetworkInterface
-		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(iface), &live); err != nil {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(iface), &live); err != nil {
 			return err
 		}
 		live.Spec.ClaimRef = &networkingv1alpha.NetworkInterfaceClaimRef{Name: c.claim}
-		if err := c.Client.Update(ctx, &live); err != nil {
+		if err := c.Update(ctx, &live); err != nil {
 			return err
 		}
 	}

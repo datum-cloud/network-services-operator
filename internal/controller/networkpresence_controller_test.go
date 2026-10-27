@@ -1144,7 +1144,7 @@ func (c replacedBeforeDelete) Delete(ctx context.Context, obj client.Object, opt
 		replacement.Labels = read.Labels
 		replacement.Spec = read.Spec
 		require.NoError(c.t, c.Client.Delete(ctx, read.DeepCopy()))
-		require.NoError(c.t, c.Client.Create(ctx, replacement))
+		require.NoError(c.t, c.Create(ctx, replacement))
 	}
 	return c.Client.Delete(ctx, obj, opts...)
 }

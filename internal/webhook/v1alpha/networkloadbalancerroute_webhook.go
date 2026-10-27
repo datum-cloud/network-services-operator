@@ -76,6 +76,10 @@ func validateNetworkLoadBalancerRouteCapabilities(route *networkingv1alpha.Netwo
 			errs = append(errs, field.Forbidden(path.Child("healthCheck"),
 				"UnsupportedCapability: custom health timing and thresholds are not supported by serving cells"))
 		}
+		if check := backend.HealthCheck; check != nil && check.Protocol != "TCP" {
+			errs = append(errs, field.Forbidden(path.Child("healthCheck", "protocol"),
+				"UnsupportedCapability: serving cells run TCP health checks only"))
+		}
 		if backend.Transport != nil {
 			errs = append(errs, field.Forbidden(path.Child("transport"),
 				"UnsupportedCapability: backend TLS transport requires a proxy-capable edge path"))

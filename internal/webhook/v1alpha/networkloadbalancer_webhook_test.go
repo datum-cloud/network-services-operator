@@ -43,6 +43,12 @@ func TestNetworkLoadBalancerRouteCapabilityValidation(t *testing.T) {
 	interval := int32(5)
 	route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: "TCP", IntervalSeconds: &interval}
 	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "custom health timing")
+	for _, protocol := range []string{"HTTP", "HTTPS"} {
+		route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: protocol, Port: "health", Path: "/"}
+		require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "TCP health checks only")
+	}
+	route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: "TCP", Port: "health"}
+	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route))
 	route.Spec.Backends[0].HealthCheck = nil
 	route.Spec.Backends = append(route.Spec.Backends, route.Spec.Backends[0])
 	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "multiple backends")

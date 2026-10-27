@@ -1,0 +1,37 @@
+@startuml DomainVerificationComponents
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Component View — Network Services Operator, Domain verification
+
+Container_Ext(cp, "Project Control Plane", "Kubernetes API", "Domain, DNSZone, Gateway")
+System_Ext(parent, "Parent Zone Nameservers", "Authoritative for the parent zone")
+System_Ext(recursive, "Recursive Resolvers", "Bootstrap lookups")
+System_Ext(rdap, "RDAP / WHOIS", "Registration data")
+
+Container_Boundary(nso, "Network Services Operator") {
+    Component(reconciler, "Domain Reconciler", "controller", "Watches Domain and DNSZone;\nruns the zone check, then TXT/HTTP")
+    Component(verdict, "Zone Verdict", "attemptDNSZoneVerification", "Served zone for exactly this name\nwhose nameservers the parent lists")
+    Component(resolver, "Delegation Resolver", "internal/delegation", "Reads NS from the parent zone's\nservers; RDAP fallback")
+    Component(challenge, "TXT and HTTP Checks", "attemptDNSVerification,\nattemptHTTPVerification", "Verify from a TXT record\nor an HTTP token")
+    Component(registration, "Registration Client", "internal/registrydata", "Registration data and\nIP registrant enrichment")
+    Component(gate, "Hostname Gate", "wildcard_ownership.go,\nensureHostnameVerification", "Admits hostnames on verified Domains;\nwildcards on VerifiedDNS or VerifiedDNSZone")
+    Component(gwdns, "Gateway DNS", "gateway_dns_controller.go", "Writes records when the zone\nhas DNS authority")
+}
+
+Rel(cp, reconciler, "DNSZone and Domain events", "watch")
+Rel(reconciler, verdict, "Checks served zones")
+Rel(verdict, cp, "Lists DNSZones for the Domain", "uncached read")
+Rel(verdict, resolver, "Lookup(domainName)")
+Rel(resolver, recursive, "Parent zone SOA / NS", "DNS")
+Rel(resolver, parent, "NS query, recursion off", "DNS")
+Rel(resolver, registration, "RDAP nameservers on error;\nenrichment")
+Rel(registration, rdap, "Lookups", "HTTPS / WHOIS")
+Rel(reconciler, challenge, "When no zone verifies")
+Rel(reconciler, cp, "Writes Domain status, nameservers,\ndelegation", "patch")
+Rel(gate, cp, "Reads Domain conditions;\nadmits hostnames", "watch / patch")
+Rel(gwdns, cp, "Reads status.nameservers", "watch")
+
+SHOW_LEGEND()
+@enduml

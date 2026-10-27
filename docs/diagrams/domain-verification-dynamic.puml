@@ -1,0 +1,29 @@
+@startuml DomainVerificationDynamic
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Dynamic.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Dynamic View — Zone first, delegation second
+
+Person(user, "Platform User")
+System_Ext(dns, "DNS Service (DNS operator)")
+System_Ext(registrar, "Registrar and Registry")
+System_Ext(parent, "Parent Zone Nameservers")
+
+System_Boundary(tenant, "Tenant Control Planes") {
+    Container(cp, "Project Control Plane", "Kubernetes API")
+}
+
+Container(nso, "Network Services Operator", "Go / multicluster-runtime")
+
+Rel(dns, cp, "Marks the zone served: Accepted, Programmed,\nnameservers")
+Rel(nso, cp, "Receives the DNSZone event;\nreconciles the Domain", "watch")
+Rel(nso, parent, "NS query: not delegated yet", "DNS")
+Rel(nso, cp, "VerifiedDNSZone=False, DNSZoneNameserverMismatch,\nnaming the zone's nameservers", "patch")
+Rel(user, registrar, "Sets the zone's nameservers")
+Rel(registrar, parent, "Publishes the delegation")
+Rel(nso, parent, "Retry within 5 minutes: referral\nto the zone's nameservers", "DNS")
+Rel(nso, cp, "Verified=True, VerifiedDNSZone=True;\nadmits hostnames, wildcards included", "patch")
+
+SHOW_LEGEND()
+@enduml

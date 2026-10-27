@@ -805,6 +805,62 @@ func TestNetworkPresenceKeepsAContextAProjectPlaneBindingStillUses(t *testing.T)
 	require.Positive(t, result.RequeueAfter, "once nothing declares it, the usual wait applies")
 }
 
+// deleteNetwork starts the network's deletion and leaves it there, as the
+// network's own finalizer does while its contexts are still live.
+func (s *presenceScenario) deleteNetwork() {
+	s.t.Helper()
+	s.network.Finalizers = append(s.network.Finalizers, "test.datumapis.com/hold")
+	require.NoError(s.t, s.hub.Update(s.ctx, s.network))
+	require.NoError(s.t, s.hub.Delete(s.ctx, s.network))
+}
+
+// keepContext stands in for the location's hold, so a context can still be read
+// after it is deleted.
+func (s *presenceScenario) keepContext() {
+	s.t.Helper()
+	networkContext, ok := s.networkContext()
+	require.True(s.t, ok)
+	networkContext.Finalizers = append(networkContext.Finalizers, "test.datumapis.com/hold")
+	require.NoError(s.t, s.hub.Update(s.ctx, networkContext))
+}
+
+// A network being deleted takes its presences with it whatever still binds
+// them, and each location reads that from the context it already has.
+func TestNetworkPresenceMarksTheContextOfADeletingNetwork(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+	s.keepContext()
+
+	s.deleteNetwork()
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.True(t, networkContext.Spec.NetworkDeleting, "the location reads the deletion from its context")
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionFalse,
+		networkingv1alpha.NetworkBindingReasonNetworkContextTerminating)
+}
+
+// A presence in its grace is declared by nothing, so only the network's
+// deletion can tell its location to give up what it keeps there.
+func TestNetworkPresenceMarksAContextInItsGraceWhenTheNetworkIsDeleted(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Hour})
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	s.keepContext()
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconcile()
+
+	s.deleteNetwork()
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.True(t, networkContext.Spec.NetworkDeleting,
+		"the network's deletion does not wait out a grace kept for the network's own return")
+}
+
 func projectedLocation(name string) *locationsv1alpha1.Location {
 	location := &locationsv1alpha1.Location{}
 	location.Name = name

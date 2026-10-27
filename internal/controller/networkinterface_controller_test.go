@@ -8,7 +8,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -120,4 +123,43 @@ func TestAClaimThatBindsTheKeptInterfaceFirstKeepsIt(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, rebound.DeletionTimestamp.IsZero(), "a claim that bound it first keeps it")
 	require.Empty(t, s.ipam.deleted()[testProject])
+}
+
+// The mark can arrive after a kept interface's last event, and nothing about
+// the interface changes then, so the context's own event has to reach it.
+func TestAMarkedNetworkContextEnqueuesItsKeptInterfaces(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+
+	interfaceOn := func(name, namespace, network string, bound bool) *networkingv1alpha.NetworkInterface {
+		iface := &networkingv1alpha.NetworkInterface{}
+		iface.Namespace = namespace
+		iface.Name = name
+		iface.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network}
+		if bound {
+			iface.Spec.ClaimRef = &networkingv1alpha.NetworkInterfaceClaimRef{Name: name}
+		}
+		return iface
+	}
+
+	cl := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(
+		interfaceOn("kept", "ns-a", "default", false),
+		interfaceOn("bound", "ns-a", "default", true),
+		interfaceOn("other-network", "ns-a", "other", false),
+		interfaceOn("elsewhere", "ns-b", "default", false),
+	).Build()
+
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = "ns-a"
+	networkContext.Name = "default-us-central-1"
+	networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "default"}
+	networkContext.Spec.NetworkDeleting = true
+
+	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: "ns-a", Name: "kept"}}},
+		keptInterfacesOnNetworkContext(context.Background(), cl, networkContext),
+		"only the kept interfaces of that network, in that namespace, are enqueued")
+
+	networkContext.Spec.NetworkDeleting = false
+	require.Empty(t, keptInterfacesOnNetworkContext(context.Background(), cl, networkContext),
+		"an unmarked context gives up nothing")
 }

@@ -1127,3 +1127,73 @@ func TestNetworkPresenceRefusesAContextMarkedForAnEarlierNetwork(t *testing.T) {
 	require.Equal(t, earlier, after.Labels[networkingv1alpha.NetworkUIDLabel], "the earlier network's context is not adopted")
 	require.Equal(t, types.UID(earlier), after.OwnerReferences[0].UID)
 }
+
+// replacedBeforeDelete is a project control plane where another writer, such as
+// the binding controller, replaces the context between the presence's read and
+// its delete.
+type replacedBeforeDelete struct {
+	client.Client
+	t *testing.T
+}
+
+func (c replacedBeforeDelete) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if read, ok := obj.(*networkingv1alpha.NetworkContext); ok {
+		replacement := &networkingv1alpha.NetworkContext{}
+		replacement.Namespace = read.Namespace
+		replacement.Name = read.Name
+		replacement.Labels = read.Labels
+		replacement.Spec = read.Spec
+		require.NoError(c.t, c.Client.Delete(ctx, read.DeepCopy()))
+		require.NoError(c.t, c.Client.Create(ctx, replacement))
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
+
+// A delete names the context it read. One that took whatever holds the name
+// would remove a replacement nothing has decided to end.
+func TestNetworkPresenceDeletesOnlyTheContextItRead(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconciler.Projects = &staticProjectResolver{clients: map[string]client.Client{
+		testProject: replacedBeforeDelete{Client: s.hub, t: t},
+	}}
+
+	_, err := s.reconciler.Reconcile(s.ctx, s.request())
+
+	require.Error(t, err, "the delete's UID precondition refuses the replacement")
+	s.requireContextLive("the replacement is not the context that ended")
+}
+
+// The presence reads what a location holds from the copies that location's
+// writeback publishes to the hub. This runs the writeback's own publish and the
+// presence's own read against one hub, so a change to either side's namespace
+// or labels that parts them fails here and not on a live hub. A cell's
+// namespace carries the hub namespace's name, as federation delivers it.
+func TestThePresenceReadsTheInterfacesALocationPublishes(t *testing.T) {
+	v := newVisibility(t)
+	kept := v.interfaceOnCell()
+	kept.Spec.ClaimRef = nil
+	require.NoError(t, v.cell.Update(v.ctx, kept))
+	v.publish()
+
+	presence := &NetworkPresenceReconciler{hub: v.hub}
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = v.projectNamespace
+	networkContext.Name = "default-" + testLocationName
+	networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "default"}
+	networkContext.Spec.Location = locationsv1alpha1.LocationReference{Name: testLocationName}
+
+	held, err := presence.heldAtLocation(v.ctx, v.cellNamespace, networkContext)
+	require.NoError(t, err)
+	require.Equal(t, []string{boundInterfaceName}, held, "the kept interface's copy holds the presence")
+
+	require.NoError(t, v.cell.Get(v.ctx, client.ObjectKeyFromObject(kept), kept))
+	require.NoError(t, v.cell.Delete(v.ctx, kept))
+	v.publish()
+
+	held, err = presence.heldAtLocation(v.ctx, v.cellNamespace, networkContext)
+	require.NoError(t, err)
+	require.Empty(t, held, "the copy goes with its interface, and holds nothing then")
+}

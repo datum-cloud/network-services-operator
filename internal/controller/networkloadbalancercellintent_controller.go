@@ -356,7 +356,9 @@ func reconcileHubCellIntents(ctx context.Context, hub client.Client, namespace, 
 		intent := &networkingv1alpha.NetworkLoadBalancerCellIntent{ObjectMeta: metav1.ObjectMeta{Name: wantedIntent.Name, Namespace: namespace}}
 		_, err := controllerutil.CreateOrUpdate(ctx, hub, intent, func() error {
 			if intent.CreationTimestamp.IsZero() && intent.UID == "" || intent.Spec.Source.RouteUID == wantedIntent.Spec.Source.RouteUID {
-				intent.Labels = wantedIntent.Labels
+				// Karmada labels the intent to claim it for propagation, and labels it
+				// again whenever the label goes, so only NSO's own keys are converged.
+				intent.Labels, _ = replaceOwnedLabels(intent.Labels, wantedIntent.Labels, platformLabelPrefixes, nil)
 				intent.Spec = wantedIntent.Spec
 				return nil
 			}

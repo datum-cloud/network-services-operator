@@ -160,6 +160,10 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 
 	logger.Info("Successfully retrieved key and token from cert-manager Challenge for downstream certificate")
 
+	// Karmada labels both objects to claim them for propagation, and labels them
+	// again whenever the label goes, so only NSO's own keys are converged.
+	solverLabels := map[string]string{"meta.datumapis.com/http01-solver": labelValueTrue}
+
 	// Create HTTPRouteFilter with inline direct response
 	httpRouteFilter := &envoygatewayv1alpha1.HTTPRouteFilter{
 		ObjectMeta: metav1.ObjectMeta{
@@ -173,9 +177,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	result, err := controllerutil.CreateOrUpdate(ctx, cl, httpRouteFilter, func() error {
-		httpRouteFilter.Labels = map[string]string{
-			"meta.datumapis.com/http01-solver": labelValueTrue,
-		}
+		httpRouteFilter.Labels, _ = replaceOwnedLabels(httpRouteFilter.Labels, solverLabels, platformLabelPrefixes, nil)
 		httpRouteFilter.Spec = envoygatewayv1alpha1.HTTPRouteFilterSpec{
 			DirectResponse: &envoygatewayv1alpha1.HTTPDirectResponseFilter{
 				ContentType: ptr.To("text/plain"),
@@ -207,9 +209,7 @@ func (r *GatewayDownstreamCertificateSolverReconciler) Reconcile(ctx context.Con
 	}
 
 	result, err = controllerutil.CreateOrUpdate(ctx, cl, httpRoute, func() error {
-		httpRoute.Labels = map[string]string{
-			"meta.datumapis.com/http01-solver": labelValueTrue,
-		}
+		httpRoute.Labels, _ = replaceOwnedLabels(httpRoute.Labels, solverLabels, platformLabelPrefixes, nil)
 		httpRoute.Spec = gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{

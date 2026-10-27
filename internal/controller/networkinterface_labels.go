@@ -21,10 +21,12 @@ import (
 // cannot land on a key the platform reads.
 var consumerLabelPrefixes = []string{"compute.datumapis.com/"}
 
-// platformLabelPrefixes are the prefixes whose keys on a published copy of an
-// interface are the platform's to write. A copy is converged onto what its
-// source says, so a key under one of these that the source no longer carries is
-// removed rather than left behind.
+// platformLabelPrefixes are the prefixes whose keys on an object the platform
+// publishes are the platform's to write: a copy of an interface, or an object on
+// the federation hub. Such an object is converged onto what its source says, so
+// a key under one of these that the source no longer carries is removed rather
+// than left behind. Any other key is someone else's, such as the label Karmada
+// claims a hub object with, and is left alone.
 var platformLabelPrefixes = []string{
 	"networking.datumapis.com/",
 	"compute.datumapis.com/",

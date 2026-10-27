@@ -193,6 +193,62 @@ func TestNLBCellProgrammingReportsGatewayServiceStatus(t *testing.T) {
 	require.Equal(t, "advertised from 2 of 2 gateway nodes", announced.Message)
 }
 
+func TestNLBServedProgrammedCondition(t *testing.T) {
+	condition := func(conditionType string, status metav1.ConditionStatus, reason string) metav1.Condition {
+		return metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: reason + " detail", ObservedGeneration: 1}
+	}
+	for name, tc := range map[string]struct {
+		conditions []metav1.Condition
+		status     metav1.ConditionStatus
+		reason     string
+	}{
+		"ready": {
+			conditions: []metav1.Condition{condition("Ready", metav1.ConditionTrue, "Ready")},
+			status:     metav1.ConditionTrue, reason: "Ready",
+		},
+		"some backends unhealthy": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "BackendsUnhealthy"),
+				condition("Programmed", metav1.ConditionTrue, "Programmed"),
+				condition("BackendsReady", metav1.ConditionFalse, "BackendsUnhealthy"),
+			},
+			status: metav1.ConditionTrue, reason: "BackendsUnhealthy",
+		},
+		"some backends unresolved": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "BackendsUnresolved"),
+				condition("Programmed", metav1.ConditionTrue, "Programmed"),
+				condition("BackendsReady", metav1.ConditionFalse, "BackendsUnresolved"),
+			},
+			status: metav1.ConditionTrue, reason: "BackendsUnresolved",
+		},
+		"no healthy backends": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "NoHealthyBackends"),
+				condition("Programmed", metav1.ConditionFalse, "NoHealthyBackends"),
+				condition("BackendsReady", metav1.ConditionFalse, "BackendsUnhealthy"),
+			},
+			status: metav1.ConditionFalse, reason: "NoHealthyBackends",
+		},
+		"backends not bound yet": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "Pending"),
+				condition("Programmed", metav1.ConditionTrue, "Programmed"),
+				condition("BackendsReady", metav1.ConditionFalse, "Pending"),
+			},
+			status: metav1.ConditionFalse, reason: "Pending",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := &networkv1alpha1.NetworkService{ObjectMeta: metav1.ObjectMeta{Generation: 1}}
+			service.Status.Conditions = tc.conditions
+			got := servedProgrammedCondition(service)
+			require.Equal(t, tc.status, got.Status)
+			require.Equal(t, tc.reason, got.Reason)
+		})
+	}
+}
+
 func TestNLBCellProgrammingReportsWithdrawal(t *testing.T) {
 	cl, r, intent := nlbProgrammingFixture(t)
 	reconcileNLBProgramming(t, r, intent)

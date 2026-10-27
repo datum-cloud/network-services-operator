@@ -38,6 +38,8 @@ const (
 	nlbProgrammingRetry              = 30 * time.Second
 )
 
+var nlbPartialBackendReasons = map[string]bool{"BackendsUnhealthy": true, "BackendsUnresolved": true}
+
 type NetworkLoadBalancerCellProgrammingReconciler struct {
 	Client   client.Client
 	Scheme   *runtime.Scheme
@@ -117,9 +119,22 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportServed(
 	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
 	service *networkv1alpha1.NetworkService,
 ) error {
-	programmed := gatewayServiceCondition(service, "Ready")
+	programmed := servedProgrammedCondition(service)
 	announced := gatewayServiceCondition(service, "Advertised")
 	return r.reportStatus(ctx, intent, programmed, announced)
+}
+
+func servedProgrammedCondition(service *networkv1alpha1.NetworkService) metav1.Condition {
+	ready := gatewayServiceCondition(service, "Ready")
+	if ready.Status != metav1.ConditionFalse {
+		return ready
+	}
+	loaded := gatewayServiceCondition(service, "Programmed")
+	backends := gatewayServiceCondition(service, "BackendsReady")
+	if loaded.Status == metav1.ConditionTrue && backends.Status == metav1.ConditionFalse && nlbPartialBackendReasons[backends.Reason] {
+		return metav1.Condition{Status: metav1.ConditionTrue, Reason: backends.Reason, Message: backends.Message}
+	}
+	return ready
 }
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) reportNotServed(

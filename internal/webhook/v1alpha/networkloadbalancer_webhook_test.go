@@ -39,22 +39,22 @@ func TestNetworkLoadBalancerRouteCapabilityValidation(t *testing.T) {
 	route.Spec.Backends = []networkingv1alpha.NetworkLoadBalancerRouteBackend{{
 		NetworkService: networkingv1alpha.NetworkLoadBalancerNetworkServiceRef{Name: "game", Port: "game"},
 	}}
-	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route))
+	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route, nil))
 	interval := int32(5)
 	route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: "TCP", IntervalSeconds: &interval}
-	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "custom health timing")
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, nil), "custom health timing")
 	for _, protocol := range []string{"HTTP", "HTTPS"} {
 		route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: protocol, Port: "health", Path: "/"}
-		require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "TCP health checks only")
+		require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, nil), "TCP health checks only")
 	}
 	route.Spec.Backends[0].HealthCheck = &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: "TCP", Port: "health"}
-	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route))
+	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route, nil))
 	route.Spec.Backends[0].HealthCheck = nil
 	route.Spec.Backends = append(route.Spec.Backends, route.Spec.Backends[0])
-	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "multiple backends")
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, nil), "multiple backends")
 	route.Spec.Backends = route.Spec.Backends[:1]
 	route.Spec.Backends[0].Transport = &networkingv1alpha.NetworkLoadBalancerBackendTransport{Protocol: "TLS"}
-	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "backend TLS")
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, nil), "backend TLS")
 }
 
 func TestNetworkLoadBalancerRouteRejectsDuplicateParents(t *testing.T) {
@@ -64,7 +64,25 @@ func TestNetworkLoadBalancerRouteRejectsDuplicateParents(t *testing.T) {
 		{Name: "edge", Listener: "tcp"},
 		{Name: "edge", Listener: "tcp", Namespace: "games"},
 	}
-	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route), "Duplicate value")
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, nil), "Duplicate value")
 	route.Spec.ParentRefs[1].Listener = "udp"
-	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route))
+	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route, nil))
+}
+
+func TestNetworkLoadBalancerRouteKeepsExistingHealthCheckProtocol(t *testing.T) {
+	route := &networkingv1alpha.NetworkLoadBalancerRoute{}
+	route.Spec.Backends = []networkingv1alpha.NetworkLoadBalancerRouteBackend{{
+		NetworkService: networkingv1alpha.NetworkLoadBalancerNetworkServiceRef{Name: "game", Port: "game"},
+		HealthCheck:    &networkingv1alpha.NetworkLoadBalancerHealthCheck{Protocol: "HTTP", Port: "health", Path: "/"},
+	}}
+	old := route.DeepCopy()
+	route.Finalizers = []string{"networking.datumapis.com/test"}
+	require.NoError(t, validateNetworkLoadBalancerRouteCapabilities(route, old))
+
+	old.Spec.Backends[0].HealthCheck.Protocol = "TCP"
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, old), "TCP health checks only")
+
+	route.Spec.Backends[0].HealthCheck.Protocol = "HTTPS"
+	old.Spec.Backends[0].HealthCheck.Protocol = "HTTP"
+	require.ErrorContains(t, validateNetworkLoadBalancerRouteCapabilities(route, old), "TCP health checks only")
 }

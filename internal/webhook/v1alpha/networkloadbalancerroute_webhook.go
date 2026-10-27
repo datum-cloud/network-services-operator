@@ -28,18 +28,18 @@ func SetupNetworkLoadBalancerRouteWebhookWithManager(mgr mcmanager.Manager) erro
 }
 
 func (v *NetworkLoadBalancerRouteValidator) ValidateCreate(_ context.Context, route *networkingv1alpha.NetworkLoadBalancerRoute) (admission.Warnings, error) {
-	return nil, validateNetworkLoadBalancerRouteCapabilities(route)
+	return nil, validateNetworkLoadBalancerRouteCapabilities(route, nil)
 }
 
-func (v *NetworkLoadBalancerRouteValidator) ValidateUpdate(_ context.Context, _, route *networkingv1alpha.NetworkLoadBalancerRoute) (admission.Warnings, error) {
-	return nil, validateNetworkLoadBalancerRouteCapabilities(route)
+func (v *NetworkLoadBalancerRouteValidator) ValidateUpdate(_ context.Context, old, route *networkingv1alpha.NetworkLoadBalancerRoute) (admission.Warnings, error) {
+	return nil, validateNetworkLoadBalancerRouteCapabilities(route, old)
 }
 
 func (v *NetworkLoadBalancerRouteValidator) ValidateDelete(context.Context, *networkingv1alpha.NetworkLoadBalancerRoute) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func validateNetworkLoadBalancerRouteCapabilities(route *networkingv1alpha.NetworkLoadBalancerRoute) error {
+func validateNetworkLoadBalancerRouteCapabilities(route, old *networkingv1alpha.NetworkLoadBalancerRoute) error {
 	var errs field.ErrorList
 	seenParents := make(map[string]struct{}, len(route.Spec.ParentRefs))
 	if len(route.Spec.Backends) > 1 {
@@ -76,7 +76,7 @@ func validateNetworkLoadBalancerRouteCapabilities(route *networkingv1alpha.Netwo
 			errs = append(errs, field.Forbidden(path.Child("healthCheck"),
 				"UnsupportedCapability: custom health timing and thresholds are not supported by serving cells"))
 		}
-		if check := backend.HealthCheck; check != nil && check.Protocol != "TCP" {
+		if check := backend.HealthCheck; check != nil && check.Protocol != "TCP" && check.Protocol != previousHealthCheckProtocol(old, i) {
 			errs = append(errs, field.Forbidden(path.Child("healthCheck", "protocol"),
 				"UnsupportedCapability: serving cells run TCP health checks only"))
 		}
@@ -93,4 +93,11 @@ func validateNetworkLoadBalancerRouteCapabilities(route *networkingv1alpha.Netwo
 		return apierrors.NewInvalid(schema.GroupKind{Group: networkingv1alpha.GroupVersion.Group, Kind: "NetworkLoadBalancerRoute"}, route.Name, errs)
 	}
 	return nil
+}
+
+func previousHealthCheckProtocol(old *networkingv1alpha.NetworkLoadBalancerRoute, index int) string {
+	if old == nil || index >= len(old.Spec.Backends) || old.Spec.Backends[index].HealthCheck == nil {
+		return ""
+	}
+	return old.Spec.Backends[index].HealthCheck.Protocol
 }

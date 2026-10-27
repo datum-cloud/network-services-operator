@@ -246,6 +246,31 @@ func TestNLBServedProgrammedCondition(t *testing.T) {
 			},
 			status: metav1.ConditionFalse, reason: "NoHealthyBackends",
 		},
+		"some backends unhealthy and not advertised": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "NotAdvertised"),
+				condition("Programmed", metav1.ConditionTrue, "Programmed"),
+				condition("Advertised", metav1.ConditionFalse, "NotAdvertised"),
+				condition("BackendsReady", metav1.ConditionFalse, "BackendsUnhealthy"),
+			},
+			status: metav1.ConditionFalse, reason: "NotAdvertised",
+		},
+		"gateways disagree on the backend problem": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "BackendsNotReady"),
+				condition("Programmed", metav1.ConditionTrue, "Programmed"),
+				condition("BackendsReady", metav1.ConditionFalse, "BackendsNotReady"),
+			},
+			status: metav1.ConditionFalse, reason: "BackendsNotReady",
+		},
+		"health checks not applied": {
+			conditions: []metav1.Condition{
+				condition("Ready", metav1.ConditionFalse, "HealthChecksNotApplied"),
+				condition("Programmed", metav1.ConditionTrue, "Programmed"),
+				condition("BackendsReady", metav1.ConditionFalse, "HealthChecksNotApplied"),
+			},
+			status: metav1.ConditionFalse, reason: "HealthChecksNotApplied",
+		},
 		"backends not bound yet": {
 			conditions: []metav1.Condition{
 				condition("Ready", metav1.ConditionFalse, "Pending"),

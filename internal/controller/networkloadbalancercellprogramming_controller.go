@@ -126,7 +126,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportServed(
 
 func servedProgrammedCondition(service *networkv1alpha1.NetworkService) metav1.Condition {
 	ready := gatewayServiceCondition(service, "Ready")
-	if ready.Status != metav1.ConditionFalse {
+	if ready.Status != metav1.ConditionFalse || !nlbPartialBackendReasons[ready.Reason] {
 		return ready
 	}
 	loaded := gatewayServiceCondition(service, "Programmed")

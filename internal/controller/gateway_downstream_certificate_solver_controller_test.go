@@ -391,3 +391,82 @@ func newUnstructuredGVK(gvk schema.GroupVersionKind, name, namespace string, opt
 
 	return obj
 }
+
+// The solver's route and filter are hub objects Karmada claims for
+// nso-resources by labelling them. A solve converges the solver's own labels
+// and leaves Karmada's claim, so Karmada does not have to claim them again.
+func TestGatewayDownstreamCertificateSolverKeepsLabelsItDoesNotOwn(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	assert.NoError(t, scheme.AddToScheme(testScheme))
+	assert.NoError(t, gatewayv1.Install(testScheme))
+	assert.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+
+	operatorConfig := config.NetworkServicesOperator{
+		Gateway: config.GatewayConfig{ClusterIssuerMap: map[string]string{"auto": "test-issuer"}},
+	}
+	config.SetObjectDefaults_NetworkServicesOperator(&operatorConfig)
+
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: uuid.NewUUID()}}
+	gateway := newGateway(operatorConfig, namespace.Name, "test-gateway")
+	order := newUnstructuredGVK(orderGVK, "test-order", namespace.Name, func(u *unstructured.Unstructured) {
+		u.SetAnnotations(map[string]string{certManagerCertificateNameAnnotation: "test-cert"})
+	})
+	certificate := newUnstructuredGVK(certificateGVK, "test-cert", namespace.Name, func(u *unstructured.Unstructured) {
+		assert.NoError(t, unstructured.SetNestedMap(u.Object, map[string]any{
+			"issuerRef": map[string]any{"kind": "ClusterIssuer", "name": "test-issuer"},
+		}, "spec"))
+		assert.NoError(t, controllerutil.SetControllerReference(gateway, u, testScheme))
+	})
+	challenge := newUnstructuredGVK(challengeGVK, "test-challenge", namespace.Name, func(u *unstructured.Unstructured) {
+		assert.NoError(t, unstructured.SetNestedMap(u.Object, map[string]any{"key": "test-key", "token": "test-token"}, "spec"))
+		assert.NoError(t, controllerutil.SetControllerReference(order, u, testScheme))
+	})
+
+	cl := fake.NewClientBuilder().WithScheme(testScheme).
+		WithObjects(namespace, gateway, order, certificate, challenge).Build()
+	reconciler := &GatewayDownstreamCertificateSolverReconciler{
+		Config:            operatorConfig,
+		DownstreamCluster: &fakeCluster{cl: cl},
+	}
+	ctx := context.Background()
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(challenge)}
+	key := client.ObjectKey{Namespace: namespace.Name, Name: challenge.GetName()}
+
+	_, err := reconciler.Reconcile(ctx, request)
+	assert.NoError(t, err)
+
+	solved := []client.Object{&envoygatewayv1alpha1.HTTPRouteFilter{}, &gatewayv1.HTTPRoute{}}
+	claimed := map[client.Object]string{}
+	for _, obj := range solved {
+		assert.NoError(t, cl.Get(ctx, key, obj))
+		labels := obj.GetLabels()
+		labels[karmadaClaimLabel] = "nso-resources-id"
+		obj.SetLabels(labels)
+		assert.NoError(t, cl.Update(ctx, obj))
+		claimed[obj] = obj.GetResourceVersion()
+	}
+
+	_, err = reconciler.Reconcile(ctx, request)
+	assert.NoError(t, err)
+
+	for obj, version := range claimed {
+		assert.NoError(t, cl.Get(ctx, key, obj))
+		assert.Equal(t, "nso-resources-id", obj.GetLabels()[karmadaClaimLabel], "Karmada's claim stays on %T", obj)
+		assert.Equal(t, version, obj.GetResourceVersion(),
+			"%T differs from the solve only by a label NSO does not own, so it is not written", obj)
+
+		labels := obj.GetLabels()
+		labels["meta.datumapis.com/stale"] = "left-behind"
+		obj.SetLabels(labels)
+		assert.NoError(t, cl.Update(ctx, obj))
+	}
+
+	_, err = reconciler.Reconcile(ctx, request)
+	assert.NoError(t, err)
+
+	for obj := range claimed {
+		assert.NoError(t, cl.Get(ctx, key, obj))
+		assert.NotContains(t, obj.GetLabels(), "meta.datumapis.com/stale", "a key NSO owns and no longer wants goes from %T", obj)
+		assert.Equal(t, "nso-resources-id", obj.GetLabels()[karmadaClaimLabel])
+	}
+}

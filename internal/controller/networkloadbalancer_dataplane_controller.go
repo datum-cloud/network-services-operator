@@ -17,7 +17,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -27,7 +29,10 @@ import (
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
-const nlbReasonPendingDataPlane = "PendingDataPlane"
+const (
+	nlbReasonPendingDataPlane = "PendingDataPlane"
+	nlbReasonNotServed        = "NotServed"
+)
 
 // NetworkLoadBalancerDataPlaneReconciler reports what serving locations say
 // about a load balancer's addresses. Locations write status on their copy of
@@ -40,6 +45,7 @@ type NetworkLoadBalancerDataPlaneReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancercellintents,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancerroutes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 func (r *NetworkLoadBalancerDataPlaneReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -81,8 +87,13 @@ func (r *NetworkLoadBalancerDataPlaneReconciler) reconcileDataPlane(
 		}
 	}
 
+	var routes networkingv1alpha.NetworkLoadBalancerRouteList
+	if err := projectClient.List(ctx, &routes, client.InNamespace(lb.Namespace)); err != nil {
+		return fmt.Errorf("list load balancer routes: %w", err)
+	}
+
 	before := lb.DeepCopy()
-	applyNetworkLoadBalancerDataPlane(&lb, intents)
+	applyNetworkLoadBalancerDataPlane(&lb, intents, routes.Items)
 	if equality.Semantic.DeepEqual(before.Status, lb.Status) {
 		return nil
 	}
@@ -92,7 +103,11 @@ func (r *NetworkLoadBalancerDataPlaneReconciler) reconcileDataPlane(
 	return nil
 }
 
-func applyNetworkLoadBalancerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer, intents []networkingv1alpha.NetworkLoadBalancerCellIntent) {
+func applyNetworkLoadBalancerDataPlane(
+	lb *networkingv1alpha.NetworkLoadBalancer,
+	intents []networkingv1alpha.NetworkLoadBalancerCellIntent,
+	routes []networkingv1alpha.NetworkLoadBalancerRoute,
+) {
 	var addresses []*networkingv1alpha.NetworkLoadBalancerAddressStatus
 	for i := range lb.Status.Endpoints {
 		endpoint := &lb.Status.Endpoints[i]
@@ -124,6 +139,11 @@ func applyNetworkLoadBalancerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer
 			}
 			if !known {
 				continue
+			}
+			if announced.Reason == nlbReasonNotServed {
+				if rejection, ok := routeRejection(lb, routes, endpoint.RequestName); ok {
+					programmed, announced = rejection, rejection
+				}
 			}
 			setLoadBalancerCondition(&address.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerProgrammed,
 				programmed.Status, programmed.Reason, programmed.Message)
@@ -181,8 +201,51 @@ func addressDataPlane(
 			return metav1.Condition{}, metav1.Condition{}, false
 		}
 	}
-	unserved := metav1.Condition{Status: metav1.ConditionFalse, Reason: "NotServed", Message: "No route serves this address"}
+	unserved := metav1.Condition{Status: metav1.ConditionFalse, Reason: nlbReasonNotServed, Message: "No route serves this address"}
 	return unserved, unserved, true
+}
+
+func routeRejection(
+	lb *networkingv1alpha.NetworkLoadBalancer, routes []networkingv1alpha.NetworkLoadBalancerRoute, requestName string,
+) (metav1.Condition, bool) {
+	listeners := map[string]bool{}
+	for _, listener := range lb.Spec.Listeners {
+		if slices.Contains(listener.AddressRefs, requestName) {
+			listeners[listener.Name] = true
+		}
+	}
+	sorted := slices.Clone(routes)
+	slices.SortFunc(sorted, func(a, b networkingv1alpha.NetworkLoadBalancerRoute) int { return strings.Compare(a.Name, b.Name) })
+	for i := range sorted {
+		route := &sorted[i]
+		for _, parent := range route.Status.Parents {
+			if parent.Name != lb.Name || !listeners[parent.Listener] {
+				continue
+			}
+			for _, conditionType := range []string{
+				networkingv1alpha.NetworkLoadBalancerRouteAccepted,
+				networkingv1alpha.NetworkLoadBalancerRouteResolvedRefs,
+				networkingv1alpha.NetworkLoadBalancerRouteProgrammed,
+			} {
+				condition := apimeta.FindStatusCondition(parent.Conditions, conditionType)
+				if condition == nil || condition.Status != metav1.ConditionFalse || condition.ObservedGeneration != route.Generation {
+					continue
+				}
+				if conditionType != networkingv1alpha.NetworkLoadBalancerRouteAccepted && !parent.Effective {
+					continue
+				}
+				if conditionType == networkingv1alpha.NetworkLoadBalancerRouteProgrammed && condition.Reason != nlbRouteReasonNoEligibleEndpoints {
+					continue
+				}
+				return metav1.Condition{
+					Status:  metav1.ConditionFalse,
+					Reason:  condition.Reason,
+					Message: fmt.Sprintf("Route %q: %s", route.Name, condition.Message),
+				}, true
+			}
+		}
+	}
+	return metav1.Condition{}, false
 }
 
 func reportedIntentCondition(intent *networkingv1alpha.NetworkLoadBalancerCellIntent, conditionType string) metav1.Condition {
@@ -257,9 +320,28 @@ func (r *NetworkLoadBalancerDataPlaneReconciler) SetupWithManager(mgr mcmanager.
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkLoadBalancer{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Watches(&networkingv1alpha.NetworkLoadBalancerRoute{},
+			func(clusterName multicluster.ClusterName, _ cluster.Cluster) mchandler.EventHandler {
+				return mchandler.ForCluster(handler.EnqueueRequestsFromMapFunc(loadBalancersForRoute), clusterName)
+			}).
 		WatchesRawSource(intentSource).
 		Named("networkloadbalancerdataplane").
 		Complete(r)
+}
+
+func loadBalancersForRoute(_ context.Context, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*networkingv1alpha.NetworkLoadBalancerRoute)
+	if !ok {
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, ref := range route.Spec.ParentRefs {
+		request := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: route.Namespace, Name: ref.Name}}
+		if !slices.Contains(requests, request) {
+			requests = append(requests, request)
+		}
+	}
+	return requests
 }
 
 func loadBalancerForCellIntent(intent *networkingv1alpha.NetworkLoadBalancerCellIntent) []mcreconcile.Request {

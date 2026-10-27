@@ -127,7 +127,7 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 					require.True(t, endpoint.Addresses[0].WithdrawalPending)
 				}
 			}
-			applyNetworkLoadBalancerDataPlane(&lb, nil)
+			applyNetworkLoadBalancerDataPlane(&lb, nil, nil)
 			for _, endpoint := range lb.Status.Endpoints {
 				if endpoint.RequestName == "regional" && endpoint.Location == "iad" {
 					require.True(t, endpoint.Addresses[0].WithdrawalPending)

@@ -447,3 +447,54 @@ func TestCellIntentOrphanCleanupWaitsForAcknowledgment(t *testing.T) {
 	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(other), other))
 	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, other.Spec.State)
 }
+
+// karmadaClaimLabel is the label Karmada's detector puts on a hub object to
+// claim it for nso-resources, and puts back whenever it is missing.
+const karmadaClaimLabel = "clusterpropagationpolicy.karmada.io/permanent-id"
+
+// Publishing converges the intent's own labels and leaves the rest. A publish
+// that removed Karmada's claim would be followed by Karmada claiming it again,
+// and the hub watch would bring that update straight back here.
+func TestCellIntentPublishKeepsLabelsItDoesNotOwn(t *testing.T) {
+	ctx := context.Background()
+	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
+	route.UID = types.UID("route-1")
+	parent := testRouteLoadBalancer()
+	parent.UID = types.UID("parent-1")
+	parent.Generation = 5
+	parent.Status.Endpoints = []networkingv1alpha.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::1", parent.Generation)}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: types.UID("project-ns")}}
+	project := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
+		WithObjects(namespace, route, parent, readyIntentNetwork(), testRouteNetworkService(), testRouteMember("member", true, "fd00::1/128")).
+		WithStatusSubresource(route, parent).Build()
+	hub, _ := startNetworkInterfaceEnv(t)
+	require.NoError(t, hub.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-project-ns"}}))
+	reconciler := &NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
+	key := client.ObjectKeyFromObject(parent)
+
+	_, err := reconciler.reconcileParentIntents(ctx, "project", project, key)
+	require.NoError(t, err)
+	var published networkingv1alpha.NetworkLoadBalancerCellIntentList
+	require.NoError(t, hub.List(ctx, &published))
+	require.Len(t, published.Items, 1)
+	claimed := &published.Items[0]
+	claimed.Labels[karmadaClaimLabel] = "nso-resources-id"
+	require.NoError(t, hub.Update(ctx, claimed))
+
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, key)
+	require.NoError(t, err)
+
+	var after networkingv1alpha.NetworkLoadBalancerCellIntent
+	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(claimed), &after))
+	require.Equal(t, "nso-resources-id", after.Labels[karmadaClaimLabel], "Karmada's claim stays")
+	require.Equal(t, claimed.ResourceVersion, after.ResourceVersion,
+		"an intent that differs from what is published only by a label NSO does not own is not written")
+
+	after.Labels["networking.datumapis.com/stale"] = "left-behind"
+	require.NoError(t, hub.Update(ctx, &after))
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, key)
+	require.NoError(t, err)
+	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(claimed), &after))
+	require.NotContains(t, after.Labels, "networking.datumapis.com/stale", "a key NSO owns and no longer wants goes")
+	require.Equal(t, "nso-resources-id", after.Labels[karmadaClaimLabel])
+}

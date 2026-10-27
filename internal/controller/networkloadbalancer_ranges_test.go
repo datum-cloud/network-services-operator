@@ -91,7 +91,11 @@ func TestNLBSharedAddressKeepsServingAndWithdrawalObligations(t *testing.T) {
 	retiring.Name = "old-media"
 	retiring.Spec.State = api.NetworkLoadBalancerCellIntentWithdrawn
 	retiring.Status = api.NetworkLoadBalancerCellIntentStatus{}
-	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy, failed, retiring})
+	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy, failed, retiring}, []api.NetworkLoadBalancerRoute{
+		rejectedRoute("media-route", lb.Name, "media", true, metav1.Condition{
+			Type: api.NetworkLoadBalancerRouteResolvedRefs, Status: metav1.ConditionFalse, Reason: nlbRouteReasonBackendClaimConflict,
+		}),
+	})
 	address := lb.Status.Endpoints[0].Addresses[0]
 	require.True(t, address.Announced)
 	require.True(t, address.WithdrawalPending)
@@ -103,10 +107,10 @@ func TestNLBSharedAddressKeepsServingAndWithdrawalObligations(t *testing.T) {
 	healthy.Spec.State = api.NetworkLoadBalancerCellIntentWithdrawn
 	failed.Spec.State = api.NetworkLoadBalancerCellIntentWithdrawn
 	reportIntent(&healthy, metav1.ConditionFalse, metav1.ConditionFalse)
-	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy, failed, retiring})
+	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy, failed, retiring}, nil)
 	require.True(t, lb.Status.Endpoints[0].Addresses[0].WithdrawalPending)
 	reportIntent(&retiring, metav1.ConditionFalse, metav1.ConditionFalse)
-	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy, failed, retiring})
+	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy, failed, retiring}, nil)
 	require.False(t, addressPendingWithdrawal(lb.Status.Endpoints[0].Addresses[0]))
 }
 
@@ -229,7 +233,7 @@ func TestNLBNewListenerDoesNotInheritOldProgramming(t *testing.T) {
 	healthy.Spec.Source.ParentGeneration = lb.Generation
 	reportIntent(&healthy, metav1.ConditionTrue, metav1.ConditionTrue)
 	lb.Generation++
-	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy})
+	applyNetworkLoadBalancerDataPlane(lb, []api.NetworkLoadBalancerCellIntent{healthy}, nil)
 	require.True(t, lb.Status.Endpoints[0].Addresses[0].Announced)
 	require.True(t, lb.Status.Endpoints[0].Addresses[0].WithdrawalPending)
 	require.False(t, apimeta.IsStatusConditionTrue(lb.Status.Conditions, api.NetworkLoadBalancerProgrammed))

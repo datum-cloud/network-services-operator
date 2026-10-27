@@ -186,7 +186,7 @@ func reconcileParentHubIntents(ctx context.Context, hub client.Client, project s
 			if current.UID != "" && (current.Spec.Source.RouteUID != want.Spec.Source.RouteUID || current.Spec.Source.ParentUID != want.Spec.Source.ParentUID) {
 				return fmt.Errorf("cell intent %s belongs to another source", current.Name)
 			}
-			current.Labels = want.Labels
+			current.Labels, _ = replaceOwnedLabels(current.Labels, want.Labels, platformLabelPrefixes, nil)
 			current.Spec = want.Spec
 			return nil
 		})

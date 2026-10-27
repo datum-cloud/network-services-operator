@@ -118,6 +118,22 @@ func TestNLBCellProgrammingWritesGatewayServiceForVerifiedBackends(t *testing.T)
 	require.Equal(t, nlbProgrammingBackendLabelValue, attachment.Labels[label])
 }
 
+func TestNLBCellProgrammingLeavesUnchangedGatewayServiceAlone(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	reconcileNLBProgramming(t, r, intent)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, networkv1alpha1.NetworkServiceSessionAffinityNone, service.Spec.SessionAffinity)
+	service.Spec.SessionAffinity = networkv1alpha1.NetworkServiceSessionAffinityNone
+	require.NoError(t, cl.Update(context.Background(), &service))
+	written := service.ResourceVersion
+
+	reconcileNLBProgramming(t, r, intent)
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, written, service.ResourceVersion)
+}
+
 func TestNLBCellProgrammingWithdrawsWhenBackendIdentityChanges(t *testing.T) {
 	cl, r, intent := nlbProgrammingFixture(t)
 	reconcileNLBProgramming(t, r, intent)

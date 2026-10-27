@@ -310,11 +310,12 @@ func desiredNetworkLoadBalancerService(
 	return &networkv1alpha1.NetworkService{
 		ObjectMeta: metav1.ObjectMeta{Namespace: intent.Namespace, Name: intent.Name},
 		Spec: networkv1alpha1.NetworkServiceSpec{
-			VPCRef:       vpc,
-			VIPAddresses: []string{intent.Spec.VIP},
-			Protocol:     protocol,
-			Port:         intent.Spec.ListenerPort,
-			BackendPort:  port,
+			VPCRef:          vpc,
+			VIPAddresses:    []string{intent.Spec.VIP},
+			Protocol:        protocol,
+			Port:            intent.Spec.ListenerPort,
+			BackendPort:     port,
+			SessionAffinity: networkv1alpha1.NetworkServiceSessionAffinityNone,
 			HealthCheck: &networkv1alpha1.NetworkServiceHealthCheck{
 				FailurePolicy: networkv1alpha1.NetworkServiceHealthFailClosed, Port: probe.Port, IntervalSeconds: 5, TimeoutSeconds: 2, HealthyThreshold: 2, UnhealthyThreshold: 1,
 			},

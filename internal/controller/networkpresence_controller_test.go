@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -1098,4 +1099,31 @@ func TestNetworkPresenceResyncsASettledPresence(t *testing.T) {
 		"nothing else brings a settled presence back after a network edit")
 	requireReady(t, s.binding("consumer-a"), metav1.ConditionTrue,
 		networkingv1alpha.NetworkBindingReasonNetworkContextReady)
+}
+
+// A context marked for an earlier network of the same name is that network's,
+// ending. Adopting it would carry the mark to the new network, and its location
+// would give up the new network's kept interfaces. The owner reference alone
+// does not tell the two apart: it is matched by name.
+func TestNetworkPresenceRefusesAContextMarkedForAnEarlierNetwork(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	const earlier = "an-earlier-network-uid"
+	left, ok := s.networkContext()
+	require.True(t, ok)
+	left.Labels[networkingv1alpha.NetworkUIDLabel] = earlier
+	left.OwnerReferences[0].UID = earlier
+	left.Spec.NetworkDeleting = true
+	require.NoError(t, s.hub.Update(s.ctx, left))
+
+	s.reconcile()
+
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionFalse,
+		networkingv1alpha.NetworkBindingReasonNetworkContextTerminating)
+	after, ok := s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, earlier, after.Labels[networkingv1alpha.NetworkUIDLabel], "the earlier network's context is not adopted")
+	require.Equal(t, types.UID(earlier), after.OwnerReferences[0].UID)
 }

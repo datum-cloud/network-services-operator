@@ -690,7 +690,11 @@ func (r *NetworkPresenceReconciler) project(
 		// not depend on the order anything else happens in: CreateOrUpdate reads
 		// the object immediately before this runs, which is the last moment the
 		// answer can still be current.
-		if !networkContext.DeletionTimestamp.IsZero() {
+		//
+		// A marked context is ending too. This runs only for a network that is not
+		// being deleted, so the mark is an earlier network's of the same name, and
+		// the owner reference cannot say so: it is matched by name, not UID.
+		if !networkContext.DeletionTimestamp.IsZero() || networkContext.Spec.NetworkDeleting {
 			return &networkContextTerminating{name: networkContext.Name}
 		}
 

@@ -384,7 +384,7 @@ func TestInterfaceReleaseRefusesAndKeepsTheInterface(t *testing.T) {
 		r = run(t, c, "", "interface", "release", name, "--yes")
 		assert.Equal(t, util.ExitUnavailable, r.code, name)
 		assert.Contains(t, r.err, "cannot be released", name)
-		assert.Contains(t, r.err, "until an instance of the same name comes back", name)
+		assert.Contains(t, r.err, "until an instance of the same name comes back, or until its network is deleted", name)
 		err := c.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: name}, &networkingv1alpha.NetworkInterface{})
 		assert.NoError(t, err, "%s should still exist", name)
 	}

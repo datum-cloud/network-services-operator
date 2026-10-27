@@ -73,7 +73,7 @@ datumctl network interface list --network backend
 datumctl network interface list --kept
 ```
 
-A kept interface cannot be released yet. `datumctl network interface release` refuses and changes nothing.
+A kept interface cannot be released on its own yet. `datumctl network interface release` refuses and changes nothing. Deleting its network gives it up.
 
 ## When something is not working
 

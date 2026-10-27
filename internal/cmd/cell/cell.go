@@ -405,6 +405,7 @@ func controllerRegistrations(
 			return false, nil
 		}
 		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
+			HubCluster:             hubCluster,
 			Location:               serverConfig.Location,
 			MaxExposedPorts:        serverConfig.NetworkLoadBalancer.MaxExposedPorts,
 			SharedAddressListeners: serverConfig.NetworkLoadBalancer.SharedAddressListeners,

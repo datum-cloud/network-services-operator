@@ -76,7 +76,7 @@ func (r *NetworkLoadBalancerDataPlaneReconciler) reconcileDataPlane(
 	}
 	var intents []networkingv1alpha.NetworkLoadBalancerCellIntent
 	for _, intent := range published.Items {
-		if intent.Spec.Source.ParentUID == string(lb.UID) {
+		if intent.Spec.Allocation == nil && intent.Spec.Source.ParentUID == string(lb.UID) {
 			intents = append(intents, intent)
 		}
 	}
@@ -107,7 +107,7 @@ func applyNetworkLoadBalancerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer
 				address.WithdrawalPending = false
 				for j := range intents {
 					intent := &intents[j]
-					if intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.VIP == address.Value && (intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate || !intentWithdrawalAcknowledged(intent)) {
+					if intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.VIP == address.Value && (cellIntentRequestsServing(intent) || !intentWithdrawalAcknowledged(intent)) {
 						address.WithdrawalPending = true
 					}
 				}
@@ -163,10 +163,10 @@ func addressDataPlane(
 	var serving, withdrawn []*networkingv1alpha.NetworkLoadBalancerCellIntent
 	for i := range intents {
 		intent := &intents[i]
-		if intent.Spec.Source.AddressRequest != requestName || intent.Spec.Location != location || intent.Spec.VIP != vip {
+		if intent.Spec.Allocation != nil || intent.Spec.Source.AddressRequest != requestName || intent.Spec.Location != location || intent.Spec.VIP != vip {
 			continue
 		}
-		if intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+		if cellIntentRequestsServing(intent) {
 			serving = append(serving, intent)
 		} else {
 			withdrawn = append(withdrawn, intent)
@@ -297,7 +297,7 @@ func listenerDataPlane(lb *networkingv1alpha.NetworkLoadBalancer, endpoint *netw
 		var selected []*networkingv1alpha.NetworkLoadBalancerCellIntent
 		for i := range intents {
 			intent := &intents[i]
-			if intent.Spec.Source.ListenerName == listener.Name && intent.Spec.Source.ParentGeneration == lb.Generation && intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+			if intent.Spec.Source.ListenerName == listener.Name && intent.Spec.Source.ParentGeneration == lb.Generation && intent.Spec.Source.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && cellIntentRequestsServing(intent) {
 				selected = append(selected, intent)
 			}
 		}

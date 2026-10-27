@@ -62,7 +62,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) requiredCapabilities(ctx 
 		if len(group.Listeners) > 1 && !r.SharedAddressListeners {
 			return "SharedAddressListeners is not enabled in this cell", nil
 		}
-		required = append(required, networkv1alpha1.CapabilitySharedAddressListeners)
+		required = append(required, networkv1alpha1.CapabilitySharedAddressListeners, networkv1alpha1.CapabilityTerminalAddressRetirement)
 	}
 	if !interval.Singleton() {
 		if !r.UDPPortRanges {
@@ -106,6 +106,9 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) ensureAddress(ctx context
 	if service.Spec.AddressGroup == nil {
 		return nil
 	}
+	if err := r.registerAllocationParticipant(ctx, service.Namespace, service.Spec.AddressGroup.UID, service.Spec.VIPAddresses[0]); err != nil {
+		return err
+	}
 	reader := r.APIReader
 	if reader == nil {
 		reader = r.Client
@@ -116,7 +119,10 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) ensureAddress(ctx context
 	}
 	current := false
 	for _, intent := range intents.Items {
-		if intent.Name == service.Name && intent.DeletionTimestamp.IsZero() && intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate && intent.Spec.AddressGroup != nil {
+		if intent.Spec.Allocation != nil && intent.Spec.Allocation.Retired && intent.Spec.Allocation.UID == service.Spec.AddressGroup.UID {
+			return fmt.Errorf("allocation %s is permanently retired", service.Spec.AddressGroup.UID)
+		}
+		if intent.Name == service.Name && intent.DeletionTimestamp.IsZero() && cellIntentRequestsServing(&intent) && intent.Spec.AddressGroup != nil {
 			current = equality.Semantic.DeepEqual(galacticAddressGroup(intent.Spec.AddressGroup), service.Spec.AddressGroup)
 		}
 		if candidate := intent.Spec.AddressGroup; candidate != nil && candidate.UID == service.Spec.AddressGroup.UID && candidate.Generation > service.Spec.AddressGroup.Generation {
@@ -135,6 +141,9 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) ensureAddress(ctx context
 		return r.Client.Create(ctx, &networkv1alpha1.NetworkServiceAddress{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name, Labels: map[string]string{nlbAddressManagedByLabel: "true"}}, Spec: wanted})
 	} else if err != nil {
 		return err
+	}
+	if address.Spec.Retired {
+		return fmt.Errorf("address allocation %s is permanently retired", key.Name)
 	}
 	if !address.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("address inventory %s is withdrawing", key.Name)
@@ -180,7 +189,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) cleanupAddresses(ctx cont
 	}
 	live := map[string]bool{}
 	for _, intent := range intents.Items {
-		if intent.DeletionTimestamp.IsZero() && intent.Spec.AddressGroup != nil && intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+		if intent.DeletionTimestamp.IsZero() && intent.Spec.AddressGroup != nil && cellIntentRequestsServing(&intent) {
 			live[intent.Spec.AddressGroup.UID] = true
 		}
 	}
@@ -192,7 +201,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) cleanupAddresses(ctx cont
 	done := true
 	for i := range addresses.Items {
 		address := &addresses.Items[i]
-		if live[address.Spec.Group.UID] {
+		if address.Spec.Retired || live[address.Spec.Group.UID] {
 			continue
 		}
 		if address.DeletionTimestamp.IsZero() {

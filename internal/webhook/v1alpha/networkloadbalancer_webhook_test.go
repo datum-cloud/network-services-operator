@@ -3,6 +3,7 @@
 package v1alpha
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -75,4 +76,67 @@ func TestNLBSharedRangeCapabilityAndQuota(t *testing.T) {
 	cfg.MaxExposedPorts = 129
 	cfg.UDPPortRanges = false
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb, cfg), "UDP port ranges")
+}
+
+func TestNLBDisabledGatesAllowOnlyNonExpandingUpdates(t *testing.T) {
+	old := &networkingv1alpha.NetworkLoadBalancer{}
+	old.Name = "media"
+	old.Finalizers = []string{"networking.datumapis.com/networkloadbalancer-release"}
+	old.Spec.Exposure.Addresses = []networkingv1alpha.NetworkLoadBalancerAddressRequest{{Name: "public", Families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}, Locations: &networkingv1alpha.NetworkLoadBalancerLocationSelection{From: networkingv1alpha.NetworkLoadBalancerLocationSourceNames, Names: []string{"iad", "fra"}}}}
+	old.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{
+		{Name: "control", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP, Port: 443, AddressRefs: []string{"public"}},
+		{Name: "media", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127}, AddressRefs: []string{"public"}},
+	}
+	on := &NetworkLoadBalancerValidator{Config: config.NetworkLoadBalancerConfig{SharedAddressListeners: true, UDPPortRanges: true}}
+	_, err := on.ValidateCreate(context.Background(), old)
+	require.NoError(t, err)
+	off := &NetworkLoadBalancerValidator{Config: config.NetworkLoadBalancerConfig{MaxExposedPorts: 64}}
+	_, err = off.ValidateCreate(context.Background(), old)
+	require.Error(t, err)
+	for _, tc := range []struct {
+		name    string
+		change  func(*networkingv1alpha.NetworkLoadBalancer)
+		allowed bool
+	}{
+		{"FinalizerRemoval", func(n *networkingv1alpha.NetworkLoadBalancer) { n.Finalizers = nil }, true},
+		{"Metadata", func(n *networkingv1alpha.NetworkLoadBalancer) { n.Labels = map[string]string{"drain": "true"} }, true},
+		{"RemoveListener", func(n *networkingv1alpha.NetworkLoadBalancer) { n.Spec.Listeners = n.Spec.Listeners[1:] }, true},
+		{"NarrowRange", func(n *networkingv1alpha.NetworkLoadBalancer) { n.Spec.Listeners[1].PortRange.End-- }, true},
+		{"RangeToSingleton", func(n *networkingv1alpha.NetworkLoadBalancer) {
+			n.Spec.Listeners[1].Port = 10000
+			n.Spec.Listeners[1].PortRange = nil
+		}, true},
+		{"RemoveLocation", func(n *networkingv1alpha.NetworkLoadBalancer) {
+			n.Spec.Exposure.Addresses[0].Locations.Names = []string{"iad"}
+		}, true},
+		{"WidenRange", func(n *networkingv1alpha.NetworkLoadBalancer) { n.Spec.Listeners[1].PortRange.End++ }, false},
+		{"MoveRange", func(n *networkingv1alpha.NetworkLoadBalancer) {
+			n.Spec.Listeners[1].PortRange.Start = 20000
+			n.Spec.Listeners[1].PortRange.End = 20001
+		}, false},
+		{"NewListener", func(n *networkingv1alpha.NetworkLoadBalancer) { n.Spec.Listeners[1].Name = "new-media" }, false},
+		{"NewLocation", func(n *networkingv1alpha.NetworkLoadBalancer) {
+			n.Spec.Exposure.Addresses[0].Locations.Names = append(n.Spec.Exposure.Addresses[0].Locations.Names, "ord")
+		}, false},
+		{"BroaderLocationMode", func(n *networkingv1alpha.NetworkLoadBalancer) {
+			n.Spec.Exposure.Addresses[0].Locations = &networkingv1alpha.NetworkLoadBalancerLocationSelection{From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll}
+		}, false},
+		{"NewSharedAddress", func(n *networkingv1alpha.NetworkLoadBalancer) {
+			n.Spec.Exposure.Addresses[0].Name = "other"
+			for i := range n.Spec.Listeners {
+				n.Spec.Listeners[i].AddressRefs = []string{"other"}
+			}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := old.DeepCopy()
+			tc.change(next)
+			_, err := off.ValidateUpdate(context.Background(), old, next)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }

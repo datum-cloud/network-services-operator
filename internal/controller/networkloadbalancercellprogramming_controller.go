@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -39,6 +40,7 @@ const (
 )
 
 type NetworkLoadBalancerCellProgrammingReconciler struct {
+	HubCluster             cluster.Cluster
 	Client                 client.Client
 	APIReader              client.Reader
 	Scheme                 *runtime.Scheme
@@ -69,6 +71,9 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 		return ctrl.Result{}, err
 	}
 
+	if intent.Spec.Allocation != nil {
+		return r.reconcileAllocationAuthority(ctx, &intent)
+	}
 	location, err := r.location(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -76,7 +81,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	if location == "" || intent.Spec.Location != location {
 		return r.withdrawResult(ctx, req.NamespacedName)
 	}
-	if !intent.DeletionTimestamp.IsZero() || intent.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate {
+	if !intent.DeletionTimestamp.IsZero() || !cellIntentRequestsServing(&intent) {
 		if done, err := r.withdraw(ctx, req.NamespacedName); err != nil || !done {
 			return ctrl.Result{RequeueAfter: nlbProgrammingRetry}, err
 		}
@@ -490,6 +495,9 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) intentsInNamespace(ctx co
 }
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.HubCluster == nil {
+		return fmt.Errorf("NLB serving requires an authoritative federation hub client")
+	}
 	r.Client = mgr.GetClient()
 	r.APIReader = mgr.GetAPIReader()
 	r.Scheme = mgr.GetScheme()

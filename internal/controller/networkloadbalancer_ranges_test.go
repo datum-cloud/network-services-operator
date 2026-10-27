@@ -140,6 +140,7 @@ func rangeProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerC
 	cl, r, intent := nlbProgrammingFixture(t)
 	r.SharedAddressListeners = true
 	r.UDPPortRanges = true
+	intent.Spec.State = api.NetworkLoadBalancerCellIntentValidateAllocation
 	intent.Spec.Source.ParentGeneration = 3
 	intent.Spec.Source.ListenerName = "media"
 	intent.Spec.Protocol = api.NetworkLoadBalancerProtocolUDP
@@ -149,6 +150,7 @@ func rangeProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerC
 	intent.Spec.Backends[0].PortRange = intent.Spec.ListenerPortRange
 	intent.Spec.AddressGroup = &api.NetworkLoadBalancerCellIntentAddressGroup{UID: "allocation-1", Generation: 3, Revision: "revision-3", ListenerName: "media", Listeners: []api.NetworkLoadBalancerCellIntentAddressListener{{Name: "web", Protocol: api.NetworkLoadBalancerProtocolTCP, Port: 443}, {Name: "media", Protocol: api.NetworkLoadBalancerProtocolUDP, PortRange: intent.Spec.ListenerPortRange}}}
 	require.NoError(t, cl.Update(context.Background(), intent))
+	createTestAllocationAuthority(t, cl, intent)
 	return cl, r, intent
 }
 
@@ -158,7 +160,7 @@ func TestNLBRangeCellFailsClosedUntilEveryGatewayCapable(t *testing.T) {
 	reconcileNLBProgramming(t, r, intent)
 	require.True(t, apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})))
 	for _, name := range []string{"gateway-a", "gateway-b"} {
-		require.NoError(t, cl.Create(ctx, &networkv1alpha1.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Namespace: "galactic-system", Name: name, Generation: 2}, Status: networkv1alpha1.NetworkGatewayStatus{ObservedGeneration: 2, BackendHealthFiltering: true, Capabilities: []string{networkv1alpha1.CapabilitySharedAddressListeners}}}))
+		require.NoError(t, cl.Create(ctx, &networkv1alpha1.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Namespace: "galactic-system", Name: name, Generation: 2}, Status: networkv1alpha1.NetworkGatewayStatus{ObservedGeneration: 2, BackendHealthFiltering: true, Capabilities: []string{networkv1alpha1.CapabilityTerminalAddressRetirement, networkv1alpha1.CapabilitySharedAddressListeners}}}))
 	}
 	reconcileNLBProgramming(t, r, intent)
 	require.True(t, apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(intent), &networkv1alpha1.NetworkService{})))
@@ -331,7 +333,7 @@ func TestNLBRangePublishesOneIntentWithCompleteInventory(t *testing.T) {
 	intents, err := buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
 	require.NoError(t, err)
 	require.Len(t, intents, 1)
-	require.Equal(t, api.NetworkLoadBalancerCellIntentValidate, intents[0].Spec.State)
+	require.Equal(t, api.NetworkLoadBalancerCellIntentValidateAllocation, intents[0].Spec.State)
 	require.Equal(t, parent.Spec.Listeners[1].PortRange, intents[0].Spec.ListenerPortRange)
 	require.Equal(t, intents[0].Spec.ListenerPortRange, intents[0].Spec.Backends[0].PortRange)
 	require.Len(t, intents[0].Spec.AddressGroup.Listeners, 2)
@@ -391,7 +393,7 @@ func TestNLBSharedToSingletonRetainsAnchorInEitherOrder(t *testing.T) {
 			web.Spec.Backends[0].PortRange = nil
 			web.Spec.AddressGroup.ListenerName = "web"
 			require.NoError(t, cl.Create(ctx, web))
-			require.NoError(t, cl.Create(ctx, &networkv1alpha1.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "galactic-system", Generation: 1}, Status: networkv1alpha1.NetworkGatewayStatus{ObservedGeneration: 1, BackendHealthFiltering: true, Capabilities: []string{networkv1alpha1.CapabilitySharedAddressListeners, networkv1alpha1.CapabilityUDPPortRanges}}}))
+			require.NoError(t, cl.Create(ctx, &networkv1alpha1.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "galactic-system", Generation: 1}, Status: networkv1alpha1.NetworkGatewayStatus{ObservedGeneration: 1, BackendHealthFiltering: true, Capabilities: []string{networkv1alpha1.CapabilityTerminalAddressRetirement, networkv1alpha1.CapabilitySharedAddressListeners, networkv1alpha1.CapabilityUDPPortRanges}}}))
 			reconcileNLBProgramming(t, r, media)
 			reconcileNLBProgramming(t, r, web)
 			var anchor networkv1alpha1.NetworkServiceAddress
@@ -528,7 +530,7 @@ func TestNLBCoordinationSurvivesObservationLossAndResetsOnReplacement(t *testing
 	require.NoError(t, s.ipam.Update(s.ctx, &claim))
 	lb = s.reconcile()
 	require.True(t, edgeAddress(t, &lb).Retiring)
-	require.NoError(t, acknowledgeRetiredAllocations(s.ctx, s.client, &lb, nil))
+	require.NoError(t, acknowledgeRetiredAllocations(s.ctx, s.client, &lb, retirementReceipts(&lb)))
 	lb = s.reconcile()
 	address = edgeAddress(t, &lb)
 	require.Equal(t, "replacement-claim", address.ClaimRef.UID)

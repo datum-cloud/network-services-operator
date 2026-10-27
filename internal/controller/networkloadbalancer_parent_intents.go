@@ -97,6 +97,13 @@ func (r *NetworkLoadBalancerCellIntentReconciler) reconcileParentIntents(ctx con
 			}
 		}
 	}
+	retirementPending := false
+	if present {
+		retirementPending, err = r.publishAllocationAuthorities(ctx, projectClient, hub, project, &parent)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	pending, err := reconcileParentHubIntents(ctx, hub, project, key, desired)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -113,7 +120,7 @@ func (r *NetworkLoadBalancerCellIntentReconciler) reconcileParentIntents(ctx con
 	if err := releaseParentRouteFinalizers(ctx, projectClient, hub, project, key, routes.Items, current, !present || !parent.DeletionTimestamp.IsZero()); err != nil {
 		return ctrl.Result{}, err
 	}
-	if pending || namespacePending {
+	if pending || namespacePending || retirementPending {
 		return ctrl.Result{RequeueAfter: nlbIntentRetry}, nil
 	}
 	return ctrl.Result{}, nil
@@ -151,6 +158,9 @@ func reconcileParentHubIntents(ctx context.Context, hub client.Client, project s
 	pending := false
 	for i := range existing {
 		intent := &existing[i]
+		if intent.Spec.Allocation != nil {
+			continue
+		}
 		if _, keep := wanted[intent.Name]; keep {
 			continue
 		}
@@ -196,11 +206,7 @@ func acknowledgeRetiredAllocations(ctx context.Context, cl client.Client, parent
 			if !address.Coordinated || !address.Retiring || !address.WithdrawalPending {
 				continue
 			}
-			pending := slices.ContainsFunc(intents, func(intent api.NetworkLoadBalancerCellIntent) bool {
-				src := intent.Spec.Source
-				return src.ParentUID == string(parent.UID) && src.AddressRequest == endpoint.RequestName && intent.Spec.Location == endpoint.Location && intent.Spec.VIP == address.Value && !intentWithdrawalAcknowledged(&intent)
-			})
-			if pending {
+			if !allocationRetirementConfirmed(parent, endpoint, address, intents) {
 				continue
 			}
 			address.WithdrawalPending = false

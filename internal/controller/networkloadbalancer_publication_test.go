@@ -26,7 +26,7 @@ type pausedIntentClient struct {
 }
 
 func (c *pausedIntentClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	if intent, ok := obj.(*api.NetworkLoadBalancerCellIntent); ok && intent.Spec.State == api.NetworkLoadBalancerCellIntentValidate && c.beforeCreate != nil {
+	if intent, ok := obj.(*api.NetworkLoadBalancerCellIntent); ok && cellIntentRequestsServing(intent) && c.beforeCreate != nil {
 		c.beforeCreate()
 	}
 	return c.Client.Create(ctx, obj, opts...)
@@ -43,7 +43,7 @@ func publicationScenario(t *testing.T) (*loadBalancerAllocationScenario, client.
 	require.NoError(t, s.client.Update(s.ctx, s.lb))
 	var ns corev1.Namespace
 	require.NoError(t, s.client.Get(s.ctx, client.ObjectKey{Name: s.lb.Namespace}, &ns))
-	ns.UID = "publication-ns"
+	ns.UID = "project"
 	require.NoError(t, s.client.Update(s.ctx, &ns))
 	var network api.Network
 	require.NoError(t, s.client.Get(s.ctx, client.ObjectKey{Namespace: s.lb.Namespace, Name: "default"}, &network))
@@ -70,7 +70,7 @@ func publicationScenario(t *testing.T) (*loadBalancerAllocationScenario, client.
 		require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
 	}
 	s.reconcile()
-	hub := fake.NewClientBuilder().WithScheme(s.client.Scheme()).WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-publication-ns"}}).WithStatusSubresource(&api.NetworkLoadBalancerCellIntent{}).Build()
+	hub := fake.NewClientBuilder().WithScheme(s.client.Scheme()).WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nlbProgrammingTestNamespace}}).WithStatusSubresource(&api.NetworkLoadBalancerCellIntent{}).Build()
 	return s, hub, &NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
 }
 
@@ -136,12 +136,13 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 			close(resume)
 			require.NoError(t, <-finished)
 			publisher.HubCluster = &fakeCluster{cl: hub}
-			intents, err := parentPublishedIntents(ctx, hub, testProject, key)
+			intents, err := publishedListenerIntents(ctx, hub, key)
 			require.NoError(t, err)
 			require.Len(t, intents, 1)
 			cell, adapter, placeholder := nlbProgrammingFixture(t)
 			require.NoError(t, cell.Delete(ctx, placeholder))
 			adapter.SharedAddressListeners = true
+			adapter.HubCluster = &fakeCluster{cl: hub, reader: hub}
 			adapter.resolveLocation = func(context.Context) (string, error) { return "iad", nil }
 			var iface api.NetworkInterface
 			require.NoError(t, cell.Get(ctx, client.ObjectKey{Namespace: nlbProgrammingTestNamespace, Name: "web-0-eth0"}, &iface))
@@ -152,7 +153,7 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 			copy.Namespace = nlbProgrammingTestNamespace
 			copy.ResourceVersion = ""
 			require.NoError(t, cell.Create(ctx, copy))
-			require.NoError(t, cell.Create(ctx, &galactic.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Generation: 1}, Status: galactic.NetworkGatewayStatus{ObservedGeneration: 1, BackendHealthFiltering: true, Capabilities: []string{galactic.CapabilitySharedAddressListeners}}}))
+			require.NoError(t, cell.Create(ctx, &galactic.NetworkGateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Generation: 1}, Status: galactic.NetworkGatewayStatus{ObservedGeneration: 1, BackendHealthFiltering: true, Capabilities: []string{galactic.CapabilityTerminalAddressRetirement, galactic.CapabilitySharedAddressListeners}}}))
 			reconcileNLBProgramming(t, adapter, copy)
 			var anchor galactic.NetworkServiceAddress
 			anchorKey := client.ObjectKey{Namespace: copy.Namespace, Name: networkLoadBalancerAddressName(copy.Spec.AddressGroup.UID)}
@@ -161,11 +162,11 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 			require.NoError(t, cell.Update(ctx, &anchor))
 			_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, key)
 			require.NoError(t, err)
-			intents, err = parentPublishedIntents(ctx, hub, testProject, key)
+			intents, err = publishedListenerIntents(ctx, hub, key)
 			require.NoError(t, err)
 			var retired *api.NetworkLoadBalancerCellIntent
 			for i := range intents {
-				if intents[i].Spec.Source.AddressRequest == "regional" && intents[i].Spec.Location == "iad" {
+				if intents[i].Spec.Allocation == nil && intents[i].Spec.Source.AddressRequest == "regional" && intents[i].Spec.Location == "iad" {
 					retired = &intents[i]
 				}
 			}
@@ -187,6 +188,7 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 			require.True(t, intentWithdrawalAcknowledged(copy))
 			retired.Status = copy.Status
 			require.NoError(t, hub.Status().Update(ctx, retired))
+			completeCellRetirements(t, hub, cell, adapter, testProject, key)
 			_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, key)
 			require.NoError(t, err)
 			_, err = s.control.reconcile(ctx, s.client, key)
@@ -218,7 +220,13 @@ func TestNLBPublicationRetiresWithoutRoutesAndRejectsStaleAcknowledgment(t *test
 	stale := parent.DeepCopy()
 	parent.Generation++
 	require.NoError(t, s.client.Update(ctx, &parent))
-	require.True(t, apierrors.IsConflict(acknowledgeRetiredAllocations(ctx, s.client, stale, nil)))
+	require.True(t, apierrors.IsConflict(acknowledgeRetiredAllocations(ctx, s.client, stale, retirementReceipts(stale))))
+	_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, key)
+	require.NoError(t, err)
+	cell, adapter, placeholder := nlbProgrammingFixture(t)
+	require.NoError(t, cell.Delete(ctx, placeholder))
+	adapter.resolveLocation = func(context.Context) (string, error) { return "iad", nil }
+	completeCellRetirements(t, hub, cell, adapter, testProject, key)
 	_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, key)
 	require.NoError(t, err)
 	require.NoError(t, s.client.Get(ctx, key, &parent))
@@ -230,7 +238,7 @@ func TestNLBPublicationRetiresWithoutRoutesAndRejectsStaleAcknowledgment(t *test
 	_, err = s.control.reconcile(ctx, s.client, key)
 	require.NoError(t, err)
 	require.Empty(t, s.claims())
-	intents, err := parentPublishedIntents(ctx, hub, testProject, key)
+	intents, err := publishedListenerIntents(ctx, hub, key)
 	require.NoError(t, err)
 	require.Empty(t, intents)
 }
@@ -240,7 +248,7 @@ func TestNLBPublicationParentFinalizerProtectsPausedSibling(t *testing.T) {
 	ctx, key := s.ctx, client.ObjectKeyFromObject(s.lb)
 	_, err := publisher.reconcileParentIntents(ctx, testProject, s.client, key)
 	require.NoError(t, err)
-	intents, err := parentPublishedIntents(ctx, hub, testProject, key)
+	intents, err := publishedListenerIntents(ctx, hub, key)
 	require.NoError(t, err)
 	require.Len(t, intents, 1)
 	sibling := intents[0].DeepCopy()
@@ -270,7 +278,7 @@ func TestNLBPublicationParentFinalizerProtectsPausedSibling(t *testing.T) {
 	require.NoError(t, s.client.Delete(ctx, &route))
 	_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, key)
 	require.NoError(t, err)
-	intents, err = parentPublishedIntents(ctx, hub, testProject, key)
+	intents, err = publishedListenerIntents(ctx, hub, key)
 	require.NoError(t, err)
 	require.Len(t, intents, 1)
 	reportIntent(&intents[0], metav1.ConditionFalse, metav1.ConditionFalse)
@@ -291,7 +299,7 @@ func TestNLBPublicationParentFinalizerProtectsPausedSibling(t *testing.T) {
 	require.True(t, found, "durable annotation must recover the absent sibling after restart")
 	_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, siblingKey)
 	require.NoError(t, err)
-	intents, err = parentPublishedIntents(ctx, hub, testProject, siblingKey)
+	intents, err = publishedListenerIntents(ctx, hub, siblingKey)
 	require.NoError(t, err)
 	require.Len(t, intents, 1)
 	require.Equal(t, api.NetworkLoadBalancerCellIntentWithdrawn, intents[0].Spec.State)

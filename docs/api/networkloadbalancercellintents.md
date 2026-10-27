@@ -57,16 +57,14 @@ from a project control plane through the hub to the serving cell.
           NetworkLoadBalancerCellIntentSpec is a validation request to one location.
 The cell must independently verify the live interface, attachment, and VPC.<br/>
           <br/>
-            <i>Validations</i>:<li>self.state == 'Validate' ? has(self.backends) && size(self.backends) > 0 : !has(self.backends) || size(self.backends) == 0: Validate needs backends; Withdrawn must have none</li><li>has(self.listenerPort) != has(self.listenerPortRange): exactly one listenerPort or listenerPortRange is required</li><li>!has(self.listenerPortRange) || self.listenerPortRange.start == self.listenerPortRange.end || (self.protocol == 'UDP' && has(self.addressGroup)): true listener ranges require UDP and address inventory</li>
+            <i>Validations</i>:<li>self.state != 'Withdrawn' ? has(self.backends) && size(self.backends) > 0 : !has(self.backends) || size(self.backends) == 0: validation needs backends; Withdrawn must have none</li><li>self.state == 'Withdrawn' || ((self.state == 'ValidateAllocation') == has(self.addressGroup)): coordinated validation requires ValidateAllocation</li><li>has(self.allocation) || (has(self.source.routeName) && has(self.source.routeUID) && has(self.source.listenerName) && has(self.protocol) && (has(self.listenerPort) != has(self.listenerPortRange))): serving intents require source and listener fields</li><li>!has(self.allocation) || (self.state == 'Withdrawn' && !has(self.addressGroup) && !has(self.listenerPort) && !has(self.listenerPortRange) && !has(self.protocol) && !has(self.source.routeName) && !has(self.source.routeUID) && !has(self.source.listenerName)): retirement cannot contain serving configuration</li><li>has(oldSelf.allocation) ? has(self.allocation) && self.source == oldSelf.source && self.location == oldSelf.location && self.networkName == oldSelf.networkName && self.vip == oldSelf.vip && self.vipFamily == oldSelf.vipFamily : !has(self.allocation): allocation authority identity is immutable</li><li>!has(self.listenerPortRange) || self.listenerPortRange.start == self.listenerPortRange.end || (self.protocol == 'UDP' && has(self.addressGroup)): true listener ranges require UDP and address inventory</li>
         </td>
         <td>true</td>
       </tr><tr>
         <td><b><a href="#networkloadbalancercellintentstatus">status</a></b></td>
         <td>object</td>
         <td>
-          NetworkLoadBalancerCellIntentStatus is written by the serving cell and
-aggregated onto the hub copy. Cells outside the intent's location leave it
-empty.<br/>
+          <br/>
         </td>
         <td>false</td>
       </tr></tbody>
@@ -105,15 +103,6 @@ The cell must independently verify the live interface, attachment, and VPC.
         </td>
         <td>true</td>
       </tr><tr>
-        <td><b>protocol</b></td>
-        <td>enum</td>
-        <td>
-          NetworkLoadBalancerProtocol is the transport accepted by a listener.<br/>
-          <br/>
-            <i>Enum</i>: TCP, UDP, TLS<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
         <td><b><a href="#networkloadbalancercellintentspecsource">source</a></b></td>
         <td>object</td>
         <td>
@@ -127,7 +116,7 @@ The cell must independently verify the live interface, attachment, and VPC.
           NetworkLoadBalancerCellIntentState distinguishes desired backend validation
 from an explicit withdrawal. Neither state authorizes traffic programming.<br/>
           <br/>
-            <i>Enum</i>: Validate, Withdrawn<br/>
+            <i>Enum</i>: Validate, ValidateAllocation, Withdrawn<br/>
         </td>
         <td>true</td>
       </tr><tr>
@@ -155,6 +144,15 @@ family; the serving cell must support that family pair before programming.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b><a href="#networkloadbalancercellintentspecallocation">allocation</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.uid == oldSelf.uid && self.claimUID == oldSelf.claimUID: allocation identity is immutable</li><li>!oldSelf.retired || self == oldSelf: retired allocations cannot change</li><li>!has(oldSelf.participants) || (has(self.participants) && oldSelf.participants.all(p, p in self.participants)): registered cells cannot be removed</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkloadbalancercellintentspecbackendsindex">backends</a></b></td>
         <td>[]object</td>
         <td>
@@ -179,6 +177,15 @@ family; the serving cell must support that family pair before programming.<br/>
             <i>Validations</i>:<li>self.start <= self.end: port range start must not exceed end</li>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b>protocol</b></td>
+        <td>enum</td>
+        <td>
+          NetworkLoadBalancerProtocol is the transport accepted by a listener.<br/>
+          <br/>
+            <i>Enum</i>: TCP, UDP, TLS<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -201,13 +208,6 @@ family; the serving cell must support that family pair before programming.<br/>
     </thead>
     <tbody><tr>
         <td><b>addressRequest</b></td>
-        <td>string</td>
-        <td>
-          <br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
-        <td><b>listenerName</b></td>
         <td>string</td>
         <td>
           <br/>
@@ -260,19 +260,26 @@ family; the serving cell must support that family pair before programming.<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b>listenerName</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>routeName</b></td>
         <td>string</td>
         <td>
           <br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr><tr>
         <td><b>routeUID</b></td>
         <td>string</td>
         <td>
           <br/>
         </td>
-        <td>true</td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -426,6 +433,54 @@ family; the serving cell must support that family pair before programming.<br/>
             <i>Maximum</i>: 65535<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancerCellIntent.spec.allocation
+<sup><sup>[↩ Parent](#networkloadbalancercellintentspec)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>claimUID</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>retired</b></td>
+        <td>boolean</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>uid</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>participants</b></td>
+        <td>[]string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -645,9 +700,7 @@ public VIP family. IPv4 ingress can use an IPv6 backend through a proxy.<br/>
 
 
 
-NetworkLoadBalancerCellIntentStatus is written by the serving cell and
-aggregated onto the hub copy. Cells outside the intent's location leave it
-empty.
+
 
 <table>
     <thead>
@@ -659,6 +712,13 @@ empty.
         </tr>
     </thead>
     <tbody><tr>
+        <td><b><a href="#networkloadbalancercellintentstatusallocationretirementsindex">allocationRetirements</a></b></td>
+        <td>[]object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkloadbalancercellintentstatusconditionsindex">conditions</a></b></td>
         <td>[]object</td>
         <td>
@@ -674,6 +734,44 @@ empty.
             <i>Format</i>: int64<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancerCellIntent.status.allocationRetirements[index]
+<sup><sup>[↩ Parent](#networkloadbalancercellintentstatus)</sup></sup>
+
+
+
+NetworkLoadBalancerCellIntentStatus is written by the serving cell and
+aggregated onto the hub copy. Cells outside the intent's location leave it
+empty.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>cellUID</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>observedGeneration</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

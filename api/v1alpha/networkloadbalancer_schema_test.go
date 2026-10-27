@@ -197,4 +197,91 @@ func TestNetworkLoadBalancerAdmission(t *testing.T) {
 			}
 		})
 	}
+	t.Run("coordinated serving requires the registration-aware wire state", func(t *testing.T) {
+		ctx := context.Background()
+		intent := &networkingv1alpha.NetworkLoadBalancerCellIntent{ObjectMeta: metav1.ObjectMeta{Name: "wire-state", Namespace: "default"}, Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+			Source:   networkingv1alpha.NetworkLoadBalancerCellIntentSource{ProjectCluster: "project", Namespace: "project", ParentName: "nlb", ParentUID: "parent", RouteName: "route", RouteUID: "route", ListenerName: "web", AddressRequest: "public"},
+			Location: "iad", NetworkName: "net", VIPFamily: networkingv1alpha.IPv6Protocol, VIP: "2001:db8::1", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, ListenerPort: 80,
+			State:        networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation,
+			AddressGroup: &networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup{UID: "allocation", Generation: 1, Revision: "one", ListenerName: "web", Listeners: []networkingv1alpha.NetworkLoadBalancerCellIntentAddressListener{{Name: "web", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, Port: 80}}},
+			Backends:     []networkingv1alpha.NetworkLoadBalancerCellIntentBackend{{SourceNamespace: "project", SourceName: "interface", SourceUID: "interface", Family: networkingv1alpha.IPv6Protocol, Address: "fd00::1", Port: 80}},
+		}}
+		require.NoError(t, k8sClient.Create(ctx, intent))
+		legacy := intent.DeepCopy()
+		legacy.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidate
+		require.Error(t, k8sClient.Update(ctx, legacy))
+		missingInventory := intent.DeepCopy()
+		missingInventory.Spec.AddressGroup = nil
+		require.Error(t, k8sClient.Update(ctx, missingInventory))
+		missingBackends := intent.DeepCopy()
+		missingBackends.Spec.Backends = nil
+		require.Error(t, k8sClient.Update(ctx, missingBackends))
+		intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn
+		intent.Spec.Backends = nil
+		require.NoError(t, k8sClient.Update(ctx, intent))
+	})
+	t.Run("allocation retirement is a terminal non-serving union", func(t *testing.T) {
+		ctx := context.Background()
+		retirement := &networkingv1alpha.NetworkLoadBalancerCellIntent{ObjectMeta: metav1.ObjectMeta{Name: "retired-allocation", Namespace: "default"}, Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+			Allocation: &networkingv1alpha.NetworkLoadBalancerAllocationAuthority{UID: "allocation-uid", ClaimUID: "claim-uid"},
+			Source:     networkingv1alpha.NetworkLoadBalancerCellIntentSource{ProjectCluster: "project", Namespace: "project", ParentName: "nlb", ParentUID: "parent-uid", ParentGeneration: 1, AddressRequest: "public"},
+			Location:   "iad", NetworkName: "default", VIPFamily: networkingv1alpha.IPv6Protocol, VIP: "2001:db8::1", State: networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn,
+		}}
+		require.NoError(t, k8sClient.Create(ctx, retirement))
+		retirement.Labels = map[string]string{"retained": "true"}
+		require.NoError(t, k8sClient.Update(ctx, retirement))
+		retirement.Spec.Allocation.Participants = []string{"cell-a"}
+		require.NoError(t, k8sClient.Update(ctx, retirement))
+		dropped := retirement.DeepCopy()
+		dropped.Spec.Allocation.Participants = nil
+		require.Error(t, k8sClient.Update(ctx, dropped))
+		retirement.Spec.Allocation.Participants = append(retirement.Spec.Allocation.Participants, "cell-b")
+		require.NoError(t, k8sClient.Update(ctx, retirement))
+		retirement.Spec.Allocation.Retired = true
+		require.NoError(t, k8sClient.Update(ctx, retirement))
+		reopened := retirement.DeepCopy()
+		reopened.Spec.Allocation.Retired = false
+		require.Error(t, k8sClient.Update(ctx, reopened))
+		late := retirement.DeepCopy()
+		late.Spec.Allocation.Participants = append(late.Spec.Allocation.Participants, "cell-c")
+		require.Error(t, k8sClient.Update(ctx, late))
+		retirement.Status.AllocationRetirements = []networkingv1alpha.NetworkLoadBalancerAllocationRetirementReceipt{{CellUID: "cell-a", ObservedGeneration: retirement.Generation}}
+		require.NoError(t, k8sClient.Status().Update(ctx, retirement))
+		for _, change := range []func(*networkingv1alpha.NetworkLoadBalancerCellIntent){
+			func(i *networkingv1alpha.NetworkLoadBalancerCellIntent) { i.Spec.Allocation.UID = "other" },
+			func(i *networkingv1alpha.NetworkLoadBalancerCellIntent) { i.Spec.Source.ParentGeneration++ },
+			func(i *networkingv1alpha.NetworkLoadBalancerCellIntent) {
+				i.Spec.Allocation = nil
+				i.Spec.Protocol = networkingv1alpha.NetworkLoadBalancerProtocolTCP
+				i.Spec.ListenerPort = 80
+				i.Spec.Source.RouteName = "route"
+				i.Spec.Source.RouteUID = "route-uid"
+				i.Spec.Source.ListenerName = "web"
+			},
+		} {
+			next := retirement.DeepCopy()
+			change(next)
+			require.Error(t, k8sClient.Update(ctx, next))
+		}
+		invalid := retirement.DeepCopy()
+		invalid.ResourceVersion = ""
+		invalid.Name = "retirement-with-listener"
+		invalid.Spec.ListenerPort = 80
+		require.Error(t, k8sClient.Create(ctx, invalid))
+		normal := retirement.DeepCopy()
+		normal.ResourceVersion = ""
+		normal.Name = "ordinary-intent"
+		normal.Spec.Allocation = nil
+		normal.Spec.Protocol = networkingv1alpha.NetworkLoadBalancerProtocolTCP
+		normal.Spec.ListenerPort = 80
+		normal.Spec.Source.RouteName = "route"
+		normal.Spec.Source.RouteUID = "route-uid"
+		normal.Spec.Source.ListenerName = "web"
+		require.NoError(t, k8sClient.Create(ctx, normal))
+		normal.Spec.ListenerPort = 81
+		require.NoError(t, k8sClient.Update(ctx, normal))
+		normal.Spec = retirement.Spec
+		require.Error(t, k8sClient.Update(ctx, normal))
+	})
+
 }

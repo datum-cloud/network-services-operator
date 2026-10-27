@@ -164,6 +164,17 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			allAllocated = false
 			continue
 		}
+		if retiredAllocationNeedsReplacement(prior, identityChanged) {
+			if prior.ClaimRef != nil {
+				if err := r.deleteAddressClaim(ctx, prior.ClaimRef, string(lb.UID)); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			setLoadBalancerCondition(&prior.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "ReplacingRetiredAllocation", "A retired allocation cannot be served again; waiting for a new claim")
+			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
+			allAllocated = false
+			continue
+		}
 		entry := prior
 		if identityChanged || prior.Value == "" && address != "" {
 			// Programming, announcement, and DNS publication describe one concrete
@@ -774,4 +785,8 @@ func allocationRetirementPending(address networkingv1alpha.NetworkLoadBalancerAd
 func allocationIdentityChanged(prior networkingv1alpha.NetworkLoadBalancerAddressStatus, address, claimUID string) bool {
 	return prior.Value != "" && address != "" && prior.Value != address ||
 		prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
+}
+
+func retiredAllocationNeedsReplacement(address networkingv1alpha.NetworkLoadBalancerAddressStatus, identityChanged bool) bool {
+	return address.Coordinated && address.Retiring && !address.WithdrawalPending && !identityChanged
 }

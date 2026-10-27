@@ -212,6 +212,9 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 					}
 					if len(intent.Spec.Backends) != 0 {
 						intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidate
+						if intent.Spec.AddressGroup != nil {
+							intent.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation
+						}
 					}
 					intent.Name = networkLoadBalancerCellIntentName(intent.Spec)
 					desired = append(desired, intent)
@@ -231,7 +234,7 @@ func withdrawConflictingCellIntents(desired []networkingv1alpha.NetworkLoadBalan
 	for i := range desired {
 		for j := 0; j < i; j++ {
 			a, b := &desired[i], &desired[j]
-			if a.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate || b.Spec.State != networkingv1alpha.NetworkLoadBalancerCellIntentValidate || a.Spec.NetworkName != b.Spec.NetworkName || a.Spec.Location != b.Spec.Location || a.Spec.Protocol != b.Spec.Protocol {
+			if !cellIntentRequestsServing(a) || !cellIntentRequestsServing(b) || a.Spec.NetworkName != b.Spec.NetworkName || a.Spec.Location != b.Spec.Location || a.Spec.Protocol != b.Spec.Protocol {
 				continue
 			}
 			for _, x := range a.Spec.Backends {
@@ -308,12 +311,18 @@ func (r *NetworkLoadBalancerCellIntentReconciler) SetupWithManager(mgr mcmanager
 }
 
 func intentWithdrawalAcknowledged(intent *networkingv1alpha.NetworkLoadBalancerCellIntent) bool {
+	if intent.Spec.Allocation != nil && reportedIntentCondition(intent, networkingv1alpha.NetworkLoadBalancerCellIntentAllocationRetired).Status != metav1.ConditionTrue {
+		return false
+	}
 	return intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn && len(intent.Spec.Backends) == 0 &&
 		reportedIntentCondition(intent, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed).Status == metav1.ConditionFalse &&
 		reportedIntentCondition(intent, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced).Status == metav1.ConditionFalse
 }
 
 func deleteAcknowledgedIntent(ctx context.Context, hub client.Client, intent *networkingv1alpha.NetworkLoadBalancerCellIntent) error {
+	if intent.Spec.Allocation != nil {
+		return nil
+	}
 	if err := hub.Delete(ctx, intent, client.Preconditions{UID: &intent.UID, ResourceVersion: &intent.ResourceVersion}); client.IgnoreNotFound(err) != nil {
 		return fmt.Errorf("delete withdrawn cell intent %s: %w", intent.Name, err)
 	}
@@ -339,8 +348,7 @@ func networkLoadBalancerAddressGroup(parent *networkingv1alpha.NetworkLoadBalanc
 	if allocation.ClaimRef != nil {
 		claimUID = allocation.ClaimRef.UID
 	}
-	uid := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s/%s", parent.UID, request, location, claimUID)))
-	return &networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup{UID: hex.EncodeToString(uid[:]), Generation: parent.Generation, Revision: hex.EncodeToString(revision[:]), ListenerName: listener.Name, Listeners: listeners}
+	return &networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup{UID: networkLoadBalancerAllocationUID(string(parent.UID), request, location, claimUID), Generation: parent.Generation, Revision: hex.EncodeToString(revision[:]), ListenerName: listener.Name, Listeners: listeners}
 }
 
 func allocationPublicationAllowed(parent *networkingv1alpha.NetworkLoadBalancer, request string, allocation networkingv1alpha.NetworkLoadBalancerAddressStatus) bool {
@@ -348,4 +356,16 @@ func allocationPublicationAllowed(parent *networkingv1alpha.NetworkLoadBalancer,
 		return true
 	}
 	return allocation.Coordinated && allocation.WithdrawalPending && !allocation.Retiring
+}
+
+func networkLoadBalancerAllocationUID(parentUID, request, location, claimUID string) string {
+	uid := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s/%s", parentUID, request, location, claimUID)))
+	return hex.EncodeToString(uid[:])
+}
+
+func cellIntentRequestsServing(intent *networkingv1alpha.NetworkLoadBalancerCellIntent) bool {
+	if intent.Spec.AddressGroup != nil {
+		return intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation
+	}
+	return intent.Spec.State == networkingv1alpha.NetworkLoadBalancerCellIntentValidate
 }

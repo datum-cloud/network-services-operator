@@ -613,10 +613,43 @@ includes the parent, request, location and claim UID; its generation and invento
 revision cover every declared listener, including listeners without a service.
 Monotonic generation checks and equal-generation content checks reject stale
 writers. Each listener service identifies the same inventory and its own listener.
-The anchor survives transient health and resolution failures. Withdrawal removes
-the listener service first; the last withdrawal also deletes the anchor and waits
-for Galactic's forwarding/advertisement finalizers before acknowledging release.
-Readiness booleans are never proof that this teardown completed.
+The anchor survives transient health and resolution failures. Listener withdrawal
+removes its service and waits for Galactic's forwarding and advertisement
+finalizers. Before publishing coordinated listener intents, the parent creates a
+positive allocation authority in the hub using the immutable claim UID. Coordinated
+listener intents use `ValidateAllocation`; older cell adapters withdraw this
+unknown state, while upgraded adapters reject coordinated `Validate` intents.
+Legacy scalar intents retain `Validate`. Upgrade the replicated CRD before
+publishing the new wire state. Every serving cell must read that authority
+directly from the hub and register its
+stable `kube-system` namespace UID with an optimistic update before writing any
+local anchor or service. Missing, unreachable, or retired authority fails closed.
+
+Retirement atomically freezes the authority's append-only registered-cell roster.
+Each registered cell creates or closes its permanent Galactic address tombstone,
+drains services, and writes a receipt directly to the hub only after Galactic
+confirms current-generation `Retired=True`. The parent retains the IPAM claim
+until every frozen participant has a receipt for the authority's terminal
+generation. No registered cells means no serving write was authorized, so that
+terminal authority can release without waiting for unused cells. Neither ordinary
+readiness, an empty intent list, nor a Karmada status aggregate proves retirement.
+Removing a registered cell from propagation does not remove its obligation: an
+unreachable participant keeps the claim held until its teardown is confirmed.
+
+Allocation authorities and address tombstones have no owner reference and are
+retained indefinitely. Normal cleanup never deletes them: deleting a marker could
+authorize a delayed writer after IP reuse. Storage therefore grows by one hub
+authority and one tombstone per cell that processes a retired allocation. Future
+compaction must preserve the terminal denial for the old allocation UID. A new
+claim UID may reuse the same VIP; reselecting a retired allocation requires a
+replacement claim. Late publishers, stale ACTIVE replicas, and newly joined cells
+cannot bypass direct hub registration against the frozen authority.
+
+The cell federation credentials need read and update/patch permission for hub
+`networkloadbalancercellintents`, plus get/update/patch on their status subresource.
+Cells never create or delete hub authorities. The existing Karmada interpreter
+preserves the directly written `allocationRetirements` status field; retirement
+safety does not depend on its ordinary listener-condition aggregation.
 
 Configure `networkLoadBalancer.sharedAddressListeners` and
 `networkLoadBalancer.udpPortRanges` independently on the manager and serving cell.
@@ -632,15 +665,21 @@ Install both repositories' new CRDs before deploying producers: older schemas
 may prune range or inventory fields. Upgrade Galactic controllers, gateways and
 routers before enabling NSO flags. Every nonterminating gateway must report its
 current generation, fail-closed backend health filtering, and required
-capabilities; absent or stale evidence prevents materialization. Validate Linux
+capabilities, including `TerminalAddressRetirement` for every coordinated
+address; absent or stale evidence prevents materialization. Validate Linux
 forward/reverse packet translation, unsupported-packet handling, route withdrawal
 and capacity under load before enabling a production cell. Unchanged scalar-only
 listeners continue through the legacy path without new capabilities.
 
 To roll back, disable admission for new shared/range configurations, withdraw
-existing affected intents and wait for service and address-anchor finalizers and
-allocation withdrawal acknowledgments. Only then downgrade serving binaries or
-schemas. Removing a range or reducing an inventory does not authorize stale
+existing affected intents, and wait for service finalizers and terminal allocation
+retirement acknowledgments. Disabled gates still permit metadata and finalizer
+updates and strictly nonexpanding listener, range, and location reductions; they
+reject new or wider disabled-feature usage. Preserve retirement markers across
+controller or schema downgrade: dropping the terminal authority while delayed
+writers can still exist is unsafe. Only downgrade after the coordinated serving
+path is drained and its retirement authority remains enforced. Removing a range
+or reducing an inventory does not authorize stale
 siblings to restore an earlier revision. The allocation status keeps
 `coordinated=true` once sharing or a true range uses it. Removing listeners or
 replacing a range with a singleton updates that same inventory; the final listener remains coordinated until the allocation is

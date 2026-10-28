@@ -440,7 +440,7 @@ func listenerHasAllocatedVIP(parent *networkingv1alpha.NetworkLoadBalancer, list
 		}
 		for _, address := range endpoint.Addresses {
 			allocated := apimeta.FindStatusCondition(address.Conditions, networkingv1alpha.NetworkLoadBalancerAllocated)
-			if address.Family == networkingv1alpha.IPv6Protocol && address.Value != "" && address.ClaimRef != nil &&
+			if address.Value != "" && address.ClaimRef != nil &&
 				allocated != nil && allocated.Status == metav1.ConditionTrue && allocated.ObservedGeneration == parent.Generation {
 				return true
 			}

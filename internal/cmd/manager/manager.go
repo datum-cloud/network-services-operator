@@ -614,7 +614,7 @@ func webhookRegistrations(mgr mcmanager.Manager, serverConfig config.NetworkServ
 			return networkingv1alphawebhooks.SetupNetworkWebhookWithManager(mgr)
 		}},
 		{"NetworkLoadBalancer", true, func() error {
-			return networkingv1alphawebhooks.SetupNetworkLoadBalancerWebhookWithManager(mgr)
+			return networkingv1alphawebhooks.SetupNetworkLoadBalancerWebhookWithManager(mgr, serverConfig.IPAM.Classes.PublicIPv4 != "")
 		}},
 		{"NetworkLoadBalancerRoute", true, func() error {
 			return networkingv1alphawebhooks.SetupNetworkLoadBalancerRouteWebhookWithManager(mgr)
@@ -814,6 +814,7 @@ func controllerRegistrations(
 			return (&controller.NetworkLoadBalancerReconciler{
 				IPAM:            deps.ipamClients,
 				PublicIPv6Class: serverConfig.IPAM.Classes.PublicIPv6,
+				PublicIPv4Class: serverConfig.IPAM.Classes.PublicIPv4,
 				ManagedDomain:   serverConfig.Gateway.TargetDomain,
 			}).SetupWithManager(mgr)
 		}},

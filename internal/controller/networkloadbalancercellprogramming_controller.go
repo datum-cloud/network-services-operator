@@ -44,6 +44,7 @@ type NetworkLoadBalancerCellProgrammingReconciler struct {
 	Client   client.Client
 	Scheme   *runtime.Scheme
 	Location config.LocationConfig
+	IPv4VIPs bool
 
 	resolveLocation func(context.Context) (string, error)
 }
@@ -86,7 +87,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 	for _, reason := range rejected {
 		logger.Info("backend excluded", "intent", req.NamespacedName, "reason", reason)
 	}
-	service, reason := desiredNetworkLoadBalancerService(&intent, backends)
+	service, reason := desiredNetworkLoadBalancerService(&intent, backends, r.IPv4VIPs)
 	if service == nil {
 		logger.Info("intent not served", "intent", req.NamespacedName, "reason", reason)
 		if done, err := r.withdraw(ctx, req.NamespacedName); err != nil || !done {
@@ -121,6 +122,9 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportServed(
 ) error {
 	programmed := servedProgrammedCondition(service)
 	announced := gatewayServiceCondition(service, "Advertised")
+	if intent.Spec.VIPFamily == networkingv1alpha.IPv4Protocol {
+		announced = gatewayServiceCondition(service, "IPv4Served")
+	}
 	return r.reportStatus(ctx, intent, programmed, announced)
 }
 
@@ -275,12 +279,19 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) verifyBackend(
 func desiredNetworkLoadBalancerService(
 	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
 	backends []verifiedNetworkLoadBalancerBackend,
+	ipv4VIPs bool,
 ) (*networkv1alpha1.NetworkService, string) {
 	if len(backends) == 0 {
 		return nil, "no backend passed verification"
 	}
-	if intent.Spec.VIPFamily != networkingv1alpha.IPv6Protocol {
-		return nil, "only IPv6 addresses are served"
+	switch intent.Spec.VIPFamily {
+	case networkingv1alpha.IPv6Protocol:
+	case networkingv1alpha.IPv4Protocol:
+		if !ipv4VIPs {
+			return nil, "IPv4 addresses are not served in this location"
+		}
+	default:
+		return nil, fmt.Sprintf("address family %q is not served", intent.Spec.VIPFamily)
 	}
 	var protocol networkv1alpha1.NetworkServiceProtocol
 	switch intent.Spec.Protocol {

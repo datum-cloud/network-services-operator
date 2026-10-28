@@ -34,6 +34,10 @@ The verdict is about domain ownership only. Certificate validation, including
 the `_acme-challenge` record for a wildcard certificate, is separate. A
 hostname whose DNS is hosted elsewhere is verified by TXT or HTTP.
 
+Each behavior is off until an environment turns on its setting, so a release
+that contains it changes nothing on its own. See
+[Configuration](#configuration).
+
 ## Container view
 
 <p align="center">
@@ -62,7 +66,8 @@ status, so neither waits on its own output.
 
 ## The verdict
 
-`VerifiedDNSZone` is `True` when a zone `Z` exists such that:
+With `domainDelegation.enabled` on, `VerifiedDNSZone` is `True` when a zone `Z`
+exists such that:
 
 1. `Z` is in the `Domain`'s namespace and `Z.status.domainRef.name` is the
    `Domain`'s name.
@@ -145,11 +150,15 @@ already `True`. It's reported in `status.delegation.lastLookupError` and on the
   <img src="../diagrams/DomainVerificationDynamic.png" alt="Dynamic view: zone first, delegation second" />
 </p>
 
+With `domainDelegation.enabled` on:
+
 - **While the `Domain` is unverified and a served zone exists for it:** on
-  every reconcile. Reconciles come from `DNSZone` events, `Domain` events, and
-  the verification retry intervals (5 seconds, then 1 minute, then every 5
-  minutes). A customer who delegates days after creating the zone is verified
-  within 5 minutes.
+  every `DNSZone` event, and every `domainDelegation.pendingCheckInterval`
+  after that, independent of the TXT and HTTP retry intervals. Those intervals
+  belong to the deployment and can stretch to hours, so they never decide how
+  soon a delegation is noticed. A customer who delegates days after creating
+  the zone is verified within `pendingCheckInterval` of the change reaching the
+  parent's servers.
 - **Otherwise:** every `domainDelegation.refreshInterval`, so Gateway DNS sees
   delegation changes within the hour.
 - A per-name cache of `domainDelegation.cacheTTL` keeps a burst of events from
@@ -204,10 +213,11 @@ elsewhere can use it.
 
 ## Wildcard hostnames
 
-`provenByDNS` is `Verified && (VerifiedDNS || VerifiedDNSZone)`.
-`unverifiedReason` in `internal/cmd/alb/spec/verification.go` applies the same
-rule, and `verificationMethodPhrase` describes a zone-verified `Domain` as
-proof for wildcards.
+With `domainDelegation.wildcards` on, `provenByDNS` is
+`Verified && (VerifiedDNS || VerifiedDNSZone)`. `unverifiedReason` in
+`internal/cmd/alb/spec/verification.go` applies the same rule, and
+`verificationMethodPhrase` describes a zone-verified `Domain` as proof for
+wildcards. With it off, a wildcard needs `VerifiedDNS`.
 
 A project whose served zone the parent delegates to already answers every name
 under the domain, so it could get a wildcard certificate from any public CA. An
@@ -228,15 +238,24 @@ wrong would confuse more than it helps.
 
 ## Configuration
 
-The `domainDelegation` section of the server config:
+The `domainDelegation` section of the server config. Every default keeps the
+behavior from before verification by delegation, so each behavior stays off
+until an environment turns on its setting.
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `enabled` | `false` | Read delegations from the parent zone, watch `DNSZone`, and use the verdict above. Off: nameservers come from the registration refresh, and the zone check counts a zone held for verification at a registered domain. |
+| `wildcards` | `false` | Accept `VerifiedDNSZone` as proof for wildcard hostnames. |
 | `resolvers` | The system resolvers | Recursive resolvers used to find the parent zone and its servers. The end-to-end suite points this at a test parent. |
+| `pendingCheckInterval` | `1m` | How often an unverified `Domain` with a served zone is rechecked |
 | `refreshInterval` | `1h` | How often a delegation is re-read when no check is pending |
 | `cacheTTL` | `30s` | How long a lookup result is reused |
 | `queryTimeout` | `2s` | Timeout for each query to a parent server |
 | `parentServerAttempts` | `3` | How many parent servers to try before failing |
+
+Turn on `wildcards` only after `enabled`, and only once the DNS operator serves
+zones before verification. See
+[Turning off the verification gate][dns-gate].
 
 The operator needs outbound UDP and TCP on port 53 to arbitrary addresses to
 reach parent servers.
@@ -284,7 +303,7 @@ nameservers answer.
 | Case | Must observe |
 |------|--------------|
 | Delegate first | The parent delegates `example.test` before the zone exists. The zone is answered, and the `Domain` is `Verified` by `VerifiedDNSZone` with no TXT record published, within the SLO. |
-| Zone first | The zone is answered and the `Domain` reports `DNSZoneNameserverMismatch` naming the zone's nameservers. After the suite changes the delegation, it's `Verified` within one retry interval. |
+| Zone first | The zone is answered and the `Domain` reports `DNSZoneNameserverMismatch` naming the zone's nameservers. After the suite changes the delegation, it's `Verified` within `pendingCheckInterval`, with the TXT and HTTP retry intervals set to hours. |
 | Contested zone refused | A second project's contested zone for `example.test`, with the delegation pointing at the platform, and a `Domain` created by hand: it stays unverified. |
 | Subdomain, parent elsewhere | The test parent hosts `example.test` and delegates `shop.example.test` to the platform. The `shop.example.test` zone verifies. |
 | Subdomain, no cut | A zone for `shop.example.test` whose parent has no cut for it and isn't delegated to the platform stays unverified. |
@@ -301,3 +320,4 @@ nameservers answer.
 
 [dns-design]: https://github.com/datum-cloud/dns-operator/blob/main/docs/architecture/zone-claims/README.md
 [dns-contract]: https://github.com/datum-cloud/dns-operator/blob/main/docs/architecture/zone-claims/README.md#contract-with-network-services-operator
+[dns-gate]: https://github.com/datum-cloud/dns-operator/blob/main/docs/architecture/zone-claims/README.md#turning-off-the-verification-gate

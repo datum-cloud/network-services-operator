@@ -75,7 +75,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 
 	if r.IPAM == nil || r.PublicIPv6Class == "" {
 		return r.report(ctx, cl, &lb, nil, nil, metav1.ConditionFalse, "AddressServiceUnavailable",
-			"Public address allocation is not configured")
+			"Public IPv6 address allocation is not configured")
 	}
 	if controllerutil.AddFinalizer(&lb, networkLoadBalancerFinalizer) {
 		if err := cl.Update(ctx, &lb); err != nil {

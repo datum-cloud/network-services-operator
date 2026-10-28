@@ -1,0 +1,24 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: public-ipv4-addresses-per-project
+  labels:
+    app.kubernetes.io/name: network-services-operator
+    app.kubernetes.io/component: quota-system
+    services.miloapis.com/owner: networking.datumapis.com
+  annotations:
+    kubernetes.io/display-name: "Public IPv4 Addresses"
+    kubernetes.io/description: "Maximum number of public IPv4 load balancer addresses in a project"
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  type: Entity
+  resourceType: networking.datumapis.com/public-ipv4-addresses
+  description: "Maximum number of public IPv4 load balancer addresses in a project"
+  baseUnit: address
+  displayUnit: addresses
+  unitConversionFactor: 1
+  claimingResources:
+    - apiGroup: networking.datumapis.com
+      kind: NetworkLoadBalancer

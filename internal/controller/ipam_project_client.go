@@ -20,13 +20,19 @@ import (
 
 // IPAMClientFactory returns a client bound to one project. Every IPAM request
 // goes through one, so no request can reach IPAM without naming a project.
-type IPAMClientFactory interface {
+type IPAMClientFactory = ProjectClientFactory
+
+type ProjectClientFactory interface {
 	ClientForProject(project string) (client.Client, error)
 }
 
 // NewIPAMClientFactory builds project-scoped clients from one connection. The
 // clients are uncached, because a cache would watch every project served.
 func NewIPAMClientFactory(base *rest.Config, scheme *runtime.Scheme) (IPAMClientFactory, error) {
+	return NewProjectClientFactory(base, scheme)
+}
+
+func NewProjectClientFactory(base *rest.Config, scheme *runtime.Scheme) (ProjectClientFactory, error) {
 	if base == nil {
 		return nil, fmt.Errorf("a rest config is required")
 	}

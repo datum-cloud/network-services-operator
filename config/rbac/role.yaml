@@ -400,3 +400,12 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - quota.miloapis.com
+  resources:
+  - resourceclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list

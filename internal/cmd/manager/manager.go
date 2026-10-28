@@ -419,6 +419,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				os.Exit(1)
 			}
 
+			loadBalancerQuota, err := newLoadBalancerQuotaClients(serverConfig)
+			if err != nil {
+				setupLog.Error(err, "unable to build load balancer quota client")
+				os.Exit(1)
+			}
+
 			wildcardEntitlements, err := newWildcardEntitlementChecker(serverConfig)
 			if err != nil {
 				setupLog.Error(err, "unable to build wildcard entitlement client")
@@ -443,6 +449,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				certificateServiceReader: certificateServiceReader,
 				certificateServiceRoots:  certificateServiceRoots,
 				wildcardEntitlements:     wildcardEntitlements,
+				loadBalancerQuota:        loadBalancerQuota,
 				projectIdentities:        projectIdentities,
 				dnsLocations:             dnsLocations,
 			})
@@ -653,6 +660,7 @@ type controllerDeps struct {
 	certificateServiceReader client.Reader
 	certificateServiceRoots  *x509.CertPool
 	wildcardEntitlements     controller.WildcardEntitlementChecker
+	loadBalancerQuota        controller.ProjectClientFactory
 	projectIdentities        controller.ProjectIdentityResolver
 	dnsLocations             client.Reader
 }
@@ -710,6 +718,17 @@ func newWildcardEntitlementChecker(serverConfig config.NetworkServicesOperator) 
 		return nil, err
 	}
 	return controller.NewWildcardEntitlementChecker(reader), nil
+}
+
+func newLoadBalancerQuotaClients(serverConfig config.NetworkServicesOperator) (controller.ProjectClientFactory, error) {
+	if !serverConfig.NetworkLoadBalancer.Quota.PublicIPv4 {
+		return nil, nil
+	}
+	restConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load Milo root kubeconfig: %w", err)
+	}
+	return controller.NewProjectClientFactory(restConfig, scheme)
 }
 
 // newIPAMClientFactory returns nil when no IPAM connection is configured. A
@@ -813,6 +832,7 @@ func controllerRegistrations(
 		{"networkloadbalancer", true, func() error {
 			return (&controller.NetworkLoadBalancerReconciler{
 				IPAM:            deps.ipamClients,
+				Quota:           deps.loadBalancerQuota,
 				PublicIPv6Class: serverConfig.IPAM.Classes.PublicIPv6,
 				PublicIPv4Class: serverConfig.IPAM.Classes.PublicIPv4,
 				ManagedDomain:   serverConfig.Gateway.TargetDomain,

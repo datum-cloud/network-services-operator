@@ -19,6 +19,7 @@ import (
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	quotav1alpha1 "go.miloapis.com/milo/pkg/apis/quota/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -49,6 +50,7 @@ func newLoadBalancerAllocationScenario(t *testing.T) *loadBalancerAllocationScen
 	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
 	require.NoError(t, locationsv1alpha1.AddToScheme(scheme))
 	require.NoError(t, ipamv1alpha1.AddToScheme(scheme))
+	require.NoError(t, quotav1alpha1.AddToScheme(scheme))
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: "tenant",
@@ -86,7 +88,7 @@ func newLoadBalancerAllocationScenario(t *testing.T) *loadBalancerAllocationScen
 		WithStatusSubresource(lb, &networkingv1alpha.NetworkInterface{}).Build()
 	ipam := fakeclient.NewClientBuilder().WithScheme(scheme).
 		WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testProjectNS}}).
-		WithStatusSubresource(&ipamv1alpha1.IPClaim{}).Build()
+		WithStatusSubresource(&ipamv1alpha1.IPClaim{}, &quotav1alpha1.ResourceClaim{}).Build()
 	return &loadBalancerAllocationScenario{
 		t: t, ctx: context.Background(), client: cl, ipam: ipam, lb: lb,
 		control: &NetworkLoadBalancerReconciler{IPAM: fixedIPAMClient{ipam}, PublicIPv6Class: "public-v6", ManagedDomain: "datumproxy.net"},

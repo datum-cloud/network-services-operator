@@ -41,6 +41,7 @@ const (
 
 type NetworkLoadBalancerReconciler struct {
 	IPAM            IPAMClientFactory
+	Quota           ProjectClientFactory
 	PublicIPv6Class string
 	PublicIPv4Class string
 	ManagedDomain   string
@@ -53,6 +54,7 @@ type NetworkLoadBalancerReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=quota.miloapis.com,resources=resourceclaims,verbs=get;list;create;delete
 
 func (r *NetworkLoadBalancerReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	cluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -128,13 +130,18 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 	wanted := make(map[string]bool, len(requests))
 	status := make([]networkingv1alpha.NetworkLoadBalancerEndpointStatus, 0, len(requests)+len(lb.Status.Endpoints))
 	allAllocated := len(requests) > 0
+	quotaPending := false
 	var firstFailure string
 	for _, request := range requests {
 		claimName := loadBalancerClaimName(&lb, request)
 		wanted[claimName] = true
 		prior := priorAddressStatus(lb.Status.Endpoints, request.requestName, request.location, request.family)
 		prior = *prior.DeepCopy()
-		address, claimUID, claimErr := r.holdAddress(ctx, ipamClient, routing.projectNamespace, &lb, request, claimName)
+		withheld, err := r.holdAddressQuota(ctx, routing, &lb, request, claimName)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		address, claimUID, claimErr := r.holdAddress(ctx, ipamClient, routing.projectNamespace, &lb, request, claimName, withheld)
 		claimRef := &networkingv1alpha.NetworkLoadBalancerIPClaimRef{
 			Project: routing.project, Namespace: routing.projectNamespace, Name: claimName, UID: claimUID,
 		}
@@ -163,11 +170,15 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		if claimErr != nil {
 			allAllocated = false
 			entry.Value = ""
-			reason := string(classifyAllocationFailure(claimErr))
+			reason, message := string(classifyAllocationFailure(claimErr)), claimErr.Error()
+			if errors.As(claimErr, &withheld) {
+				reason, message = addressQuotaCondition(withheld, prior)
+				quotaPending = quotaPending || withheld.reason == reasonQuotaPending
+			}
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
-				metav1.ConditionFalse, reason, claimErr.Error())
+				metav1.ConditionFalse, reason, message)
 			if firstFailure == "" {
-				firstFailure = fmt.Sprintf("%s: %s", claimName, claimErr)
+				firstFailure = fmt.Sprintf("%s: %s", claimName, message)
 			}
 		} else if address == "" {
 			allAllocated = false
@@ -203,6 +214,9 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 	if err := r.releaseOrphanedClaims(ctx, ipamClient, routing.projectNamespace, &lb, wanted); err != nil {
 		return ctrl.Result{}, err
 	}
+	if _, err := r.releaseAddressQuota(ctx, ipamClient, routing, &lb, wanted); err != nil {
+		return ctrl.Result{}, err
+	}
 	slices.SortFunc(status, func(a, b networkingv1alpha.NetworkLoadBalancerEndpointStatus) int {
 		if a.RequestName != b.RequestName {
 			return strings.Compare(a.RequestName, b.RequestName)
@@ -220,7 +234,11 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		if firstFailure == "" {
 			firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
 		}
-		return r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+		result, err := r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+		if err == nil && quotaPending {
+			result.RequeueAfter = networkLoadBalancerQuotaRetry
+		}
+		return result, err
 	}
 	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 }
@@ -415,7 +433,7 @@ func loadBalancerClaimName(lb *networkingv1alpha.NetworkLoadBalancer, request lo
 
 func (r *NetworkLoadBalancerReconciler) holdAddress(
 	ctx context.Context, cl client.Client, namespace string, lb *networkingv1alpha.NetworkLoadBalancer,
-	request loadBalancerAddressRequest, claimName string,
+	request loadBalancerAddressRequest, claimName string, withheld *quotaWithheld,
 ) (string, string, error) {
 	className, prefixLength := r.PublicIPv6Class, int32(128)
 	if request.family == networkingv1alpha.IPv4Protocol {
@@ -443,6 +461,9 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	existing := &ipamv1alpha1.IPClaim{}
 	err := cl.Get(ctx, client.ObjectKeyFromObject(claim), existing)
 	if apierrors.IsNotFound(err) {
+		if withheld != nil {
+			return "", "", withheld
+		}
 		if err := cl.Create(ctx, claim); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				return "", "", err
@@ -618,6 +639,13 @@ func (r *NetworkLoadBalancerReconciler) release(
 	}
 	if err := r.releaseOrphanedClaims(ctx, ipamClient, routing.projectNamespace, lb, nil); err != nil {
 		return ctrl.Result{}, err
+	}
+	held, err := r.releaseAddressQuota(ctx, ipamClient, routing, lb, nil)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if held {
+		return ctrl.Result{RequeueAfter: networkLoadBalancerQuotaRetry}, nil
 	}
 	controllerutil.RemoveFinalizer(lb, networkLoadBalancerFinalizer)
 	return ctrl.Result{}, cl.Update(ctx, lb)

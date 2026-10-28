@@ -44,6 +44,8 @@ gateway:
   #
   # Default: 48h.
   dnsAuthorityLossGracePeriod: 48h
+  # preciseEndpointSliceMapping maps EndpointSlice changes to only the Gateways that use them.
+  preciseEndpointSliceMapping: false
   # errorPage configures the branded data-plane error page served by the
   # extension server for edge-generated 5xx responses on the downstream /
   # Connector data plane (e.g. an offline Connector tunnel). When enabled, the

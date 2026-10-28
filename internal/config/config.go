@@ -1065,6 +1065,9 @@ type GatewayConfig struct {
 	// +default="48h"
 	DNSAuthorityLossGracePeriod *metav1.Duration `json:"dnsAuthorityLossGracePeriod,omitempty"`
 
+	// PreciseEndpointSliceMapping maps EndpointSlice changes to only the Gateways that use them.
+	PreciseEndpointSliceMapping bool `json:"preciseEndpointSliceMapping,omitempty"`
+
 	// DefaultListenerTLSSecretName, if provided, is the name of a
 	// pre-provisioned TLS certificate secret to use for the default HTTPS
 	// listener (named "default-https"). When set, this listener references

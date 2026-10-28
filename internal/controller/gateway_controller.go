@@ -3168,6 +3168,12 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		r.routing = newRoutingObserver()
 	}
 
+	if r.Config.Gateway.PreciseEndpointSliceMapping {
+		if err := addHTTPRouteIndexers(context.Background(), mgr); err != nil {
+			return err
+		}
+	}
+
 	if r.Config.Gateway.CertificateService.Enabled {
 		if err := r.DownstreamCluster.GetFieldIndexer().IndexField(
 			context.Background(),
@@ -3218,11 +3224,14 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 
+	endpointSliceMappers := r.endpointSliceMappers()
+
 	// A CNI-published EndpointSlice carries no owner labels of this operator,
 	// so it maps to Gateways through the downstream routes that name it.
 	downstreamVPCPodEndpointSliceSource := mcsource.Kind(
 		&discoveryv1.EndpointSlice{},
-		r.listGatewaysForDownstreamVPCPodEndpointSlice,
+		endpointSliceMappers.vpcPod,
+		endpointSliceMappers.vpcPodPredicates...,
 	)
 
 	downstreamVPCPodEndpointSliceClusterSource, _, _ := downstreamVPCPodEndpointSliceSource.ForCluster("", r.DownstreamCluster)
@@ -3235,7 +3244,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		).
 		Watches(
 			&discoveryv1.EndpointSlice{},
-			r.listGatewaysForEndpointSliceFunc,
+			endpointSliceMappers.upstream,
 		).
 		Watches(
 			&networkingv1alpha.Domain{},
@@ -3341,6 +3350,139 @@ func upstreamGatewaysForDownstreamHTTPRoute(httpRoute *gatewayv1.HTTPRoute) []mc
 	return reqs
 }
 
+type gatewayEndpointSliceMappers struct {
+	vpcPod           mchandler.TypedEventHandlerFunc[*discoveryv1.EndpointSlice, mcreconcile.Request]
+	vpcPodPredicates []predicate.TypedPredicate[*discoveryv1.EndpointSlice]
+	upstream         mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request]
+}
+
+func (r *GatewayReconciler) endpointSliceMappers() gatewayEndpointSliceMappers {
+	if !r.Config.Gateway.PreciseEndpointSliceMapping {
+		return gatewayEndpointSliceMappers{
+			vpcPod:   r.listGatewaysForDownstreamVPCPodEndpointSlice,
+			upstream: r.listGatewaysForEndpointSliceFuncUnindexed,
+		}
+	}
+
+	return gatewayEndpointSliceMappers{
+		vpcPod:           r.listGatewaysForDownstreamVPCPodEndpointSliceByProject,
+		vpcPodPredicates: []predicate.TypedPredicate[*discoveryv1.EndpointSlice]{vpcPodEndpointSliceRoutingChanged()},
+		upstream:         r.listGatewaysForEndpointSliceFunc,
+	}
+}
+
+func (r *GatewayReconciler) listGatewaysForDownstreamVPCPodEndpointSliceByProject(_ multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*discoveryv1.EndpointSlice, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, endpointSlice *discoveryv1.EndpointSlice) []mcreconcile.Request {
+		if _, ok := endpointSlice.Labels[VPCPodTenantIDLabel]; !ok {
+			return nil
+		}
+
+		clusterLabel := endpointSlice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+		upstreamNamespace := endpointSlice.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if clusterLabel == "" || upstreamNamespace == "" {
+			return gatewaysForDownstreamVPCPodEndpointSlice(ctx, cl, endpointSlice)
+		}
+
+		backendName := endpointSlice.Annotations[VPCEndpointSliceSourceNameAnnotation]
+		if backendName == "" {
+			backendName = endpointSlice.Name
+		}
+
+		clusterName := multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel))
+		projectCluster, err := r.mgr.GetCluster(ctx, clusterName)
+		if err != nil {
+			log.FromContext(ctx).V(1).Info("skipping vpcPod endpointslice for unavailable project cluster",
+				"cluster", clusterName, "endpointslice", client.ObjectKeyFromObject(endpointSlice), "error", err.Error())
+			return nil
+		}
+
+		return gatewayRequestsForEndpointSliceBackend(ctx, projectCluster.GetClient(), clusterName, upstreamNamespace, backendName)
+	})
+}
+
+func vpcPodEndpointSliceRoutingChanged() predicate.TypedPredicate[*discoveryv1.EndpointSlice] {
+	return predicate.TypedFuncs[*discoveryv1.EndpointSlice]{
+		UpdateFunc: func(e event.TypedUpdateEvent[*discoveryv1.EndpointSlice]) bool {
+			return !equality.Semantic.DeepEqual(withoutEndpointConditions(e.ObjectOld), withoutEndpointConditions(e.ObjectNew))
+		},
+	}
+}
+
+func withoutEndpointConditions(s *discoveryv1.EndpointSlice) map[string]any {
+	endpoints := make([]discoveryv1.Endpoint, len(s.Endpoints))
+	for i, ep := range s.Endpoints {
+		ep.Conditions = discoveryv1.EndpointConditions{}
+		endpoints[i] = ep
+	}
+	return map[string]any{
+		"labels":      s.Labels,
+		"annotations": s.Annotations,
+		"addressType": s.AddressType,
+		"ports":       s.Ports,
+		"endpoints":   endpoints,
+	}
+}
+
+func gatewayRequestsForEndpointSliceBackend(
+	ctx context.Context,
+	cl client.Reader,
+	clusterName multicluster.ClusterName,
+	namespace, name string,
+) []mcreconcile.Request {
+	var httpRoutes gatewayv1.HTTPRouteList
+	if err := cl.List(ctx, &httpRoutes, client.MatchingFields{
+		httpRouteEndpointSliceBackendIndex: endpointSliceBackendIndexKey(namespace, name),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to list HTTPRoutes for endpointslice", "cluster", clusterName, "namespace", namespace, "name", name)
+		return nil
+	}
+
+	seen := sets.New[types.NamespacedName]()
+	var requests []mcreconcile.Request
+	for _, route := range httpRoutes.Items {
+		for _, parentRef := range route.Spec.ParentRefs {
+			if ptr.Deref(parentRef.Group, gatewayv1.GroupName) != gatewayv1.GroupName ||
+				ptr.Deref(parentRef.Kind, KindGateway) != KindGateway {
+				continue
+			}
+			key := types.NamespacedName{
+				Namespace: string(ptr.Deref(parentRef.Namespace, gatewayv1.Namespace(route.Namespace))),
+				Name:      string(parentRef.Name),
+			}
+			if seen.Has(key) {
+				continue
+			}
+			seen.Insert(key)
+			requests = append(requests, mcreconcile.Request{
+				ClusterName: clusterName,
+				Request:     reconcile.Request{NamespacedName: key},
+			})
+		}
+	}
+
+	return requests
+}
+
+// listGatewaysForEndpointSliceFunc creates an event handler that watches EndpointSlice changes
+// and determines which Gateways need to be reconciled as a result of those changes.
+//
+// This function implements the watch pattern for EndpointSlice resources in multi-cluster scenarios.
+// When an EndpointSlice changes (created, updated, or deleted), this handler:
+//
+//  1. Looks up, through an index, the HTTPRoutes in the cluster that reference the changed EndpointSlice
+//     as a backend (via BackendRefs with Kind=EndpointSlice)
+//  2. For each matching HTTPRoute, identifies the parent Gateways referenced in ParentRefs
+//  3. Returns reconcile requests for those Gateways so they can update their configuration
+//
+// This ensures that Gateway resources are automatically updated when their backend EndpointSlices
+// change, maintaining proper traffic routing and load balancing.
+func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		endpointSlice := obj.(*discoveryv1.EndpointSlice)
+		return gatewayRequestsForEndpointSliceBackend(ctx, cl.GetClient(), clusterName, endpointSlice.Namespace, endpointSlice.Name)
+	})
+}
+
 // listGatewaysForDownstreamVPCPodEndpointSlice enqueues the upstream Gateways
 // whose downstream HTTPRoutes name a changed VPC pod EndpointSlice: only they
 // read it, through passThroughVPCPodBackendRef. The routes come from the
@@ -3350,28 +3492,32 @@ func upstreamGatewaysForDownstreamHTTPRoute(httpRoute *gatewayv1.HTTPRoute) []mc
 // enqueued here; its error backoff retries it.
 func (r *GatewayReconciler) listGatewaysForDownstreamVPCPodEndpointSlice(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[*discoveryv1.EndpointSlice, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, endpointSlice *discoveryv1.EndpointSlice) []mcreconcile.Request {
-		if _, ok := endpointSlice.Labels[VPCPodTenantIDLabel]; !ok {
-			return nil
-		}
-
-		logger := log.FromContext(ctx)
-
-		var downstreamRoutes gatewayv1.HTTPRouteList
-		if err := cl.GetClient().List(ctx, &downstreamRoutes, client.InNamespace(endpointSlice.Namespace)); err != nil {
-			logger.Error(err, "failed to list downstream httproutes for vpcPod endpointslice")
-			return nil
-		}
-
-		var reqs []mcreconcile.Request
-		for i := range downstreamRoutes.Items {
-			route := &downstreamRoutes.Items[i]
-			if routeNamesEndpointSlice(route, endpointSlice) {
-				reqs = append(reqs, upstreamGatewaysForDownstreamHTTPRoute(route)...)
-			}
-		}
-
-		return reqs
+		return gatewaysForDownstreamVPCPodEndpointSlice(ctx, cl, endpointSlice)
 	})
+}
+
+func gatewaysForDownstreamVPCPodEndpointSlice(ctx context.Context, cl cluster.Cluster, endpointSlice *discoveryv1.EndpointSlice) []mcreconcile.Request {
+	if _, ok := endpointSlice.Labels[VPCPodTenantIDLabel]; !ok {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	var downstreamRoutes gatewayv1.HTTPRouteList
+	if err := cl.GetClient().List(ctx, &downstreamRoutes, client.InNamespace(endpointSlice.Namespace)); err != nil {
+		logger.Error(err, "failed to list downstream httproutes for vpcPod endpointslice")
+		return nil
+	}
+
+	var reqs []mcreconcile.Request
+	for i := range downstreamRoutes.Items {
+		route := &downstreamRoutes.Items[i]
+		if routeNamesEndpointSlice(route, endpointSlice) {
+			reqs = append(reqs, upstreamGatewaysForDownstreamHTTPRoute(route)...)
+		}
+	}
+
+	return reqs
 }
 
 // routeNamesEndpointSlice reports whether any of a route's backendRefs names
@@ -3419,20 +3565,7 @@ func (r *GatewayReconciler) listGatewaysAwaitingHostnameClaim(clusterName multic
 	})
 }
 
-// listGatewaysForEndpointSliceFunc creates an event handler that watches EndpointSlice changes
-// and determines which Gateways need to be reconciled as a result of those changes.
-//
-// This function implements the watch pattern for EndpointSlice resources in multi-cluster scenarios.
-// When an EndpointSlice changes (created, updated, or deleted), this handler:
-//
-//  1. Examines all HTTPRoutes in the cluster to find those that reference the changed EndpointSlice
-//     as a backend (via BackendRefs with Kind=EndpointSlice)
-//  2. For each matching HTTPRoute, identifies the parent Gateways referenced in ParentRefs
-//  3. Returns reconcile requests for those Gateways so they can update their configuration
-//
-// This ensures that Gateway resources are automatically updated when their backend EndpointSlices
-// change, maintaining proper traffic routing and load balancing.
-func (r *GatewayReconciler) listGatewaysForEndpointSliceFunc(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+func (r *GatewayReconciler) listGatewaysForEndpointSliceFuncUnindexed(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 		endpointSlice := obj.(*discoveryv1.EndpointSlice)
 		logger := log.FromContext(ctx)
@@ -3547,7 +3680,8 @@ func (r *GatewayReconciler) listGatewaysForHTTPRouteFilterFunc(clusterName multi
 					for _, filter := range backendRef.Filters {
 						if filter.ExtensionRef != nil &&
 							filter.ExtensionRef.Group == envoygatewayv1alpha1.GroupName &&
-							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter {
+							filter.ExtensionRef.Kind == envoygatewayv1alpha1.KindHTTPRouteFilter &&
+							string(filter.ExtensionRef.Name) == httpRouteFilter.Name {
 							for _, parentRef := range route.Spec.ParentRefs {
 								if ptr.Deref(parentRef.Group, gatewayv1.GroupName) == gatewayv1.GroupName &&
 									ptr.Deref(parentRef.Kind, KindGateway) == KindGateway {

@@ -155,11 +155,17 @@ still serve through another backend. Interface presence selects locations;
 health and programming determine announcement. With no attached route,
 placement is pending and no location IP is allocated.
 
-For a future address shared by several listeners, placement must be decided
-across all listeners using that address, and announcement requires every
-listener to be ready in the location. Sharing an address across listeners and
-selecting multiple address requests on one listener are capability-gated in
-the first release, while the API retains both shapes for later support.
+Several listeners may share one address request, provided no two of them use
+the same protocol and port. Each listener is programmed as its own forwarding
+rule for the address, protocol, and port, and is ready or not on its own. A
+location announces the address while at least one of those rules serves
+there; a listener that is not ready forwards nothing on its port. Placement is
+the union of the locations selected by every listener with an effective
+route, so a listener without a route, or whose route is deleted, withdraws
+only its own rule and does not release the address while another listener
+still selects the location. Selecting multiple address requests on one
+listener remains capability-gated in the first release, while the API retains
+that shape for later support.
 
 A route without an allocated IPv6 VIP in a location owns no Galactic backend
 socket there. Once a VIP is allocated, an effective route with resolved
@@ -218,10 +224,12 @@ releases its socket claim after serving intent is withdrawn.
   TLS listeners are enabled.** Require certificate coverage, enforce Secret
   reference permissions, and apply deterministic SNI precedence before
   lifting the TLS capability gate.
-- **One unready listener can affect other ports on its IP.** BGP announces an
-  address, not a port. Announce an address from a location only when all of its
-  listeners are ready there; use separate address requests for independent
-  failure domains.
+- **A shared IP stays announced while one of its listeners is down.** BGP
+  announces an address, not a port, so clients of an unready listener reach the
+  location and are dropped there rather than steered elsewhere. Address status
+  is programmed only when every serving listener is, and names the listener
+  that is not. Use separate address requests when listeners need independent
+  reachability.
 
 ## Design Details
 
@@ -367,8 +375,9 @@ Load balancer conditions distinguish network reference resolution, allocation,
 programming, and DNS publication. Route conditions report attachment, backend
 resolution, and programming. `Ready` means at least one selected location has
 a serving IP published under its generated hostname; location status identifies
-any that do not. An address is announced from a location only when every
-listener using it is ready there. Status reports the resolved locations for each address
+any that do not. An address is announced from a location while any
+listener using it serves there, and reports programmed only when every serving
+listener does. Status reports the resolved locations for each address
 request and shows `Backends` as the source when `locations` is omitted. Health loss
 withdraws an announcement and its DNS record without releasing its IP; after
 the last selected interface leaves a location, withdraw its DNS records and
@@ -554,7 +563,6 @@ the broader field shapes:
 | TLS listener, SNI match, or backend TLS transport | Reject with `UnsupportedCapability`; opaque TLS on a TCP listener remains valid. | Proxy-capable edge path, certificate lifecycle, and TLS route programming. |
 | More than one backend entry on a route, including entries with different resolved port numbers | Reject until the cell can program the complete set. Keep `backends` as a list of named-port references. | Galactic intent that represents every selected endpoint and its destination port, plus health and selection behavior. |
 | Reuse one backend address, port, and protocol in multiple forwarding rules of the same address family | Reject a conflicting attachment or report `BackendClaimConflict` if changing membership creates it later. | Galactic backend return-path support for multiple rules and VIPs on one socket. |
-| One address request shared by multiple listeners | Reject until announcements can be gated on every listener's readiness in the location. | Aggregate VIP readiness and coordinated advertisement. |
 | IPv4 in `families` | Reject until the platform names a public IPv4 address class; a location whose cell has not turned IPv4 on reports the address as not served. | Available once both are set. |
 
 Validation returns the unsupported field and reason when a consumer submits
@@ -710,6 +718,8 @@ address that could not be allocated.
 - 2026-10-23: Addressed review: used `ResolvedRefs` for network mismatches,
   added backend trust checks, replaced round robin with consistent per-flow
   selection, marked hostname claims as planned, and noted per-project quotas.
+- 2026-10-28: Allowed listeners to share an address request, with each
+  listener ready and announced independently.
 
 ## Drawbacks
 

@@ -36,7 +36,9 @@ func TestNetworkLoadBalancerCapabilityValidation(t *testing.T) {
 	lb.Spec.Listeners = append(lb.Spec.Listeners, networkingv1alpha.NetworkLoadBalancerListener{
 		Name: "other", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, AddressRefs: []string{"regional"},
 	})
-	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "shared")
+	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb))
+	lb.Spec.Listeners[1].AddressRefs = []string{"regional", "second"}
+	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "multi-VIP serving")
 }
 
 func TestNetworkLoadBalancerRouteCapabilityValidation(t *testing.T) {

@@ -175,7 +175,7 @@ func reconcileRouteParent(
 	setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteAccepted,
 		metav1.ConditionTrue, nlbRouteReasonAttached, "Route is attached to the listener")
 	listener := &parent.Spec.Listeners[listenerIndex]
-	if message := unsupportedRouteListenerCapability(route, &parent, listener); message != "" {
+	if message := unsupportedRouteListenerCapability(route, listener); message != "" {
 		setRouteParentCondition(&status, route.Generation, networkingv1alpha.NetworkLoadBalancerRouteAccepted,
 			metav1.ConditionFalse, nlbRouteReasonUnsupportedCapability, message)
 		return status, nil
@@ -265,18 +265,10 @@ func listenerAddressesProgrammed(
 }
 
 func unsupportedRouteListenerCapability(route *networkingv1alpha.NetworkLoadBalancerRoute,
-	parent *networkingv1alpha.NetworkLoadBalancer,
 	listener *networkingv1alpha.NetworkLoadBalancerListener,
 ) string {
 	if listener.Protocol == networkingv1alpha.NetworkLoadBalancerProtocolTLS || len(route.Spec.SNIHostnames) > 0 {
 		return "TLS listener and SNI routing require a proxy-capable edge path"
-	}
-	for _, addressName := range listener.AddressRefs {
-		if slices.ContainsFunc(parent.Spec.Listeners, func(other networkingv1alpha.NetworkLoadBalancerListener) bool {
-			return other.Name != listener.Name && slices.Contains(other.AddressRefs, addressName)
-		}) {
-			return "Address sharing across listeners requires coordinated readiness"
-		}
 	}
 	return ""
 }
@@ -353,7 +345,7 @@ func findOlderRouteClaimingBackend(ctx context.Context, cl client.Client,
 				continue
 			}
 			otherListener := &otherParent.Spec.Listeners[otherIndex]
-			if unsupportedRouteListenerCapability(peer, &otherParent, otherListener) != "" || len(otherListener.AddressRefs) != 1 {
+			if unsupportedRouteListenerCapability(peer, otherListener) != "" || len(otherListener.AddressRefs) != 1 {
 				continue
 			}
 			if peer.UID == route.UID {
@@ -492,7 +484,7 @@ func oldestRouteForListener(routes []networkingv1alpha.NetworkLoadBalancerRoute,
 		listenerIndex := slices.IndexFunc(parent.Spec.Listeners, func(l networkingv1alpha.NetworkLoadBalancerListener) bool {
 			return l.Name == listener
 		})
-		if listenerIndex < 0 || unsupportedRouteListenerCapability(candidate, parent, &parent.Spec.Listeners[listenerIndex]) != "" {
+		if listenerIndex < 0 || unsupportedRouteListenerCapability(candidate, &parent.Spec.Listeners[listenerIndex]) != "" {
 			continue
 		}
 		if oldest == nil || candidate.CreationTimestamp.Before(&oldest.CreationTimestamp) ||

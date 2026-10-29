@@ -192,6 +192,8 @@ rules:
   - networkservices
   - serviceendpoints
   - serviceroutepolicies
+  - trafficpolicies
+  - trafficpolicybindings
   - vpcattachments
   - vpcs
   verbs:

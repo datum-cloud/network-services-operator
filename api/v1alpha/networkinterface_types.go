@@ -136,6 +136,36 @@ const (
 	NetworkInterfaceReasonHolderReleased = "HolderReleased"
 )
 
+const (
+	// NetworkInterfaceInternetEgressReady reports whether the interface's
+	// internet access matches what its network declares. True means the
+	// network's mode is in effect for this interface: reachable when Enabled,
+	// blocked when Disabled. It lives on the interface because each interface
+	// carries its own policy on the node that runs its instance.
+	NetworkInterfaceInternetEgressReady = "InternetEgressReady"
+
+	// NetworkInterfaceInternetEgressReasonEnabled means the interface reaches
+	// the internet, as its network declares.
+	NetworkInterfaceInternetEgressReasonEnabled = "Enabled"
+
+	// NetworkInterfaceInternetEgressReasonDisabled means the interface's
+	// internet traffic is blocked, as its network declares.
+	NetworkInterfaceInternetEgressReasonDisabled = "Disabled"
+
+	// NetworkInterfaceInternetEgressReasonNotEnforced means the network turns
+	// internet access off, but the location does not block traffic yet, so the
+	// interface can still reach the internet.
+	NetworkInterfaceInternetEgressReasonNotEnforced = "NotEnforced"
+
+	// NetworkInterfaceInternetEgressReasonPending means the network's mode has
+	// not reached the node running the interface's instance yet.
+	NetworkInterfaceInternetEgressReasonPending = "Pending"
+
+	// NetworkInterfaceInternetEgressReasonFailed means the node running the
+	// interface's instance could not apply the network's mode.
+	NetworkInterfaceInternetEgressReasonFailed = "Failed"
+)
+
 // NetworkInterfaceAddress is an address the interface holds inside its network.
 // These are the addresses configured on the NIC itself, and they always carry a
 // prefix length.
@@ -346,6 +376,52 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Delete"
 	ReclaimPolicy NetworkInterfaceReclaimPolicy `json:"reclaimPolicy,omitempty"`
+
+	// egress is what this interface reaches outside the platform. It comes from
+	// the claim, and the operator carries it without interpreting it.
+	//
+	// Only Inherit is accepted, which follows the network's declaration. An
+	// interface written today records Inherit, so accepting Enabled and Disabled
+	// later changes no existing interface.
+	//
+	// Mutable, because the claim's declaration is.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={internet:{mode:Inherit}}
+	Egress *NetworkInterfaceEgress `json:"egress,omitempty"`
+}
+
+// NetworkInterfaceEgress declares the outbound paths an interface carries.
+type NetworkInterfaceEgress struct {
+	// internet is whether this interface reaches destinations outside the
+	// platform.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default={mode:Inherit}
+	Internet *NetworkInterfaceInternetEgress `json:"internet,omitempty"`
+}
+
+// NetworkInterfaceInternetEgressMode is whether an interface reaches the
+// internet.
+//
+// +kubebuilder:validation:Enum=Inherit
+type NetworkInterfaceInternetEgressMode string
+
+const (
+	// NetworkInterfaceInternetEgressInherit follows the network's declaration.
+	// It is the only accepted value until per-interface control ships.
+	NetworkInterfaceInternetEgressInherit NetworkInterfaceInternetEgressMode = "Inherit"
+)
+
+// NetworkInterfaceInternetEgress carries per-interface internet access from the
+// claim that asked for it.
+type NetworkInterfaceInternetEgress struct {
+	// mode is whether this interface reaches the internet. Only Inherit is
+	// accepted, which follows the network's declaration.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=Inherit
+	Mode NetworkInterfaceInternetEgressMode `json:"mode,omitempty"`
 }
 
 // NetworkInterfaceStatus defines the observed state of NetworkInterface: which

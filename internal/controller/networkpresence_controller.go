@@ -102,6 +102,10 @@ type NetworkPresenceReconciler struct {
 	// declares it.
 	UnclaimedGracePeriod time.Duration
 
+	// DefaultInternetEgressMode is projected for a network that has not been
+	// stamped with an internet access mode yet.
+	DefaultInternetEgressMode networkingv1alpha.NetworkInternetEgressMode
+
 	hub client.Client
 }
 
@@ -521,6 +525,7 @@ func (r *NetworkPresenceReconciler) project(
 		networkContext.Spec.IPFamilies = append([]networkingv1alpha.IPFamily(nil), network.Spec.IPFamilies...)
 		networkContext.Spec.MTU = network.Spec.MTU
 		networkContext.Spec.NetworkGeneration = network.Generation
+		networkContext.Spec.Egress = projectInternetEgress(network, r.DefaultInternetEgressMode)
 
 		return controllerutil.SetControllerReference(network, networkContext, projectClient.Scheme())
 	})

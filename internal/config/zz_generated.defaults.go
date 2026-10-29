@@ -441,4 +441,5 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	}
 	SetDefaults_NetworkPresenceConfig(&in.NetworkPresence)
 	SetDefaults_InternalDNSConfig(&in.InternalDNS)
+	SetDefaults_NetworkEgressConfig(&in.NetworkEgress)
 }

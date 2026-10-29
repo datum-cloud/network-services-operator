@@ -101,6 +101,32 @@ spec:
                 - contextRef
                 - nameservers
                 type: object
+              egress:
+                description: |-
+                  Egress is what the network reaches outside the platform from this
+                  location, projected from the Network. Propagation to a cell carries spec
+                  and not status, so the instruction a cell acts on lives here.
+                properties:
+                  internet:
+                    description: Internet is the internet access this location is
+                      instructed to provide.
+                    properties:
+                      mode:
+                        description: |-
+                          Mode is whether instances in this location reach the internet. It is the
+                          network's mode, or the platform default when the network has not been
+                          stamped with one yet, so a context always carries the mode its location
+                          must enforce.
+
+                          It carries no default of its own. A context projected before this field
+                          existed carries nothing, and a cell reading one must keep internet access
+                          rather than withdraw it.
+                        enum:
+                        - Enabled
+                        - Disabled
+                        type: string
+                    type: object
+                type: object
               ipFamilies:
                 description: |-
                   IP families the network carries, projected from the Network.

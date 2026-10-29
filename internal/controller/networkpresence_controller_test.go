@@ -814,3 +814,27 @@ func projectedLocation(name string) *locationsv1alpha1.Location {
 	}
 	return location
 }
+
+func TestNetworkPresenceProjectsTheInternetAccessMode(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.reconciler.DefaultInternetEgressMode = networkingv1alpha.NetworkInternetEgressDisabled
+	s.createBinding("consumer-a")
+	s.reconcile()
+
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	require.NotNil(t, networkContext.Spec.Egress)
+	require.Equal(t, networkingv1alpha.NetworkInternetEgressDisabled, networkContext.Spec.Egress.Internet.Mode,
+		"an unstamped network is projected with the platform default")
+
+	s.network.Spec.Egress = &networkingv1alpha.NetworkEgress{
+		Internet: &networkingv1alpha.NetworkInternetEgress{Mode: networkingv1alpha.NetworkInternetEgressEnabled},
+	}
+	require.NoError(t, s.hub.Update(s.ctx, s.network))
+	s.reconcile()
+
+	networkContext, ok = s.networkContext()
+	require.True(t, ok)
+	require.Equal(t, networkingv1alpha.NetworkInternetEgressEnabled, networkContext.Spec.Egress.Internet.Mode,
+		"a change to the network's mode reaches every location")
+}

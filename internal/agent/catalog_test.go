@@ -46,6 +46,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"networkloadbalancercellintent_types.go":    "internal cell validation request; no customer-facing condition reasons",
 	"networkloadbalancerroute_types.go":         "its own Layer 4 routing surface, not reached through an application load balancer",
 	"networkpolicy_types.go":                    "its own product surface, not reached through a load balancer",
+	"portrange_types.go":                        "port interval value and validation helpers; declares no condition reasons",
 	"subnet_types.go":                           "address management below a network",
 	"subnetclaim_types.go":                      "address management below a network",
 	"trafficprotectionpolicy_types.go":          "declares no reasons of its own; the controller writes upstream Gateway API policy reasons",

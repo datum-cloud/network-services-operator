@@ -2,6 +2,9 @@
   "name": "datum-networking",
   "description": "Create and troubleshoot Datum Cloud load balancers, hostnames, domains and networks, using the same diagnosis Datum's own assistant runs",
   "version": "0.1.0",
+  "dependencies": [
+    "datum-cloud"
+  ],
   "author": {
     "name": "Datum Cloud",
     "url": "https://github.com/datum-cloud"

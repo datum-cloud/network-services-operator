@@ -14,5 +14,6 @@ version that matches the tools. Load it and follow it:
    making it.
 
 If `alb_guide` is not listed, load the `alb` toolset with the `toolsets`
-tool. If datum-mcp is not connected at all, tell the person to install it
+tool. datum-mcp comes with the `datum-cloud` plugin; if it is not connected at
+all, tell the person to install datum-mcp
 (`brew install datum-cloud/tap/datum-mcp`) and restart Claude Code.

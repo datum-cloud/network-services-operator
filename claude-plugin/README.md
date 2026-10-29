@@ -9,7 +9,7 @@ working, using the same diagnosis and procedures Datum's own assistant uses.
 
 ## Install
 
-1. Install datum-mcp, which the plugin starts for you:
+1. Install datum-mcp, which the `datum-cloud` base plugin starts for you:
 
    ```bash
    brew install datum-cloud/tap/datum-mcp
@@ -18,7 +18,9 @@ working, using the same diagnosis and procedures Datum's own assistant uses.
    Other platforms: see the
    [datum-mcp install steps](https://github.com/datum-cloud/datum-mcp#install-the-binary).
 
-2. Add the Datum marketplace and install the plugin:
+2. Add the Datum marketplace and install the plugin. Installing it also
+   installs the `datum-cloud` base plugin, which signs you in and runs
+   datum-mcp:
 
    ```bash
    claude plugin marketplace add datum-cloud/claude-code-plugins
@@ -29,9 +31,8 @@ working, using the same diagnosis and procedures Datum's own assistant uses.
    Datum Cloud. Then ask Claude which project to work in, or say "use project
    `<name>`".
 
-If you already registered datum-mcp yourself with `claude mcp add`, you can
-remove that registration. The plugin starts its own copy, and both read the same
-sign-in and active project.
+If you already registered datum-mcp yourself with `claude mcp add`, remove that
+registration so only the base plugin's copy runs.
 
 ## What's in it
 

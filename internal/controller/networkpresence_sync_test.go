@@ -3,10 +3,12 @@
 package controller
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -105,7 +107,7 @@ func TestNetworkPresenceSyncSignalsANetworkEditAgainstAReadyContext(t *testing.T
 	require.NoError(t, err)
 
 	require.Equal(t, map[string]string{
-		"consumer-a": "Network/" + s.networkName + "/" + string(s.network.UID) + "/" + s.network.ResourceVersion,
+		"consumer-a": "Network/" + s.networkName + "/" + string(s.network.UID) + "/" + strconv.FormatInt(s.network.Generation, 10),
 	}, s.signals(hub),
 		"the edited network has to be recorded on the binding the presence controller watches")
 
@@ -219,4 +221,29 @@ func TestNetworkPresenceSyncLeavesAnUnchangedObservationAlone(t *testing.T) {
 
 	require.NoError(t, hub.Get(s.ctx, client.ObjectKey{Namespace: s.hubNamespace, Name: "consumer-a"}, binding))
 	require.Equal(t, resourceVersion, binding.ResourceVersion)
+}
+
+// Nothing in a network's status reaches its presences, so a status write by
+// another controller must not wake every presence of the network.
+func TestNetworkPresenceSyncIgnoresANetworkStatusWrite(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+
+	sync, hub := s.syncReconciler()
+
+	_, err := sync.reconcileNetwork(s.ctx, s.networkRequest())
+	require.NoError(t, err)
+	before := s.signals(hub)
+
+	s.network.Status.Conditions = append(s.network.Status.Conditions, metav1.Condition{
+		Type:               "Probe",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Probe",
+		LastTransitionTime: metav1.Now(),
+	})
+	require.NoError(t, s.hub.Status().Update(s.ctx, s.network))
+
+	_, err = sync.reconcileNetwork(s.ctx, s.networkRequest())
+	require.NoError(t, err)
+	require.Equal(t, before, s.signals(hub))
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -125,18 +126,19 @@ func (r *NetworkPresenceSyncReconciler) reconcileNetwork(
 }
 
 // observe names the state of the project-plane object a request is about: its
-// kind, UID and resource version, or that it is gone.
+// kind, UID and the part of it the presence is derived from, or that it is gone.
+//
+// A network contributes only its spec, so its generation is enough and status
+// writes by other controllers signal nothing. A context contributes its status
+// too, so it is observed by resource version.
 func (r *NetworkPresenceSyncReconciler) observe(
 	ctx context.Context,
 	req mcreconcile.Request,
 	obj client.Object,
 ) (string, error) {
-	kind := fmt.Sprintf("%T", obj)
-	switch obj.(type) {
-	case *networkingv1alpha.Network:
-		kind = "Network"
-	case *networkingv1alpha.NetworkContext:
-		kind = "NetworkContext"
+	kind, version := "NetworkContext", func() string { return obj.GetResourceVersion() }
+	if _, ok := obj.(*networkingv1alpha.Network); ok {
+		kind, version = "Network", func() string { return strconv.FormatInt(obj.GetGeneration(), 10) }
 	}
 
 	project, err := r.Projects.ClusterForProject(ctx, string(req.ClusterName))
@@ -149,7 +151,7 @@ func (r *NetworkPresenceSyncReconciler) observe(
 		}
 		return "", fmt.Errorf("failed reading %s %q: %w", kind, req.NamespacedName, err)
 	}
-	return kind + "/" + req.Name + "/" + string(obj.GetUID()) + "/" + obj.GetResourceVersion(), nil
+	return kind + "/" + req.Name + "/" + string(obj.GetUID()) + "/" + version(), nil
 }
 
 // hubNamespaces lists the hub namespaces standing for one namespace of one

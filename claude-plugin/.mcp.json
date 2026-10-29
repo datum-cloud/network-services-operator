@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "datum-mcp": {
+      "command": "datum-mcp",
+      "env": {
+        "DATUM_MCP_ENABLE_TOOLSETS": "alb,network,dns"
+      }
+    }
+  }
+}

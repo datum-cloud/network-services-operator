@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"testing"
+
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
-	"testing"
 )
 
 func TestReplicationPreservesConcurrentDownstreamWrites(t *testing.T) {

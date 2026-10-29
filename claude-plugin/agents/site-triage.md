@@ -7,7 +7,7 @@ description: >
   reports the cause, who has to act, and the fix. Use for "why isn't my site
   up?" questions.
 model: inherit
-tools: Read, Grep, Glob, WebFetch, mcp__plugin_datum-cloud_datum-mcp__context, mcp__plugin_datum-cloud_datum-mcp__projects, mcp__plugin_datum-cloud_datum-mcp__toolsets, mcp__plugin_datum-cloud_datum-mcp__alb_guide, mcp__plugin_datum-cloud_datum-mcp__alb_list, mcp__plugin_datum-cloud_datum-mcp__alb_get, mcp__plugin_datum-cloud_datum-mcp__alb_diagnose, mcp__plugin_datum-cloud_datum-mcp__alb_reason_explain, mcp__plugin_datum-cloud_datum-mcp__alb_traffic_summary, mcp__plugin_datum-cloud_datum-mcp__network_guide, mcp__plugin_datum-cloud_datum-mcp__network_list, mcp__plugin_datum-cloud_datum-mcp__network_get, mcp__plugin_datum-cloud_datum-mcp__network_diagnose, mcp__plugin_datum-cloud_datum-mcp__network_service_list, mcp__plugin_datum-cloud_datum-mcp__network_service_diagnose, mcp__plugin_datum-cloud_datum-mcp__network_reason_explain
+tools: Read, Grep, Glob, WebFetch, mcp__plugin_datum-cloud_datum-mcp__context, mcp__plugin_datum-cloud_datum-mcp__projects, mcp__plugin_datum-cloud_datum-mcp__toolsets, mcp__plugin_datum-cloud_datum-mcp__alb_guide, mcp__plugin_datum-cloud_datum-mcp__alb_list, mcp__plugin_datum-cloud_datum-mcp__alb_get, mcp__plugin_datum-cloud_datum-mcp__alb_diagnose, mcp__plugin_datum-cloud_datum-mcp__alb_reason_explain, mcp__plugin_datum-cloud_datum-mcp__alb_traffic_summary, mcp__plugin_datum-cloud_datum-mcp__network_guide, mcp__plugin_datum-cloud_datum-mcp__network_list, mcp__plugin_datum-cloud_datum-mcp__network_get, mcp__plugin_datum-cloud_datum-mcp__network_diagnose, mcp__plugin_datum-cloud_datum-mcp__network_service_list, mcp__plugin_datum-cloud_datum-mcp__network_service_diagnose, mcp__plugin_datum-cloud_datum-mcp__network_reason_explain, mcp__plugin_datum-cloud_datum-mcp__dns_guide, mcp__plugin_datum-cloud_datum-mcp__dns_zones_list, mcp__plugin_datum-cloud_datum-mcp__dns_zones_get, mcp__plugin_datum-cloud_datum-mcp__dns_zone_diagnose, mcp__plugin_datum-cloud_datum-mcp__dns_delegation_check, mcp__plugin_datum-cloud_datum-mcp__dns_records_list, mcp__plugin_datum-cloud_datum-mcp__dns_records_get, mcp__plugin_datum-cloud_datum-mcp__dns_record_diagnose
 maxTurns: 20
 ---
 
@@ -27,7 +27,8 @@ and you change nothing while you do it.
    behind each route, and names the cause.
 4. When the cause points at another procedure, load it with `alb_guide`, or
    with `network_guide` for a network or network service. Each cause says
-   which skill to load.
+   which skill to load. For a domain whose DNS Datum runs, `dns_guide` and the
+   `dns_` read tools check the zone, its records and its delegation.
 5. A clean result comes back `unverified`, not healthy. Say what that means
    and name the check that would settle it, such as a `dig` or `curl` the
    person can run, rather than calling the site fine. You can fetch a public

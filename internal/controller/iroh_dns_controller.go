@@ -34,6 +34,7 @@ import (
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/iroh"
 )
 
@@ -412,6 +413,7 @@ func (r *IrohDNSReconciler) setPublishedCondition(ctx context.Context, cl cluste
 //     project clusters. That's the Lease watch's job.
 func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 
 	downstreamSource := mcsource.Kind(
 		&dnsv1alpha1.DNSRecordSet{},
@@ -429,6 +431,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 				}}
 			})
 		},
+		downstreamclient.OwnedByReplicaWithLabel[*dnsv1alpha1.DNSRecordSet](ownership, nil, "iroh-dns", irohDNSConnectorClusterLabel, decodeIrohClusterLabel),
 	)
 	downstreamClusterSource, _, _ := downstreamSource.ForCluster("", r.Downstream)
 

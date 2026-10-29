@@ -879,12 +879,14 @@ func (r *TrafficProtectionPolicyReconciler) getCorazaDirectivesForTrafficProtect
 // SetupWithManager sets up the controller with the Manager.
 func (r *TrafficProtectionPolicyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 
 	// Watch downstream TPP status so edge Programmed feedback requeues upstream.
 	downstreamTPPSource := source.TypedKind(
 		r.DownstreamCluster.GetCache(),
 		&networkingv1alpha.TrafficProtectionPolicy{},
-		r.enqueuePoliciesForDownstreamTPP(),
+		downstreamclient.OwnedRequestsOnly(ownership, "trafficprotectionpolicy", r.enqueuePoliciesForDownstreamTPP()),
+		downstreamclient.OwnedByReplica[*networkingv1alpha.TrafficProtectionPolicy](ownership, r.DownstreamCluster.GetClient(), "trafficprotectionpolicy"),
 	)
 
 	return mcbuilder.TypedControllerManagedBy[NamespaceReconcileRequest](mgr).

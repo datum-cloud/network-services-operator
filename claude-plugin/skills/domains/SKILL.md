@@ -78,7 +78,7 @@ datumctl describe domain example-domain --project my-project
 # status.registration.dnssec.enabled: true means the registry publishes a DS record
 ```
 
-Datum DNS does not currently support DNSSEC. If `enabled` is true, the user must remove the `DS` record at their registrar and wait out its TTL before pointing nameservers at Datum. See the DNS skill for the full cutover steps.
+Datum DNS does not currently support DNSSEC. If `enabled` is true, the user must remove the `DS` record at their registrar and wait out its TTL before pointing nameservers at Datum. The `zone-import` skill in the `datum-dns` plugin has the full cutover steps.
 
 ## Constraints & Guardrails
 

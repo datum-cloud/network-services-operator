@@ -21,22 +21,19 @@ import (
 // +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-networkloadbalancer,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=networkloadbalancers,verbs=create;update,versions=v1alpha,name=vnetworkloadbalancer-v1alpha.kb.io,admissionReviewVersions=v1
 
 type NetworkLoadBalancerValidator struct {
-	Config config.NetworkLoadBalancerConfig
+	Config      config.NetworkLoadBalancerConfig
+	IPv4Enabled bool
 }
 
 var _ admission.Validator[*networkingv1alpha.NetworkLoadBalancer] = &NetworkLoadBalancerValidator{}
 
-func SetupNetworkLoadBalancerWebhookWithManager(mgr mcmanager.Manager, settings ...config.NetworkLoadBalancerConfig) error {
-	var cfg config.NetworkLoadBalancerConfig
-	if len(settings) > 0 {
-		cfg = settings[0]
-	}
+func SetupNetworkLoadBalancerWebhookWithManager(mgr mcmanager.Manager, ipv4Enabled bool, cfg config.NetworkLoadBalancerConfig) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.NetworkLoadBalancer{}).
-		WithValidator(&NetworkLoadBalancerValidator{Config: cfg}).Complete()
+		WithValidator(&NetworkLoadBalancerValidator{Config: cfg, IPv4Enabled: ipv4Enabled}).Complete()
 }
 
 func (v *NetworkLoadBalancerValidator) ValidateCreate(_ context.Context, lb *networkingv1alpha.NetworkLoadBalancer) (admission.Warnings, error) {
-	return nil, validateNetworkLoadBalancerCapabilities(lb, v.Config)
+	return nil, v.validateCapabilities(lb)
 }
 
 func (v *NetworkLoadBalancerValidator) ValidateUpdate(_ context.Context, old, lb *networkingv1alpha.NetworkLoadBalancer) (admission.Warnings, error) {
@@ -50,18 +47,17 @@ func (v *NetworkLoadBalancerValidator) ValidateUpdate(_ context.Context, old, lb
 			cfg.MaxExposedPorts = coverage
 		}
 	}
-	return nil, validateNetworkLoadBalancerCapabilities(lb, cfg)
+	validator := *v
+	validator.Config = cfg
+	return nil, validator.validateCapabilities(lb)
 }
 
 func (v *NetworkLoadBalancerValidator) ValidateDelete(context.Context, *networkingv1alpha.NetworkLoadBalancer) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func validateNetworkLoadBalancerCapabilities(lb *networkingv1alpha.NetworkLoadBalancer, settings ...config.NetworkLoadBalancerConfig) error {
-	var cfg config.NetworkLoadBalancerConfig
-	if len(settings) > 0 {
-		cfg = settings[0]
-	}
+func (v *NetworkLoadBalancerValidator) validateCapabilities(lb *networkingv1alpha.NetworkLoadBalancer) error {
+	cfg := v.Config
 	maxPorts := cfg.MaxExposedPorts
 	if maxPorts <= 0 {
 		maxPorts = 1024
@@ -69,7 +65,11 @@ func validateNetworkLoadBalancerCapabilities(lb *networkingv1alpha.NetworkLoadBa
 	var coverage int32
 	var errs field.ErrorList
 	for i, request := range lb.Spec.Exposure.Addresses {
-		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) {
+		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) && addressRequiresCoordination(lb, request.Name) {
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "exposure", "addresses").Index(i).Child("families"),
+				"UnsupportedCapability: shared listeners and UDP ranges require IPv6-only addresses"))
+		}
+		if !v.IPv4Enabled && slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) {
 			errs = append(errs, field.Forbidden(field.NewPath("spec", "exposure", "addresses").Index(i).Child("families"),
 				"UnsupportedCapability: public IPv4 NLB ingress is unavailable"))
 		}
@@ -169,4 +169,18 @@ func loadBalancerPortCoverage(lb *networkingv1alpha.NetworkLoadBalancer) int32 {
 		total += networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Width() * int32(len(listener.AddressRefs))
 	}
 	return total
+}
+
+func addressRequiresCoordination(lb *networkingv1alpha.NetworkLoadBalancer, name string) bool {
+	listeners := 0
+	for _, listener := range lb.Spec.Listeners {
+		if !slices.Contains(listener.AddressRefs, name) {
+			continue
+		}
+		listeners++
+		if listeners > 1 || !networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Singleton() {
+			return true
+		}
+	}
+	return false
 }

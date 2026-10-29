@@ -224,6 +224,9 @@ func validateAddressGroup(intent *networkingv1alpha.NetworkLoadBalancerCellInten
 	if group == nil {
 		return ""
 	}
+	if intent.Spec.VIPFamily != networkingv1alpha.IPv6Protocol {
+		return "shared address coordination requires IPv6"
+	}
 	if group.UID == "" || group.Revision == "" || group.Generation != intent.Spec.Source.ParentGeneration || group.ListenerName != intent.Spec.Source.ListenerName || len(group.Listeners) == 0 || len(group.Listeners) > 16 {
 		return "invalid address inventory identity"
 	}

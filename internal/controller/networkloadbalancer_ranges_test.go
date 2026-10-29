@@ -197,7 +197,7 @@ func TestNLBAddressInventoryRejectsStaleAndConflictingWriters(t *testing.T) {
 	ctx := context.Background()
 	backends, _, err := r.verifiedBackends(ctx, intent)
 	require.NoError(t, err)
-	service, reason := desiredNetworkLoadBalancerService(intent, backends)
+	service, reason := desiredNetworkLoadBalancerService(intent, backends, r.IPv4VIPs)
 	require.Empty(t, reason)
 	require.NoError(t, r.ensureAddress(ctx, service))
 	service.Spec.AddressGroup.Generation--
@@ -265,7 +265,7 @@ func TestNLBMissingIntentCannotRecreateAnchor(t *testing.T) {
 	cl, r, intent := rangeProgrammingFixture(t)
 	backends, _, err := r.verifiedBackends(context.Background(), intent)
 	require.NoError(t, err)
-	service, reason := desiredNetworkLoadBalancerService(intent, backends)
+	service, reason := desiredNetworkLoadBalancerService(intent, backends, r.IPv4VIPs)
 	require.Empty(t, reason)
 	require.NoError(t, cl.Delete(context.Background(), intent))
 	require.ErrorContains(t, r.ensureAddress(context.Background(), service), "no longer authorizes")
@@ -540,4 +540,12 @@ func TestNLBCoordinationSurvivesObservationLossAndResetsOnReplacement(t *testing
 	require.Equal(t, "replacement-claim", address.ClaimRef.UID)
 	require.False(t, address.Coordinated)
 	require.Nil(t, networkLoadBalancerAddressGroup(&lb, &lb.Spec.Listeners[0], "edge", "iad", *address))
+}
+
+func TestNLBAddressInventoryRejectsIPv4(t *testing.T) {
+	intent := &api.NetworkLoadBalancerCellIntent{Spec: api.NetworkLoadBalancerCellIntentSpec{
+		VIPFamily:    api.IPv4Protocol,
+		AddressGroup: &api.NetworkLoadBalancerCellIntentAddressGroup{},
+	}}
+	require.Contains(t, validateAddressGroup(intent), "requires IPv6")
 }

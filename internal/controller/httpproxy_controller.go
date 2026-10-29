@@ -720,6 +720,7 @@ func (r *HTTPProxyReconciler) reconcileHTTPProxyHostnameStatus(
 // SetupWithManager sets up the controller with the Manager.
 func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 	if r.routing == nil {
 		r.routing = newRoutingObserver()
 	}
@@ -792,7 +793,8 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		// is updated when certificates become ready or fail.
 		downstreamCertificateSource := mcsource.TypedKind(
 			newUnstructuredForGVK(certificateGVK),
-			r.enqueueHTTPProxyForDownstreamCertificate(),
+			downstreamclient.OwnedRequestsOnlyFunc(ownership, "httpproxy", r.enqueueHTTPProxyForDownstreamCertificate()),
+			downstreamclient.OwnedByReplica[*unstructured.Unstructured](ownership, r.DownstreamCluster.GetClient(), "httpproxy"),
 		)
 		downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)

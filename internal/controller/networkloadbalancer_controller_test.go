@@ -141,6 +141,80 @@ func TestNetworkLoadBalancerAllocationHoldsPerLocationAddresses(t *testing.T) {
 	require.Equal(t, lb.Status.Endpoints, s.reconcile().Status.Endpoints, "retry must reuse claims and addresses")
 }
 
+func TestNetworkLoadBalancerRejectsIPv4WithoutIPv4Class(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	lb := *s.lb.DeepCopy()
+	lb.Spec.Exposure.Addresses[1].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	lb = s.reconcile()
+	condition := apimeta.FindStatusCondition(lb.Status.Conditions, networkingv1alpha.NetworkLoadBalancerAllocated)
+	require.NotNil(t, condition)
+	require.Equal(t, "UnsupportedCapability", condition.Reason)
+	require.Empty(t, s.claims())
+}
+
+func TestNetworkLoadBalancerHoldsDualStackAddresses(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	s.control.PublicIPv4Class = "public-v4"
+	lb := *s.lb.DeepCopy()
+	lb.Spec.Exposure.Addresses = lb.Spec.Exposure.Addresses[1:]
+	lb.Spec.Exposure.Addresses[0].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol}
+	lb.Spec.Listeners[0].AddressRefs = []string{"edge"}
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	s.reconcile()
+
+	claims := s.claims()
+	require.Len(t, claims, 2)
+	for _, claim := range claims {
+		switch claim.Spec.IPFamily {
+		case ipamv1alpha1.IPFamily(networkingv1alpha.IPv4Protocol):
+			require.Equal(t, "public-v4", claim.Spec.ClassName)
+			require.Equal(t, int32(32), *claim.Spec.PrefixLength)
+			claim.Status.AllocatedCIDR = "192.0.2.10/32"
+		case ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol):
+			require.Equal(t, "public-v6", claim.Spec.ClassName)
+			require.Equal(t, int32(128), *claim.Spec.PrefixLength)
+			claim.Status.AllocatedCIDR = "2001:db8::10/128"
+		default:
+			t.Fatalf("unexpected claim family %q", claim.Spec.IPFamily)
+		}
+		require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
+	}
+
+	lb = s.reconcile()
+	require.True(t, apimeta.IsStatusConditionTrue(lb.Status.Conditions, networkingv1alpha.NetworkLoadBalancerAllocated))
+	require.Len(t, lb.Status.Endpoints, 1)
+	values := map[networkingv1alpha.IPFamily]string{}
+	for _, address := range lb.Status.Endpoints[0].Addresses {
+		values[address.Family] = address.Value
+	}
+	require.Equal(t, map[networkingv1alpha.IPFamily]string{
+		networkingv1alpha.IPv4Protocol: "192.0.2.10",
+		networkingv1alpha.IPv6Protocol: "2001:db8::10",
+	}, values)
+}
+
+func TestNetworkLoadBalancerRejectsAddressOfWrongFamily(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	s.control.PublicIPv4Class = "public-v4"
+	lb := *s.lb.DeepCopy()
+	lb.Spec.Exposure.Addresses = lb.Spec.Exposure.Addresses[1:]
+	lb.Spec.Exposure.Addresses[0].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol}
+	lb.Spec.Listeners[0].AddressRefs = []string{"edge"}
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	s.reconcile()
+
+	claims := s.claims()
+	require.Len(t, claims, 1)
+	claims[0].Status.Address = "::ffff:192.0.2.10"
+	require.NoError(t, s.ipam.Status().Update(s.ctx, &claims[0]))
+	lb = s.reconcile()
+	condition := apimeta.FindStatusCondition(lb.Status.Endpoints[0].Addresses[0].Conditions, networkingv1alpha.NetworkLoadBalancerAllocated)
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Contains(t, condition.Message, "invalid IPv4 address")
+}
+
 func TestNetworkLoadBalancerClaimNamesKeepAddressIdentityDistinct(t *testing.T) {
 	lb := &networkingv1alpha.NetworkLoadBalancer{ObjectMeta: metav1.ObjectMeta{UID: types.UID("fixture")}}
 	a := loadBalancerClaimName(lb, loadBalancerAddressRequest{

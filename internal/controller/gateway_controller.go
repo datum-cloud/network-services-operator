@@ -463,6 +463,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			break
 		}
 	}
+	// Quota grants are not watched here. Retry a refused domain periodically
+	// so increasing quota recovers the listener without another spec change.
+	result.RequeueAfter = earliestRequeue(result.RequeueAfter, domainQuotaRequeue(hostnameRefusals))
 	result.RequeueAfter = earliestRequeue(result.RequeueAfter, certificateServiceRequeue, dnsAuthorityRecheck)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
@@ -1581,7 +1584,7 @@ func (r *GatewayReconciler) ensureHostnamesClaimed(
 	listOpts := []client.ListOption{
 		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
 		client.MatchingLabels{
-			downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+			downstreamclient.UpstreamOwnerClusterNameLabel: downstreamclient.UpstreamClusterNameLabelValue(upstreamClusterName),
 			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 		},
@@ -1802,6 +1805,18 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 			}
 
 			if err := upstreamClient.Create(ctx, domain); client.IgnoreAlreadyExists(err) != nil {
+				if isDomainQuotaDenial(err) {
+					for hostname := range hostnames {
+						if domainCoversHostname(domainName, strings.TrimPrefix(hostname, "*.")) {
+							verifiedHostnames.Delete(hostname)
+							refusals[hostname] = hostnameRefusal{
+								reason:  domainQuotaExceededReason,
+								message: fmt.Sprintf("Cannot verify hostname %q because creating Domain %q exceeds the project's quota. Delete unused Domains or request a higher limit.", hostname, domainName),
+							}
+						}
+					}
+					continue
+				}
 				return nil, nil, fmt.Errorf("failed creating domain: %w", err)
 			}
 
@@ -1813,6 +1828,24 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	slices.Sort(verifiedHostnamesSlice)
 
 	return verifiedHostnamesSlice, refusals, nil
+}
+
+const domainQuotaExceededReason = "DomainQuotaExceeded"
+
+// Admission currently returns quota exhaustion as Forbidden with this message,
+// rather than a distinct status reason. Keep the match narrow so RBAC denials
+// and other admission failures remain controller errors.
+func isDomainQuotaDenial(err error) bool {
+	return apierrors.IsForbidden(err) && strings.Contains(err.Error(), "Insufficient quota resources.")
+}
+
+func domainQuotaRequeue(refusals map[string]hostnameRefusal) time.Duration {
+	for _, refusal := range refusals {
+		if refusal.reason == domainQuotaExceededReason {
+			return time.Minute
+		}
+	}
+	return 0
 }
 
 // gatewayCanonicalHostname returns the managed canonical hostname for a gateway.
@@ -2014,7 +2047,7 @@ func (r *GatewayReconciler) finalizeGateway(
 	listOpts := []client.ListOption{
 		client.InNamespace(r.Config.Gateway.DownstreamHostnameAccountingNamespace),
 		client.MatchingLabels{
-			downstreamclient.UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_")),
+			downstreamclient.UpstreamOwnerClusterNameLabel: downstreamclient.UpstreamClusterNameLabelValue(upstreamClusterName),
 			downstreamclient.UpstreamOwnerNamespaceLabel:   upstreamGateway.Namespace,
 			downstreamclient.UpstreamOwnerNameLabel:        upstreamGateway.Name,
 		},
@@ -3167,6 +3200,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	if r.routing == nil {
 		r.routing = newRoutingObserver()
 	}
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 
 	if r.Config.Gateway.PreciseEndpointSliceMapping {
 		if err := addHTTPRouteIndexers(context.Background(), mgr); err != nil {
@@ -3206,6 +3240,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	downstreamGatewaySource := mcsource.TypedKind(
 		&gatewayv1.Gateway{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*gatewayv1.Gateway](&gatewayv1.Gateway{}),
+		downstreamclient.OwnedByReplica[*gatewayv1.Gateway](ownership, r.DownstreamCluster.GetClient(), "gateway"),
 	)
 
 	downstreamGatewayClusterSource, _, _ := downstreamGatewaySource.ForCluster("", r.DownstreamCluster)
@@ -3213,6 +3248,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	downstreamHTTPRouteSource := mcsource.Kind(
 		&gatewayv1.HTTPRoute{},
 		r.listGatewaysAttachedByDownstreamHTTPRoute,
+		downstreamclient.OwnedByReplica[*gatewayv1.HTTPRoute](ownership, r.DownstreamCluster.GetClient(), "gateway"),
 	)
 
 	downstreamHTTPRouteClusterSource, _, _ := downstreamHTTPRouteSource.ForCluster("", r.DownstreamCluster)
@@ -3220,6 +3256,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	downstreamCertificateSource := mcsource.TypedKind(
 		&cmv1.Certificate{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*cmv1.Certificate](&gatewayv1.Gateway{}),
+		downstreamclient.OwnedByReplica[*cmv1.Certificate](ownership, r.DownstreamCluster.GetClient(), "gateway"),
 	)
 
 	downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
@@ -3230,8 +3267,13 @@ func (r *GatewayReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// so it maps to Gateways through the downstream routes that name it.
 	downstreamVPCPodEndpointSliceSource := mcsource.Kind(
 		&discoveryv1.EndpointSlice{},
-		endpointSliceMappers.vpcPod,
-		endpointSliceMappers.vpcPodPredicates...,
+		downstreamclient.OwnedRequestsOnlyFunc(ownership, "gateway", endpointSliceMappers.vpcPod),
+		append(
+			[]predicate.TypedPredicate[*discoveryv1.EndpointSlice]{
+				downstreamclient.OwnedByReplica[*discoveryv1.EndpointSlice](ownership, r.DownstreamCluster.GetClient(), "gateway"),
+			},
+			endpointSliceMappers.vpcPodPredicates...,
+		)...,
 	)
 
 	downstreamVPCPodEndpointSliceClusterSource, _, _ := downstreamVPCPodEndpointSliceSource.ForCluster("", r.DownstreamCluster)

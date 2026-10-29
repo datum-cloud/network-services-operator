@@ -354,7 +354,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 ) error {
 	logger := log.FromContext(ctx)
 
-	// Time the full downstream sync (CreateOrUpdate) per resource kind so
+	// Time the full downstream sync (CreateOrPatch) per resource kind so
 	// replication latency regressions per family are attributable.
 	syncStart := time.Now()
 	syncOutcome := "success"
@@ -395,7 +395,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	downstreamObj.SetName(downstreamObjectMeta.Name)
 	downstreamObj.SetNamespace(downstreamObjectMeta.Namespace)
 
-	operation, err := controllerutil.CreateOrUpdate(ctx, downstreamStrategy.GetClient(), downstreamObj, func() error {
+	// The replicator owns spec and selected metadata; downstream controllers
+	// independently write status and placement metadata. Patch the owned changes
+	// rather than replacing an object read at an obsolete resourceVersion.
+	operation, err := controllerutil.CreateOrPatch(ctx, downstreamStrategy.GetClient(), downstreamObj, func() error {
 		if spec, ok := upstreamObj.Object["spec"]; ok {
 			downstreamObj.Object["spec"] = runtime.DeepCopyJSONValue(spec)
 		} else {
@@ -418,7 +421,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 
 		// Mirror the upstream status into an annotation on the downstream
-		// object's metadata. This is part of the same CreateOrUpdate Update, so it
+		// object's metadata. This is part of the same CreateOrPatch patch, so it
 		// is persisted as ordinary metadata (which Karmada propagates to members)
 		// — no status subresource write involved.
 		if resource.replicationResourceConfig.mirrorStatusToAnnotation {
@@ -827,6 +830,7 @@ func (r *GatewayResourceReplicatorReconciler) finalize(
 // SetupWithManager wires the controller for the configured resource types.
 func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 
 	resources := make(map[string]replicationResource)
 
@@ -883,7 +887,8 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		src := mcsource.TypedKind(
 			downstreamWatchObj,
-			typedEnqueueDownstreamGVKRequest(gvk),
+			downstreamclient.OwnedRequestsOnlyFunc(ownership, "gateway_resource_replicator", typedEnqueueDownstreamGVKRequest(gvk)),
+			downstreamclient.OwnedByReplica[*unstructured.Unstructured](ownership, r.DownstreamCluster.GetClient(), "gateway_resource_replicator"),
 		)
 
 		clusterSrc, _, err := src.ForCluster("", r.DownstreamCluster)
@@ -896,7 +901,8 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 		if isSecurityPolicyGVK(gvk) {
 			secretSrc := mcsource.TypedKind(
 				newUnstructuredForGVK(secretGVK),
-				r.enqueueSecurityPoliciesForDownstreamSecret(gvk),
+				downstreamclient.OwnedRequestsOnlyFunc(ownership, "gateway_resource_replicator", r.enqueueSecurityPoliciesForDownstreamSecret(gvk)),
+				downstreamclient.OwnedByReplica[*unstructured.Unstructured](ownership, r.DownstreamCluster.GetClient(), "gateway_resource_replicator"),
 			)
 
 			secretClusterSrc, _, err := secretSrc.ForCluster("", r.DownstreamCluster)

@@ -42,6 +42,7 @@ const (
 type NetworkLoadBalancerReconciler struct {
 	IPAM            IPAMClientFactory
 	PublicIPv6Class string
+	PublicIPv4Class string
 	ManagedDomain   string
 	mgr             mcmanager.Manager
 }
@@ -83,7 +84,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		return ctrl.Result{Requeue: true}, nil
 	}
 	for _, request := range lb.Spec.Exposure.Addresses {
-		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) {
+		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) && r.PublicIPv4Class == "" {
 			return r.report(ctx, cl, &lb, nil, nil, metav1.ConditionFalse, "UnsupportedCapability",
 				fmt.Sprintf("address request %q: public IPv4 NLB ingress is unavailable", request.Name))
 		}
@@ -203,7 +204,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			}
 			entry.Value = address
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
-				metav1.ConditionTrue, "Allocated", "Public IPv6 address is held in IPAM")
+				metav1.ConditionTrue, "Allocated", "Public address is held in IPAM")
 		}
 		appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, entry)
 	}
@@ -252,7 +253,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		}
 		return r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
 	}
-	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public IPv6 addresses are held")
+	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 }
 
 func countAddressEndpoints(requests []loadBalancerAddressRequest, prior []networkingv1alpha.NetworkLoadBalancerEndpointStatus) int {
@@ -459,14 +460,18 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	ctx context.Context, cl client.Client, namespace string, lb *networkingv1alpha.NetworkLoadBalancer,
 	request loadBalancerAddressRequest, claimName string,
 ) (string, string, error) {
+	className, prefixLength := r.PublicIPv6Class, int32(128)
+	if request.family == networkingv1alpha.IPv4Protocol {
+		className, prefixLength = r.PublicIPv4Class, 32
+	}
 	claim := &ipamv1alpha1.IPClaim{}
 	claim.Namespace = namespace
 	claim.Name = claimName
 	claim.Labels = map[string]string{networkLoadBalancerOwnerLabel: string(lb.UID)}
 	claim.Spec = ipamv1alpha1.IPClaimSpec{
-		ClassName:     r.PublicIPv6Class,
-		IPFamily:      ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
-		PrefixLength:  ptr.To[int32](128),
+		ClassName:     className,
+		IPFamily:      ipamv1alpha1.IPFamily(request.family),
+		PrefixLength:  ptr.To(prefixLength),
 		ReclaimPolicy: ipamv1alpha1.ReclaimDelete,
 		Scope: map[string]ipamv1alpha1.ScopeRef{
 			ipamScopeRoleNetwork: {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: request.networkName},
@@ -500,7 +505,7 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	if existing.Labels[networkLoadBalancerOwnerLabel] != string(lb.UID) ||
 		existing.Spec.ClassName != claim.Spec.ClassName ||
 		existing.Spec.IPFamily != claim.Spec.IPFamily ||
-		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != 128 ||
+		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != prefixLength ||
 		existing.Spec.ReclaimPolicy != claim.Spec.ReclaimPolicy ||
 		!equality.Semantic.DeepEqual(existing.Spec.Scope, claim.Spec.Scope) {
 		return "", "", fmt.Errorf("IPClaim %q does not match this load balancer's address request", claimName)
@@ -508,15 +513,15 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	address := existing.Status.Address
 	if address == "" && existing.Status.AllocatedCIDR != "" {
 		prefix, err := netip.ParsePrefix(existing.Status.AllocatedCIDR)
-		if err != nil || prefix.Bits() != 128 {
-			return "", "", fmt.Errorf("IPClaim %q did not allocate one IPv6 address", claimName)
+		if err != nil || prefix.Bits() != int(prefixLength) {
+			return "", "", fmt.Errorf("IPClaim %q did not allocate one %s address", claimName, request.family)
 		}
 		address = prefix.Addr().String()
 	}
 	if address != "" {
 		parsed, err := netip.ParseAddr(address)
-		if err != nil || !parsed.Is6() {
-			return "", "", fmt.Errorf("IPClaim %q returned an invalid IPv6 address %q", claimName, address)
+		if err != nil || parsed.Is4() != (request.family == networkingv1alpha.IPv4Protocol) || parsed.Is4In6() {
+			return "", "", fmt.Errorf("IPClaim %q returned an invalid %s address %q", claimName, request.family, address)
 		}
 	}
 	return address, string(existing.UID), nil

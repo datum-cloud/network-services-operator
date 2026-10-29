@@ -103,7 +103,7 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 		// Band-aid: only stamp the label when we actually have a cluster name; the
 		// proper fix is to propagate ClusterName into NamespaceReconcileRequest.
 		if c.upstreamClusterName != "" {
-			downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+			downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = UpstreamClusterNameLabelValue(c.upstreamClusterName)
 		}
 
 		labels := obj.GetLabels()
@@ -140,6 +140,10 @@ const (
 	UpstreamOwnerNamespaceLabel   = "meta.datumapis.com/upstream-namespace"
 )
 
+func UpstreamClusterNameLabelValue(clusterName string) string {
+	return "cluster-" + strings.ReplaceAll(clusterName, "/", "_")
+}
+
 // UpstreamClusterNameFromLabel decodes the upstream cluster name from the value
 // of UpstreamOwnerClusterNameLabel, reversing the encoding applied when the
 // label is written ("cluster-" prefix, slashes encoded as underscores). What the
@@ -173,7 +177,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
 
 	anchorLabels := map[string]string{
-		UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_")),
+		UpstreamOwnerClusterNameLabel: UpstreamClusterNameLabelValue(c.upstreamClusterName),
 		UpstreamOwnerGroupLabel:       gvk.Group,
 		UpstreamOwnerKindLabel:        gvk.Kind,
 		UpstreamOwnerNameLabel:        owner.GetName(),

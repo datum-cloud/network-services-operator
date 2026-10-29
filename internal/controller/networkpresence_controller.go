@@ -17,12 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -88,11 +86,6 @@ func (r *managerProjectClusterResolver) ClusterForProject(ctx context.Context, p
 type NetworkPresenceReconciler struct {
 	Projects ProjectClusterResolver
 
-	// Events carries presences that something in a project control plane says
-	// need looking at again. NetworkPresenceSyncReconciler is the only writer;
-	// this controller stays the only writer to the presence itself.
-	Events <-chan event.GenericEvent
-
 	// UnclaimedGracePeriod is how long a presence nothing declares any more is
 	// kept before it is torn down. A location keeps the address space it was
 	// given for this long after the last consumer goes, so a redeploy neither
@@ -105,6 +98,15 @@ type NetworkPresenceReconciler struct {
 	// DefaultInternetEgressMode is projected for a network that has not been
 	// stamped with an internet access mode yet.
 	DefaultInternetEgressMode networkingv1alpha.NetworkInternetEgressMode
+
+	// ResyncPeriod is how often a settled presence is looked at again. The
+	// network, location and context it is derived from live in project control
+	// planes this controller does not watch; the sync controller reports their
+	// changes through an annotation on the bindings, and the resync bounds how
+	// long a change takes to land if that write is ever missed.
+	//
+	// Zero disables the resync.
+	ResyncPeriod time.Duration
 
 	hub client.Client
 }
@@ -158,7 +160,7 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if refused {
 		return ctrl.Result{RequeueAfter: refusedPresenceRetryInterval}, nil
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: r.ResyncPeriod}, nil
 }
 
 const refusedPresenceRetryInterval = time.Minute
@@ -562,6 +564,7 @@ func (r *NetworkPresenceReconciler) report(
 	var errs []error
 	for i := range holders {
 		binding := &holders[i]
+		base := binding.DeepCopy()
 
 		changed := false
 		// The reference is the current answer, not the first one: a refusal that
@@ -581,8 +584,15 @@ func (r *NetworkPresenceReconciler) report(
 			continue
 		}
 
-		if err := r.hub.Status().Update(ctx, binding); err != nil {
-			errs = append(errs, fmt.Errorf("failed updating status of network binding %q: %w", binding.Name, err))
+		// Presence owns this status, while consumers and replication update
+		// metadata. Patch only changed status fields so those unrelated writes
+		// cannot invalidate a whole-object resourceVersion update.
+		if err := r.hub.Status().Patch(ctx, binding, client.MergeFrom(base)); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.FromContext(ctx).V(1).Info("network binding deleted before presence reported status", "binding", client.ObjectKeyFromObject(binding))
+			} else {
+				errs = append(errs, fmt.Errorf("failed updating status of network binding %q: %w", binding.Name, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -649,13 +659,6 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 				}}}
 			})).
 		Named("networkpresence")
-
-	// Everything this controller reads besides the binding lives in a project
-	// control plane it does not watch. The sync controller does watch them, and
-	// maps what it sees onto the presence the change is about.
-	if r.Events != nil {
-		builder = builder.WatchesRawSource(source.Channel(r.Events, &handler.EnqueueRequestForObject{}))
-	}
 
 	return builder.Complete(r)
 }

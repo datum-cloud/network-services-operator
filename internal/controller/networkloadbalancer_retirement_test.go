@@ -275,7 +275,7 @@ func TestNLBRejectsStaleFirstDeliveryAfterHubRetirement(t *testing.T) {
 	cell, adapter, intent := rangeProgrammingFixture(t)
 	backends, _, err := adapter.verifiedBackends(ctx, intent)
 	require.NoError(t, err)
-	service, reason := desiredNetworkLoadBalancerService(intent, backends)
+	service, reason := desiredNetworkLoadBalancerService(intent, backends, adapter.IPv4VIPs)
 	require.Empty(t, reason)
 	hub := fake.NewClientBuilder().WithScheme(cell.Scheme()).Build()
 	adapter.HubCluster = &fakeCluster{cl: hub, reader: unavailableNLBHubReader{Reader: hub}}
@@ -340,7 +340,7 @@ func TestNLBRetirementWinsDelayedCellRegistration(t *testing.T) {
 	cl, adapter, intent := rangeProgrammingFixture(t)
 	backends, _, err := adapter.verifiedBackends(ctx, intent)
 	require.NoError(t, err)
-	service, reason := desiredNetworkLoadBalancerService(intent, backends)
+	service, reason := desiredNetworkLoadBalancerService(intent, backends, adapter.IPv4VIPs)
 	require.Empty(t, reason)
 	paused, resume, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	writer := &pausedAuthorityPatchClient{Client: cl, beforePatch: func() { close(paused); <-resume }}

@@ -20,12 +20,17 @@ func TestNetworkLoadBalancerCapabilityValidation(t *testing.T) {
 	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{
 		Name: "game", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, Port: 5001, AddressRefs: []string{"regional"},
 	}}
+	validator := &NetworkLoadBalancerValidator{}
+	validateNetworkLoadBalancerCapabilities := validator.validateCapabilities
 	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb))
 	lb.Spec.Listeners[0].AddressRefs = []string{"regional", "second"}
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "multi-VIP serving")
 	lb.Spec.Listeners[0].AddressRefs = []string{"regional"}
 	lb.Spec.Exposure.Addresses[0].Families = append(lb.Spec.Exposure.Addresses[0].Families, networkingv1alpha.IPv4Protocol)
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "UnsupportedCapability")
+	validator.IPv4Enabled = true
+	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb))
+	validator.IPv4Enabled = false
 	lb.Spec.Exposure.Addresses[0].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
 	lb.Spec.Listeners[0].Protocol = networkingv1alpha.NetworkLoadBalancerProtocolTLS
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "proxy-capable")
@@ -92,14 +97,18 @@ func TestNetworkLoadBalancerRouteKeepsExistingHealthCheckProtocol(t *testing.T) 
 func TestNLBSharedRangeCapabilityAndQuota(t *testing.T) {
 	lb := &networkingv1alpha.NetworkLoadBalancer{}
 	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{Name: "web", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP, Port: 443, AddressRefs: []string{"public"}}, {Name: "media", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127}, AddressRefs: []string{"public"}}}
-	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "not enabled")
+	validator := &NetworkLoadBalancerValidator{}
+	require.ErrorContains(t, validator.validateCapabilities(lb), "not enabled")
 	cfg := config.NetworkLoadBalancerConfig{SharedAddressListeners: true, UDPPortRanges: true, MaxExposedPorts: 129}
-	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb, cfg))
+	validator.Config = cfg
+	require.NoError(t, validator.validateCapabilities(lb))
 	cfg.MaxExposedPorts = 128
-	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb, cfg), "capacity")
+	validator.Config = cfg
+	require.ErrorContains(t, validator.validateCapabilities(lb), "capacity")
 	cfg.MaxExposedPorts = 129
 	cfg.UDPPortRanges = false
-	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb, cfg), "UDP port ranges")
+	validator.Config = cfg
+	require.ErrorContains(t, validator.validateCapabilities(lb), "UDP port ranges")
 }
 
 func TestNLBDisabledGatesAllowOnlyNonExpandingUpdates(t *testing.T) {
@@ -163,4 +172,34 @@ func TestNLBDisabledGatesAllowOnlyNonExpandingUpdates(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNLBIPv4AdmissionKeepsCoordinationIPv6Only(t *testing.T) {
+	validator := &NetworkLoadBalancerValidator{
+		IPv4Enabled: true,
+		Config:      config.NetworkLoadBalancerConfig{SharedAddressListeners: true, UDPPortRanges: true},
+	}
+	lb := &networkingv1alpha.NetworkLoadBalancer{}
+	lb.Spec.Exposure.Addresses = []networkingv1alpha.NetworkLoadBalancerAddressRequest{{
+		Name: "public", Families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol, networkingv1alpha.IPv6Protocol},
+	}}
+	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{
+		Name: "media", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, Port: 10000, AddressRefs: []string{"public"},
+	}}
+	_, err := validator.ValidateCreate(context.Background(), lb)
+	require.NoError(t, err)
+	old := lb.DeepCopy()
+	lb.Spec.Listeners[0].Port = 0
+	lb.Spec.Listeners[0].PortRange = &networkingv1alpha.PortRange{Start: 10000, End: 10127}
+	_, err = validator.ValidateUpdate(context.Background(), old, lb)
+	require.ErrorContains(t, err, "IPv6-only")
+	lb.Spec.Listeners[0].Port, lb.Spec.Listeners[0].PortRange = 10000, nil
+	lb.Spec.Listeners = append(lb.Spec.Listeners, networkingv1alpha.NetworkLoadBalancerListener{
+		Name: "control", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP, Port: 443, AddressRefs: []string{"public"},
+	})
+	_, err = validator.ValidateCreate(context.Background(), lb)
+	require.ErrorContains(t, err, "IPv6-only")
+	lb.Spec.Exposure.Addresses[0].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
+	_, err = validator.ValidateCreate(context.Background(), lb)
+	require.NoError(t, err)
 }

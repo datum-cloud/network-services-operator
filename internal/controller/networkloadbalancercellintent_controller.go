@@ -147,9 +147,7 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 					continue
 				}
 				for _, allocation := range endpointStatus.Addresses {
-					// The public ingress path currently supports IPv6 only.
-					if !slices.Contains(request.Families, allocation.Family) ||
-						allocation.Family != networkingv1alpha.IPv6Protocol || allocation.Value == "" ||
+					if !slices.Contains(request.Families, allocation.Family) || allocation.Value == "" ||
 						allocation.ClaimRef == nil || allocation.ClaimRef.Name == "" {
 						continue
 					}
@@ -161,7 +159,8 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 						continue
 					}
 					vip, parseErr := netip.ParseAddr(allocation.Value)
-					if parseErr != nil || !vip.Is6() || vip.Is4In6() || vip.Zone() != "" || !vip.IsGlobalUnicast() ||
+					if parseErr != nil || vip.Is4() != (allocation.Family == networkingv1alpha.IPv4Protocol) ||
+						vip.Is4In6() || vip.Zone() != "" || !vip.IsGlobalUnicast() ||
 						endpointStatus.Location == "" || sharedVIPs[vip.String()] {
 						continue
 					}
@@ -228,13 +227,15 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 
 // Status can temporarily contain two distinct VIP allocations for one
 // address request during replacement. Withdraw all conflicting intents
-// until Galactic can reuse backends across VIPs.
+// until Galactic can reuse backends across VIPs of one family. A backend
+// answers for one VIP of each family, so an IPv4 and an IPv6 VIP never
+// conflict.
 func withdrawConflictingCellIntents(desired []networkingv1alpha.NetworkLoadBalancerCellIntent) {
 	conflicts := make([]bool, len(desired))
 	for i := range desired {
 		for j := 0; j < i; j++ {
 			a, b := &desired[i], &desired[j]
-			if !cellIntentRequestsServing(a) || !cellIntentRequestsServing(b) || a.Spec.NetworkName != b.Spec.NetworkName || a.Spec.Location != b.Spec.Location || a.Spec.Protocol != b.Spec.Protocol {
+			if !cellIntentRequestsServing(a) || !cellIntentRequestsServing(b) || a.Spec.NetworkName != b.Spec.NetworkName || a.Spec.Location != b.Spec.Location || a.Spec.Protocol != b.Spec.Protocol || a.Spec.VIPFamily != b.Spec.VIPFamily {
 				continue
 			}
 			for _, x := range a.Spec.Backends {

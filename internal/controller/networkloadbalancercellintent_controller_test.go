@@ -159,7 +159,7 @@ func TestCellIntentRequiresFreshPerLocationAllocation(t *testing.T) {
 	require.Empty(t, desired)
 }
 
-func TestCellIntentRejectsUnsupportedVIPFamily(t *testing.T) {
+func TestCellIntentPublishesIPv4VIP(t *testing.T) {
 	ctx := context.Background()
 	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
 	parent := testRouteLoadBalancer()
@@ -175,7 +175,40 @@ func TestCellIntentRejectsUnsupportedVIPFamily(t *testing.T) {
 
 	desired, err := buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
 	require.NoError(t, err)
-	require.Empty(t, desired)
+	require.Len(t, desired, 1)
+	require.Equal(t, networkingv1alpha.IPv4Protocol, desired[0].Spec.VIPFamily)
+	require.Equal(t, "192.0.2.10", desired[0].Spec.VIP)
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, desired[0].Spec.State)
+	require.Equal(t, networkingv1alpha.IPv6Protocol, desired[0].Spec.Backends[0].Family)
+}
+
+func TestWithdrawConflictingCellIntentsKeepsOneVIPPerFamily(t *testing.T) {
+	backend := networkingv1alpha.NetworkLoadBalancerCellIntentBackend{Address: "fd00::1", Port: 8080}
+	intent := func(family networkingv1alpha.IPFamily, vip string) networkingv1alpha.NetworkLoadBalancerCellIntent {
+		return networkingv1alpha.NetworkLoadBalancerCellIntent{Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+			NetworkName: "default", Location: "dfw", VIPFamily: family, VIP: vip,
+			Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP,
+			State:    networkingv1alpha.NetworkLoadBalancerCellIntentValidate,
+			Backends: []networkingv1alpha.NetworkLoadBalancerCellIntentBackend{backend},
+		}}
+	}
+	dualStack := []networkingv1alpha.NetworkLoadBalancerCellIntent{
+		intent(networkingv1alpha.IPv4Protocol, "192.0.2.10"),
+		intent(networkingv1alpha.IPv6Protocol, "2001:db8::10"),
+	}
+	withdrawConflictingCellIntents(dualStack)
+	for _, desired := range dualStack {
+		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, desired.Spec.State)
+	}
+
+	twoIPv4 := []networkingv1alpha.NetworkLoadBalancerCellIntent{
+		intent(networkingv1alpha.IPv4Protocol, "192.0.2.10"),
+		intent(networkingv1alpha.IPv4Protocol, "192.0.2.11"),
+	}
+	withdrawConflictingCellIntents(twoIPv4)
+	for _, desired := range twoIPv4 {
+		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, desired.Spec.State)
+	}
 }
 
 func TestCellIntentResolvesPortParentAndEquivalentNamespace(t *testing.T) {
@@ -497,4 +530,30 @@ func TestCellIntentPublishKeepsLabelsItDoesNotOwn(t *testing.T) {
 	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(claimed), &after))
 	require.NotContains(t, after.Labels, "networking.datumapis.com/stale", "a key NSO owns and no longer wants goes")
 	require.Equal(t, "nso-resources-id", after.Labels[karmadaClaimLabel])
+}
+
+func TestWithdrawConflictingCellIntentsScopesRangesByFamily(t *testing.T) {
+	shared := networkingv1alpha.NetworkLoadBalancerCellIntent{Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+		NetworkName: "default", Location: "dfw", VIPFamily: networkingv1alpha.IPv6Protocol,
+		Protocol:     networkingv1alpha.NetworkLoadBalancerProtocolUDP,
+		State:        networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation,
+		AddressGroup: &networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup{},
+		Backends: []networkingv1alpha.NetworkLoadBalancerCellIntentBackend{{
+			Address: "fd00::1", PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127},
+		}},
+	}}
+	legacy := *shared.DeepCopy()
+	legacy.Spec.AddressGroup = nil
+	legacy.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidate
+	legacy.Spec.VIPFamily = networkingv1alpha.IPv4Protocol
+	legacy.Spec.Backends[0].Port, legacy.Spec.Backends[0].PortRange = 10050, nil
+	intents := []networkingv1alpha.NetworkLoadBalancerCellIntent{shared, legacy}
+	withdrawConflictingCellIntents(intents)
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation, intents[0].Spec.State)
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, intents[1].Spec.State)
+	intents[1].Spec.VIPFamily = networkingv1alpha.IPv6Protocol
+	withdrawConflictingCellIntents(intents)
+	for _, intent := range intents {
+		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, intent.Spec.State)
+	}
 }

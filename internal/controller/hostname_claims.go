@@ -57,7 +57,7 @@ func claimedHostname(claim *corev1.ConfigMap) string {
 }
 
 func hostnameClaimProject(upstreamClusterName string) string {
-	return fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_"))
+	return downstreamclient.UpstreamClusterNameLabelValue(upstreamClusterName)
 }
 
 // hostnameAncestors returns every domain strictly above a hostname, nearest

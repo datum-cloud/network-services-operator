@@ -413,6 +413,7 @@ func controllerRegistrations(
 			MaxExposedPorts:        serverConfig.NetworkLoadBalancer.MaxExposedPorts,
 			SharedAddressListeners: serverConfig.NetworkLoadBalancer.SharedAddressListeners,
 			UDPPortRanges:          serverConfig.NetworkLoadBalancer.UDPPortRanges,
+			IPv4VIPs:               serverConfig.NetworkLoadBalancer.IPv4VIPs,
 		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 

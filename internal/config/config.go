@@ -207,17 +207,33 @@ type NetworkPresenceConfig struct {
 	//
 	// Defaults to 24 hours. Zero means the default.
 	UnclaimedGracePeriod metav1.Duration `json:"unclaimedGracePeriod,omitempty"`
+
+	// ResyncPeriod is how often a network presence is reconciled again after it
+	// has settled, so that an edit to a network reaches every location already
+	// carrying it. Edits normally arrive through an event, but that event is
+	// dropped when cluster sharding runs the controller that sees it in a
+	// different replica from the one that applies it, and the resync is then
+	// the only way the edit lands.
+	//
+	// Defaults to 1 minute. Zero means the default.
+	ResyncPeriod metav1.Duration `json:"resyncPeriod,omitempty"`
 }
 
 func SetDefaults_NetworkPresenceConfig(obj *NetworkPresenceConfig) {
 	if obj.UnclaimedGracePeriod.Duration == 0 {
 		obj.UnclaimedGracePeriod = metav1.Duration{Duration: 24 * time.Hour}
 	}
+	if obj.ResyncPeriod.Duration == 0 {
+		obj.ResyncPeriod = metav1.Duration{Duration: time.Minute}
+	}
 }
 
 func (c *NetworkPresenceConfig) validate() error {
 	if c.UnclaimedGracePeriod.Duration < 0 {
 		return errors.New("unclaimedGracePeriod must not be negative")
+	}
+	if c.ResyncPeriod.Duration < 0 {
+		return errors.New("resyncPeriod must not be negative")
 	}
 	return nil
 }
@@ -385,6 +401,12 @@ type IPAMClasses struct {
 	// balancer VIPs. Its backing class must share one platform-wide pool with
 	// uniqueWithin unset, including when projects use source classes.
 	PublicIPv6 string `json:"publicIPv6,omitempty"`
+
+	// PublicIPv4 is the address class used for per-location public IPv4 load
+	// balancer VIPs. Unset, load balancers cannot request IPv4 addresses. Like
+	// PublicIPv6, its backing class must share one platform-wide pool with
+	// uniqueWithin unset.
+	PublicIPv4 string `json:"publicIPv4,omitempty"`
 
 	// Network is the class that hands out the range a network is addressed
 	// from. Unset, no range is claimed and a network is reconciled with no
@@ -799,6 +821,26 @@ type DownstreamResourceManagementConfig struct {
 	// downstream resources. When not provided, the operator will use the
 	// in-cluster config.
 	KubeconfigPath string `json:"kubeconfigPath"`
+
+	// +default="Disabled"
+	EventOwnership EventOwnershipMode `json:"eventOwnership,omitempty"`
+}
+
+type EventOwnershipMode string
+
+const (
+	EventOwnershipDisabled EventOwnershipMode = "Disabled"
+	EventOwnershipShadow   EventOwnershipMode = "Shadow"
+	EventOwnershipEnforce  EventOwnershipMode = "Enforce"
+)
+
+func (c *DownstreamResourceManagementConfig) validate() error {
+	switch c.EventOwnership {
+	case "", EventOwnershipDisabled, EventOwnershipShadow, EventOwnershipEnforce:
+		return nil
+	}
+	return fmt.Errorf("eventOwnership must be one of %q, %q or %q, got %q",
+		EventOwnershipDisabled, EventOwnershipShadow, EventOwnershipEnforce, c.EventOwnership)
 }
 
 func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) {
@@ -1878,6 +1920,9 @@ func (c *NetworkServicesOperator) Validate() error {
 	}
 	if err := c.NetworkEgress.validate(); err != nil {
 		return fmt.Errorf("networkEgress: %w", err)
+	}
+	if err := c.DownstreamResourceManagement.validate(); err != nil {
+		return fmt.Errorf("downstreamResourceManagement: %w", err)
 	}
 	return nil
 }

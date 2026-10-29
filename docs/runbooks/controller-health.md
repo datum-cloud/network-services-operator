@@ -19,19 +19,25 @@ Prometheus, not only by this operator. A firing alert may therefore name a
 controller belonging to another component — read the `namespace` label before
 assuming the problem is in NSO.
 
+An alert carries the `service` and `team` that own its deployment when the
+platform's owner map, `deployment:datum_service:info`, names that deployment.
+An alert without them belongs to a deployment the map does not name, or to a
+pod that no Deployment owns.
+
 ## Alert timing
 
-Both alerts evaluate a 30-minute rate window and hold with `keep_firing_for: 30m`.
-Two consequences while you are working an incident:
+Both alerts read the lowest 5-minute error ratio over the last 15 minutes, for a
+busy controller: one that reconciled in every 5-minute slice of those 15 minutes
+and more than 0.005 times a second over 30 minutes. They hold with
+`keep_firing_for: 30m`. Two consequences while you are working an incident:
 
 - **A fix does not clear the page immediately.** The alert keeps firing for up to
   30 minutes after reconciles start succeeding again. A still-firing alert shortly
   after a fix is expected and is not evidence the fix failed — confirm recovery
   from the error ratio itself, not from the alert state.
-- **A new failure takes longer to page.** A controller that was healthy and then
-  fails outright reaches the critical threshold in roughly 26 minutes rather than
-  16. The wide window is what stops a low-volume controller flapping; detection
-  latency is the price.
+- **A new failure takes about 25 minutes to page**: 15 minutes for every slice to
+  pass the threshold, then the 10-minute `for`. A burst shorter than a slice, such
+  as an API server roll, pages nothing.
 
 ## Shared diagnosis
 
@@ -78,13 +84,16 @@ Common error classes:
 ## ControllerReconcileErrorRatioHigh
 
 **Meaning (warning).** More than 20% of the named controller's reconcile
-attempts are returning errors, sustained for 15 minutes. The reconciler is
-struggling to write its objects and some intent is not reaching its target.
+attempts fail in every 5-minute slice of 15 minutes, sustained for 15 minutes
+more. The reconciler is struggling to write its objects and some intent is not
+reaching its target.
 
-This tier has no minimum error-rate floor. A sparse controller failing all of
-a tiny workload — a few permanently-failing objects and nothing else in its
-queue — fires here at a 100% ratio and latches, rather than escalating to the
-critical tier (see below).
+**A sparse controller fires neither tier, even when every reconcile fails — by
+design.** The volume floor keeps a handful of reconciles from paging. Such a
+controller's objects show the failure sooner in their own conditions (not
+Ready), its team gets `ControllerReconcileErrorFloor` once its errors hold for a
+day, and an orphan among them is covered under
+[Shared diagnosis](#shared-diagnosis).
 
 **Impact.** Whatever the controller manages is not receiving updates. The last
 successfully written state continues to run.
@@ -101,19 +110,10 @@ writes succeed again, though the alert itself holds for up to 30 minutes longer
 ## ControllerReconcileErrorRatioCritical
 
 **Meaning (critical).** More than 50% of the named controller's reconcile
-attempts are failing *and* its error rate exceeds roughly one error per minute,
-both over the 30-minute window and sustained for 10 minutes. The reconciler has
-effectively stopped applying changes to a workload large enough to page for.
-
-**A sparse, permanently-failing controller does not reach this tier — by
-design.** A controller retrying a handful of orphaned objects at
-controller-runtime's capped backoff pins its ratio at 100% but stays far below
-the error-rate floor, so it fires `ControllerReconcileErrorRatioHigh` and
-latches there instead of paging on-call
-([datum-cloud/compute#194](https://github.com/datum-cloud/compute/issues/194)
-is the canonical case). Treat a latched warning with a ~100% ratio and a tiny
-error rate as likely orphaned data — see the orphan guidance under
-[Shared diagnosis](#shared-diagnosis).
+attempts fail in every 5-minute slice of 15 minutes, sustained for 10 minutes
+more. The reconciler has effectively stopped applying changes to a workload large
+enough to page for. A sparse controller does not reach this tier: see
+[ControllerReconcileErrorRatioHigh](#controllerreconcileerrorratiohigh).
 
 **Impact.** Treat as an active outage for anything this controller programs. No
 updates are being applied; consumers see whatever was in place before the errors
@@ -136,3 +136,25 @@ API server or permissions change caused a broad failure, roll it back and verify
 the controller regains a healthy reconcile ratio. Judge recovery by the ratio,
 not the alert state — the alert holds for up to 30 minutes after the ratio
 recovers (see [Alert timing](#alert-timing)).
+
+## ControllerReconcileErrorFloor
+
+**Meaning (warning, to the owning team; never a page).** The named controller
+has returned reconcile errors in each of the last 24 hours. A floor that holds
+that long is almost always one of two patterns in the controller, each returned
+as a plain error that controller-runtime retries for ever:
+
+- **A failure no retry can fix**, such as input that can never succeed or an
+  object a person must act on. The fix: set a condition that names the case and
+  return `reconcile.TerminalError(err)`, which is logged and counted once and not
+  retried.
+- **A wait for something else**, such as another object becoming ready. The fix:
+  set a condition, watch what the controller waits for (or return `RequeueAfter`
+  a poll interval), and return no error.
+
+**Diagnose.** Group the controller's `Reconciler error` lines (see
+[Shared diagnosis](#shared-diagnosis)): a handful of objects failing the same way
+is one of the patterns above, and an orphan is covered there too.
+
+**Remediate.** Fix the controller, or the data when the object is wrong, so the
+floor goes to zero. The warning resolves at the first hour without an error.

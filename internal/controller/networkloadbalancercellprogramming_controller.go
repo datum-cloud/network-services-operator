@@ -39,6 +39,8 @@ const (
 	nlbProgrammingRetry              = 30 * time.Second
 )
 
+var nlbPartialBackendReasons = map[string]bool{"BackendsUnhealthy": true, "BackendsUnresolved": true}
+
 type NetworkLoadBalancerCellProgrammingReconciler struct {
 	HubCluster             cluster.Cluster
 	Client                 client.Client
@@ -151,9 +153,22 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) reportServed(
 	intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
 	service *networkv1alpha1.NetworkService,
 ) error {
-	programmed := gatewayServiceCondition(service, "Ready")
+	programmed := servedProgrammedCondition(service)
 	announced := gatewayServiceCondition(service, "Advertised")
 	return r.reportStatus(ctx, intent, programmed, announced)
+}
+
+func servedProgrammedCondition(service *networkv1alpha1.NetworkService) metav1.Condition {
+	ready := gatewayServiceCondition(service, "Ready")
+	if ready.Status != metav1.ConditionFalse || !nlbPartialBackendReasons[ready.Reason] {
+		return ready
+	}
+	loaded := gatewayServiceCondition(service, "Programmed")
+	backends := gatewayServiceCondition(service, "BackendsReady")
+	if loaded.Status == metav1.ConditionTrue && backends.Status == metav1.ConditionFalse && nlbPartialBackendReasons[backends.Reason] {
+		return metav1.Condition{Status: metav1.ConditionTrue, Reason: backends.Reason, Message: backends.Message}
+	}
+	return ready
 }
 
 func (r *NetworkLoadBalancerCellProgrammingReconciler) reportNotServed(
@@ -346,12 +361,13 @@ func desiredNetworkLoadBalancerService(
 	service := &networkv1alpha1.NetworkService{
 		ObjectMeta: metav1.ObjectMeta{Namespace: intent.Namespace, Name: intent.Name},
 		Spec: networkv1alpha1.NetworkServiceSpec{
-			VPCRef:       vpc,
-			VIPAddresses: []string{intent.Spec.VIP},
-			Protocol:     protocol,
-			Port:         frontend.Start,
-			AddressGroup: galacticAddressGroup(intent.Spec.AddressGroup),
-			BackendPort:  port,
+			VPCRef:          vpc,
+			VIPAddresses:    []string{intent.Spec.VIP},
+			Protocol:        protocol,
+			Port:            frontend.Start,
+			AddressGroup:    galacticAddressGroup(intent.Spec.AddressGroup),
+			BackendPort:     port,
+			SessionAffinity: networkv1alpha1.NetworkServiceSessionAffinityNone,
 			HealthCheck: &networkv1alpha1.NetworkServiceHealthCheck{
 				FailurePolicy: networkv1alpha1.NetworkServiceHealthFailClosed, Port: probe.Port, IntervalSeconds: 5, TimeoutSeconds: 2, HealthyThreshold: 2, UnhealthyThreshold: 1,
 			},

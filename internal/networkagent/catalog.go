@@ -517,8 +517,43 @@ func interfaceProgress(kind string, allocated, prepared, programmed string) []Re
 	}
 }
 
+func internetAccess(kind string) []ReasonInfo {
+	condition := networkingv1alpha.NetworkInterfaceInternetEgressReady
+	return []ReasonInfo{
+		entry(kind, condition, networkingv1alpha.NetworkInterfaceInternetEgressReasonEnabled,
+			healthy("This instance can reach the internet, as its network allows.")),
+		entry(kind, condition, networkingv1alpha.NetworkInterfaceInternetEgressReasonDisabled,
+			healthy("Internet access is turned off for this network, and this instance's internet traffic is "+
+				"blocked. It still reaches other instances on the network. Traffic through an external "+
+				"address is not affected, so an instance with one can still reach the internet through it.")),
+		entry(kind, condition, networkingv1alpha.NetworkInterfaceInternetEgressReasonNotEnforced, ReasonInfo{
+			Actionability: ActionabilityInformational,
+			Scope:         ScopeInstance,
+			Explanation: "Internet access is turned off for this network, but this location does not block " +
+				"internet traffic yet, so this instance can still reach the internet.",
+		}),
+		entry(kind, condition, networkingv1alpha.NetworkInterfaceInternetEgressReasonPending, ReasonInfo{
+			Actionability:    ActionabilityTransient,
+			Scope:            ScopeInstance,
+			Explanation:      "The network's internet access setting has not reached this instance yet.",
+			Remediation:      remediationWait,
+			Skill:            SkillInterfaceTriage,
+			ExpectedDuration: windowDataPlane,
+		}),
+		entry(kind, condition, networkingv1alpha.NetworkInterfaceInternetEgressReasonFailed, ReasonInfo{
+			Actionability: ActionabilityPlatform,
+			Scope:         ScopeInstance,
+			Explanation:   "The platform could not apply the network's internet access setting to this instance.",
+			Remediation:   remediationEscalate,
+			Skill:         SkillInterfaceTriage,
+		}),
+	}
+}
+
 var interfaceCatalog = slices.Concat(
 	claimRefusals(),
+	internetAccess(KindNetworkInterface),
+	internetAccess(KindNetworkInterfaceClaim),
 	interfaceProgress(KindNetworkInterfaceClaim, networkingv1alpha.NetworkInterfaceClaimAllocated,
 		networkingv1alpha.NetworkInterfaceClaimPrepared, networkingv1alpha.NetworkInterfaceClaimProgrammed),
 	interfaceProgress(KindNetworkInterface, networkingv1alpha.NetworkInterfaceAllocated,

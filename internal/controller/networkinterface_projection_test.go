@@ -19,13 +19,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/recorder"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -54,8 +54,8 @@ func (c *planeCluster) GetFieldIndexer() client.FieldIndexer { return nil }
 func (c *planeCluster) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (c *planeCluster) GetEventRecorder(string) events.EventRecorder { return nil }
-func (c *planeCluster) GetRESTMapper() meta.RESTMapper               { return nil }
+func (c *planeCluster) GetEventRecorder(string) recorder.EventRecorder { return nil }
+func (c *planeCluster) GetRESTMapper() meta.RESTMapper                 { return nil }
 func (c *planeCluster) GetAPIReader() client.Reader {
 	if c.reader != nil {
 		return c.reader
@@ -496,6 +496,33 @@ func TestHolderAvailableReachesTheProjectCopy(t *testing.T) {
 	copied, found = v.projectCopy()
 	require.True(t, found)
 	require.False(t, meta.IsStatusConditionTrue(copied.Status.Conditions, networkingv1alpha.NetworkInterfaceHolderAvailable))
+}
+
+// TestEgressIntentReachesTheProjectControlPlane asserts the copy a consumer
+// reads carries the egress intent beside the address it is reported against,
+// and that the copy stops changing once it has it. The schema defaults the
+// field on the copy, so a projection that dropped it would differ from its
+// source on every pass and rewrite the copy forever.
+func TestEgressIntentReachesTheProjectControlPlane(t *testing.T) {
+	v := newVisibility(t)
+	v.interfaceOnCell()
+
+	v.publish()
+	v.handToProject()
+
+	copied, found := v.projectCopy()
+	require.True(t, found)
+	require.NotNil(t, copied.Spec.Egress)
+	require.NotNil(t, copied.Spec.Egress.Internet)
+	require.Equal(t,
+		networkingv1alpha.NetworkInterfaceInternetEgressInherit,
+		copied.Spec.Egress.Internet.Mode)
+
+	before := copied.ResourceVersion
+	v.handToProject()
+	copied, _ = v.projectCopy()
+	require.Equal(t, before, copied.ResourceVersion,
+		"a copy that already carries the intent must not be rewritten")
 }
 
 func TestEditingACopyDoesNotSurvive(t *testing.T) {

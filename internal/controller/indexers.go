@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -112,4 +115,38 @@ func AddDNSZoneDomainNameIndexer(ctx context.Context, mgr mcmanager.Manager) err
 	}
 
 	return nil
+}
+
+const httpRouteEndpointSliceBackendIndex = "httpRouteEndpointSliceBackendIndex"
+
+func addHTTPRouteIndexers(ctx context.Context, mgr mcmanager.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &gatewayv1.HTTPRoute{}, httpRouteEndpointSliceBackendIndex, httpRouteEndpointSliceBackendIndexFunc); err != nil {
+		return fmt.Errorf("failed to add http route indexer %q: %w", httpRouteEndpointSliceBackendIndex, err)
+	}
+
+	return nil
+}
+
+func httpRouteEndpointSliceBackendIndexFunc(o client.Object) []string {
+	route, ok := o.(*gatewayv1.HTTPRoute)
+	if !ok {
+		return nil
+	}
+
+	keys := sets.New[string]()
+	for _, rule := range route.Spec.Rules {
+		for _, backendRef := range rule.BackendRefs {
+			if ptr.Deref(backendRef.Kind, "") != KindEndpointSlice {
+				continue
+			}
+			namespace := string(ptr.Deref(backendRef.Namespace, gatewayv1.Namespace(route.Namespace)))
+			keys.Insert(endpointSliceBackendIndexKey(namespace, string(backendRef.Name)))
+		}
+	}
+
+	return sets.List(keys)
+}
+
+func endpointSliceBackendIndexKey(namespace, name string) string {
+	return namespace + "/" + name
 }

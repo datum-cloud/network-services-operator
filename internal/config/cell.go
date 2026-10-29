@@ -93,6 +93,16 @@ type GalacticCellConfig struct {
 	// platform producers such as internal DNS resolvers, so only platform
 	// namespaces belong here.
 	AttachmentLabelNamespaces []string `json:"attachmentLabelNamespaces,omitempty"`
+
+	// TrafficPolicyEnforced states that every node in this cell runs Galactic
+	// traffic policy in enforce mode, so the policy written for an interface
+	// actually drops what it denies. Galactic reports a policy as applied in
+	// every mode, so nothing in the binding says whether it is enforced.
+	//
+	// While false, an interface on a network with internet access turned off
+	// reports that the location does not block it yet, rather than reporting
+	// a network as private when nothing is blocking.
+	TrafficPolicyEnforced bool `json:"trafficPolicyEnforced,omitempty"`
 }
 
 // Validate reports whether the cell configuration can serve a cell.

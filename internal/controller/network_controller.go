@@ -45,6 +45,10 @@ type NetworkReconciler struct {
 	// addressed from. Empty means the same as a nil IPAM: nothing is claimed.
 	PrefixClass string
 
+	// DefaultInternetEgressMode is stamped onto a network that has no internet
+	// access mode, which is every network created before the field existed.
+	DefaultInternetEgressMode networkingv1alpha.NetworkInternetEgressMode
+
 	mgr        mcmanager.Manager
 	finalizers finalizer.Finalizers
 }
@@ -130,6 +134,10 @@ func (r *NetworkReconciler) reconcileNetwork(
 		return ctrl.Result{}, nil
 	}
 
+	if stamped, err := r.stampInternetEgressMode(ctx, cl, network); err != nil || stamped {
+		return ctrl.Result{}, err
+	}
+
 	if !slices.Contains(network.Spec.IPFamilies, networkingv1alpha.IPv6Protocol) {
 		return ctrl.Result{}, r.reportIPv6Required(ctx, cl, network)
 	}
@@ -188,6 +196,41 @@ func terminatingMessage(networkContexts []networkingv1alpha.NetworkContext) stri
 		return "The network is being deleted"
 	}
 	return "The network is being deleted and is " + strings.Join(waits, "; ")
+}
+
+// stampInternetEgressMode writes the platform default into a network that has
+// no internet access mode, so it keeps the access it had when the platform
+// default later changes. A mode that is already set is never touched, and the
+// patch carries the resource version it was computed from, so a mode a
+// consumer writes concurrently wins.
+func (r *NetworkReconciler) stampInternetEgressMode(
+	ctx context.Context,
+	cl client.Client,
+	network *networkingv1alpha.Network,
+) (bool, error) {
+	if r.DefaultInternetEgressMode == "" ||
+		(network.Spec.Egress != nil && network.Spec.Egress.Internet != nil && network.Spec.Egress.Internet.Mode != "") {
+		return false, nil
+	}
+
+	original := network.DeepCopy()
+	if network.Spec.Egress == nil {
+		network.Spec.Egress = &networkingv1alpha.NetworkEgress{}
+	}
+	if network.Spec.Egress.Internet == nil {
+		network.Spec.Egress.Internet = &networkingv1alpha.NetworkInternetEgress{}
+	}
+	network.Spec.Egress.Internet.Mode = r.DefaultInternetEgressMode
+
+	if err := cl.Patch(ctx, network, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{})); err != nil {
+		if apierrors.IsConflict(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("failed stamping internet access mode: %w", err)
+	}
+	log.FromContext(ctx).Info("stamped network with the platform internet access mode",
+		"mode", r.DefaultInternetEgressMode)
+	return true, nil
 }
 
 // reportIPv6Required refuses to call a network ready that nothing can run on.

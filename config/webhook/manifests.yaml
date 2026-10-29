@@ -50,6 +50,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-networking-datumapis-com-v1alpha-network
+  failurePolicy: Fail
+  name: mnetwork-v1alpha.kb.io
+  rules:
+  - apiGroups:
+    - networking.datumapis.com
+    apiVersions:
+    - v1alpha
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - networks
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-networking-datumapis-com-v1alpha-trafficprotectionpolicy
   failurePolicy: Fail
   name: mtrafficprotectionpolicy-v1alpha.kb.io

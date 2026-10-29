@@ -768,6 +768,7 @@ func controllerRegistrations(
 				Projects:             controller.NewProjectClusterResolver(mgr),
 				Events:               presenceEvents,
 				UnclaimedGracePeriod: serverConfig.NetworkPresence.UnclaimedGracePeriod.Duration,
+				ResyncPeriod:         serverConfig.NetworkPresence.ResyncPeriod.Duration,
 
 				DefaultInternetEgressMode: serverConfig.NetworkEgress.DefaultInternetMode,
 			}).SetupWithManager(deps.federationManager)

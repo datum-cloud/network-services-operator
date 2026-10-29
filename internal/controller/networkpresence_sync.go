@@ -158,8 +158,8 @@ func (r *NetworkPresenceSyncReconciler) hubNamespaces(
 // be: the sharded managers run every replica, while the presence controller runs
 // on the singleton manager in whichever replica holds its lease. Blocking would
 // stall this controller's workers behind a reader that is never going to arrive.
-// Dropping leaves the presence to the refusal retry instead, which is worse but
-// bounded. See the note on SetupWithManager.
+// Dropping leaves the presence to the presence controller's periodic resync
+// instead, which is slower but bounded. See the note on SetupWithManager.
 func (r *NetworkPresenceSyncReconciler) enqueue(ctx context.Context, namespace, name string) {
 	presence := &networkingv1alpha.NetworkContext{}
 	presence.Namespace = namespace
@@ -224,11 +224,11 @@ func hubNamespaceProjectIndexFunc(obj client.Object) []string {
 //
 // The cost of the split is that producer and consumer are only in the same
 // process while cluster sharding is off, which is the default and is how every
-// configuration in this repository runs. Turning sharding on would shard this
-// controller across replicas while the presence controller stayed in one of
-// them, and the events raised in the others would be dropped rather than
-// delivered. That needs a trigger that goes through the API server rather than a
-// channel, and it is not solved here.
+// configuration in this repository runs. Turning sharding on shards this
+// controller across replicas while the presence controller stays in one of
+// them, and the events raised in the others are dropped rather than delivered.
+// The presence controller's periodic resync is what bounds how long such an
+// edit takes to land; this channel only makes it prompt where it can.
 func (r *NetworkPresenceSyncReconciler) SetupWithManager(mgr mcmanager.Manager, hub manager.Manager) error {
 	if r.Events == nil {
 		return errors.New("a network presence event channel is required")

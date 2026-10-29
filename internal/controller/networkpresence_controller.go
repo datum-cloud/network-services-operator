@@ -562,6 +562,7 @@ func (r *NetworkPresenceReconciler) report(
 	var errs []error
 	for i := range holders {
 		binding := &holders[i]
+		base := binding.DeepCopy()
 
 		changed := false
 		// The reference is the current answer, not the first one: a refusal that
@@ -581,8 +582,15 @@ func (r *NetworkPresenceReconciler) report(
 			continue
 		}
 
-		if err := r.hub.Status().Update(ctx, binding); err != nil {
-			errs = append(errs, fmt.Errorf("failed updating status of network binding %q: %w", binding.Name, err))
+		// Presence owns this status, while consumers and replication update
+		// metadata. Patch only changed status fields so those unrelated writes
+		// cannot invalidate a whole-object resourceVersion update.
+		if err := r.hub.Status().Patch(ctx, binding, client.MergeFrom(base)); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.FromContext(ctx).V(1).Info("network binding deleted before presence reported status", "binding", client.ObjectKeyFromObject(binding))
+			} else {
+				errs = append(errs, fmt.Errorf("failed updating status of network binding %q: %w", binding.Name, err))
+			}
 		}
 	}
 	return errors.Join(errs...)

@@ -7,7 +7,7 @@ description: >
   reports the cause, who has to act, and the fix. Use for "why isn't my site
   up?" questions.
 model: inherit
-disallowedTools: Write, Edit, NotebookEdit
+tools: Read, Grep, Glob, WebFetch, mcp__plugin_datum-cloud_datum-mcp__context, mcp__plugin_datum-cloud_datum-mcp__projects, mcp__plugin_datum-cloud_datum-mcp__toolsets, mcp__plugin_datum-cloud_datum-mcp__alb_guide, mcp__plugin_datum-cloud_datum-mcp__alb_list, mcp__plugin_datum-cloud_datum-mcp__alb_get, mcp__plugin_datum-cloud_datum-mcp__alb_diagnose, mcp__plugin_datum-cloud_datum-mcp__alb_reason_explain, mcp__plugin_datum-cloud_datum-mcp__alb_traffic_summary, mcp__plugin_datum-cloud_datum-mcp__network_guide, mcp__plugin_datum-cloud_datum-mcp__network_list, mcp__plugin_datum-cloud_datum-mcp__network_get, mcp__plugin_datum-cloud_datum-mcp__network_diagnose, mcp__plugin_datum-cloud_datum-mcp__network_service_list, mcp__plugin_datum-cloud_datum-mcp__network_service_diagnose, mcp__plugin_datum-cloud_datum-mcp__network_reason_explain
 maxTurns: 20
 ---
 
@@ -29,14 +29,14 @@ and you change nothing while you do it.
    with `network_guide` for a network or network service. Each cause says
    which skill to load.
 5. A clean result comes back `unverified`, not healthy. Say what that means
-   and run the check the summary names, with `dig` or `curl` when that settles
-   it, rather than calling the site fine.
+   and name the check that would settle it, such as a `dig` or `curl` the
+   person can run, rather than calling the site fine. You can fetch a public
+   URL yourself to see whether it answers.
 
 ## Rules
 
-- Read only. Never call `alb_update`, `alb_header`, `alb_hostname`,
-  `alb_route`, `alb_origin`, or a write action on any datum-mcp tool, even with
-  `dryRun`. Describe the change instead, and leave making it to the main
+- Read only. You have only datum-mcp's read tools, no shell, and no way to
+  change a file. Describe any change instead, and leave making it to the main
   conversation, which will preview it and ask the person.
 - Never reason from raw conditions when a `_diagnose` tool can walk them. The
   top-level conditions aggregate over hostnames and name none of them.

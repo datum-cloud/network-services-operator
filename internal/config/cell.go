@@ -76,6 +76,11 @@ type CellControllerManager struct {
 
 type NetworkLoadBalancerCellConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
+
+	// IPv4VIPs serves IPv4 load balancer addresses from this cell. Turn it on
+	// only once every gateway in the cell has Galactic's IPv4 VIPs enabled and
+	// the cell announces the range its IPv4 addresses come from.
+	IPv4VIPs bool `json:"ipv4VIPs,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -115,6 +120,9 @@ func (c *CellControllerManager) Validate() error {
 	}
 	if c.NetworkLoadBalancer.Enabled && !c.Galactic.Enabled {
 		return fmt.Errorf("networkLoadBalancer.enabled needs galactic.enabled")
+	}
+	if c.NetworkLoadBalancer.IPv4VIPs && !c.NetworkLoadBalancer.Enabled {
+		return fmt.Errorf("networkLoadBalancer.ipv4VIPs needs networkLoadBalancer.enabled")
 	}
 	if c.Galactic.Enabled {
 		switch c.Galactic.AttachmentMode {

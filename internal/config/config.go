@@ -399,6 +399,12 @@ type IPAMClasses struct {
 	// uniqueWithin unset, including when projects use source classes.
 	PublicIPv6 string `json:"publicIPv6,omitempty"`
 
+	// PublicIPv4 is the address class used for per-location public IPv4 load
+	// balancer VIPs. Unset, load balancers cannot request IPv4 addresses. Like
+	// PublicIPv6, its backing class must share one platform-wide pool with
+	// uniqueWithin unset.
+	PublicIPv4 string `json:"publicIPv4,omitempty"`
+
 	// Network is the class that hands out the range a network is addressed
 	// from. Unset, no range is claimed and a network is reconciled with no
 	// address space, the same as an unset IPAM connection.

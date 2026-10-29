@@ -203,9 +203,7 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 					continue
 				}
 				for _, allocation := range endpointStatus.Addresses {
-					// The public ingress path currently supports IPv6 only.
-					if !slices.Contains(request.Families, allocation.Family) ||
-						allocation.Family != networkingv1alpha.IPv6Protocol || allocation.Value == "" ||
+					if !slices.Contains(request.Families, allocation.Family) || allocation.Value == "" ||
 						allocation.ClaimRef == nil || allocation.ClaimRef.Name == "" {
 						continue
 					}
@@ -214,7 +212,8 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 						continue
 					}
 					vip, parseErr := netip.ParseAddr(allocation.Value)
-					if parseErr != nil || !vip.Is6() || vip.Is4In6() || vip.Zone() != "" || !vip.IsGlobalUnicast() ||
+					if parseErr != nil || vip.Is4() != (allocation.Family == networkingv1alpha.IPv4Protocol) ||
+						vip.Is4In6() || vip.Zone() != "" || !vip.IsGlobalUnicast() ||
 						endpointStatus.Location == "" || sharedVIPs[vip.String()] {
 						continue
 					}
@@ -273,7 +272,9 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 
 // Status can temporarily contain two distinct VIP allocations for one
 // address request during replacement. Withdraw all conflicting intents
-// until Galactic can reuse backends across VIPs.
+// until Galactic can reuse backends across VIPs of one family. A backend
+// answers for one VIP of each family, so an IPv4 and an IPv6 VIP never
+// conflict.
 func withdrawConflictingCellIntents(desired []networkingv1alpha.NetworkLoadBalancerCellIntent) {
 	claims := make(map[string]int)
 	for _, intent := range desired {
@@ -301,8 +302,8 @@ func withdrawConflictingCellIntents(desired []networkingv1alpha.NetworkLoadBalan
 func cellIntentBackendClaimKey(intent *networkingv1alpha.NetworkLoadBalancerCellIntent,
 	backend *networkingv1alpha.NetworkLoadBalancerCellIntentBackend,
 ) string {
-	return fmt.Sprintf("%s/%s/%s/%s/%d", intent.Spec.NetworkName, intent.Spec.Location,
-		intent.Spec.Protocol, backend.Address, backend.Port)
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%d", intent.Spec.NetworkName, intent.Spec.Location,
+		intent.Spec.VIPFamily, intent.Spec.Protocol, backend.Address, backend.Port)
 }
 
 func networkLoadBalancerCellIntentName(spec networkingv1alpha.NetworkLoadBalancerCellIntentSpec) string {

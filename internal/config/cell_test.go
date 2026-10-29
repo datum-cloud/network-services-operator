@@ -89,6 +89,13 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			},
 			wantSub: "galactic.attachmentMode",
 		},
+		{
+			name: "ipv4 load balancer addresses without load balancers",
+			mutate: func(c *CellControllerManager) {
+				c.NetworkLoadBalancer.IPv4VIPs = true
+			},
+			wantSub: "networkLoadBalancer.ipv4VIPs needs networkLoadBalancer.enabled",
+		},
 	}
 
 	for _, tt := range tests {

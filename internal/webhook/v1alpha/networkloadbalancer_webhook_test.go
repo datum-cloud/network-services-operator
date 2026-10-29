@@ -18,12 +18,17 @@ func TestNetworkLoadBalancerCapabilityValidation(t *testing.T) {
 	lb.Spec.Listeners = []networkingv1alpha.NetworkLoadBalancerListener{{
 		Name: "game", Protocol: networkingv1alpha.NetworkLoadBalancerProtocolUDP, AddressRefs: []string{"regional"},
 	}}
+	validator := &NetworkLoadBalancerValidator{}
+	validateNetworkLoadBalancerCapabilities := validator.validateCapabilities
 	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb))
 	lb.Spec.Listeners[0].AddressRefs = []string{"regional", "second"}
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "multi-VIP serving")
 	lb.Spec.Listeners[0].AddressRefs = []string{"regional"}
 	lb.Spec.Exposure.Addresses[0].Families = append(lb.Spec.Exposure.Addresses[0].Families, networkingv1alpha.IPv4Protocol)
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "UnsupportedCapability")
+	validator.IPv4Enabled = true
+	require.NoError(t, validateNetworkLoadBalancerCapabilities(lb))
+	validator.IPv4Enabled = false
 	lb.Spec.Exposure.Addresses[0].Families = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
 	lb.Spec.Listeners[0].Protocol = networkingv1alpha.NetworkLoadBalancerProtocolTLS
 	require.ErrorContains(t, validateNetworkLoadBalancerCapabilities(lb), "proxy-capable")

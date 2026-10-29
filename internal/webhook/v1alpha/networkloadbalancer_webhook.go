@@ -18,31 +18,33 @@ import (
 
 // +kubebuilder:webhook:path=/validate-networking-datumapis-com-v1alpha-networkloadbalancer,mutating=false,failurePolicy=fail,sideEffects=None,groups=networking.datumapis.com,resources=networkloadbalancers,verbs=create;update,versions=v1alpha,name=vnetworkloadbalancer-v1alpha.kb.io,admissionReviewVersions=v1
 
-type NetworkLoadBalancerValidator struct{}
+type NetworkLoadBalancerValidator struct {
+	IPv4Enabled bool
+}
 
 var _ admission.Validator[*networkingv1alpha.NetworkLoadBalancer] = &NetworkLoadBalancerValidator{}
 
-func SetupNetworkLoadBalancerWebhookWithManager(mgr mcmanager.Manager) error {
+func SetupNetworkLoadBalancerWebhookWithManager(mgr mcmanager.Manager, ipv4Enabled bool) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &networkingv1alpha.NetworkLoadBalancer{}).
-		WithValidator(&NetworkLoadBalancerValidator{}).Complete()
+		WithValidator(&NetworkLoadBalancerValidator{IPv4Enabled: ipv4Enabled}).Complete()
 }
 
 func (v *NetworkLoadBalancerValidator) ValidateCreate(_ context.Context, lb *networkingv1alpha.NetworkLoadBalancer) (admission.Warnings, error) {
-	return nil, validateNetworkLoadBalancerCapabilities(lb)
+	return nil, v.validateCapabilities(lb)
 }
 
 func (v *NetworkLoadBalancerValidator) ValidateUpdate(_ context.Context, _, lb *networkingv1alpha.NetworkLoadBalancer) (admission.Warnings, error) {
-	return nil, validateNetworkLoadBalancerCapabilities(lb)
+	return nil, v.validateCapabilities(lb)
 }
 
 func (v *NetworkLoadBalancerValidator) ValidateDelete(context.Context, *networkingv1alpha.NetworkLoadBalancer) (admission.Warnings, error) {
 	return nil, nil
 }
 
-func validateNetworkLoadBalancerCapabilities(lb *networkingv1alpha.NetworkLoadBalancer) error {
+func (v *NetworkLoadBalancerValidator) validateCapabilities(lb *networkingv1alpha.NetworkLoadBalancer) error {
 	var errs field.ErrorList
 	for i, request := range lb.Spec.Exposure.Addresses {
-		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) {
+		if !v.IPv4Enabled && slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) {
 			errs = append(errs, field.Forbidden(field.NewPath("spec", "exposure", "addresses").Index(i).Child("families"),
 				"UnsupportedCapability: public IPv4 NLB ingress is unavailable"))
 		}

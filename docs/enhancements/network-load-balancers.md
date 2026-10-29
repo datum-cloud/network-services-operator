@@ -357,9 +357,9 @@ conditions remain on the load balancer and routes, not on every family address.
 A missing IPv4 allocation does not hide a
 working IPv6 address, but the request reports partial readiness until both
 are available. Galactic can serve IPv4 VIPs over IPv6 backends when its IPv4
-VIP feature is enabled. NSO may still begin with `families: [IPv6]`; a request
-containing IPv4 remains rejected until the serving cells have the required
-Galactic version, feature gate, bindings, and public IPv4 pool. The cell intent
+VIP feature is enabled. A request containing IPv4 is rejected until the
+platform names a public IPv4 address class, and a location serves IPv4 only
+once its cell turns IPv4 on. The cell intent
 carries the public VIP family and each backend address family separately. An
 allocation remains in status when a route or backend is unavailable; its
 announcement state changes instead.
@@ -411,12 +411,20 @@ and successful programming.
 Withdrawal completes before IPAM releases an address. A location reports
 IPv4 and IPv6 programming and announcement independently.
 
-NSO still needs a public IPv4 pool, family-aware cell intent, rollout of the
-Galactic IPv4 feature gate and backend bindings, and a capability signal from
-every serving gateway in a location. CI must exercise IPv4 TCP and UDP ingress
-to IPv6 backends and replies, backend health changes, and announcement
-withdrawal. Only then should admission accept `families` containing IPv4 and
-allow one address request to publish both families on a listener.
+In Datum's sites a backend's reply leaves its compute node directly toward
+the hosting provider, not back through an edge, so the provider must accept
+replies sourced from the site's announced prefixes on compute ports. This was
+confirmed for IPv4 and IPv6 in staging.
+
+IPv4 is enabled in two places. The platform names a public IPv4 address
+class, carved from each site's announced unicast IPv4 range; until it does,
+admission rejects `families` containing IPv4. Each cell then turns IPv4 on
+once every gateway in it has Galactic's IPv4 VIPs enabled; until it does, the
+location reports the IPv4 address as not served while the IPv6 address keeps
+serving. A location reports an IPv4 address announced only once every gateway
+that loaded the rule serves it. CI has no data-plane environment for this
+path yet, so IPv4 TCP and UDP ingress, health changes, and withdrawal are
+verified in staging before production.
 
 ### Backend Health
 
@@ -547,7 +555,7 @@ the broader field shapes:
 | More than one backend entry on a route, including entries with different resolved port numbers | Reject until the cell can program the complete set. Keep `backends` as a list of named-port references. | Galactic intent that represents every selected endpoint and its destination port, plus health and selection behavior. |
 | Reuse one backend address, port, and protocol in multiple forwarding rules of the same address family | Reject a conflicting attachment or report `BackendClaimConflict` if changing membership creates it later. | Galactic backend return-path support for multiple rules and VIPs on one socket. |
 | One address request shared by multiple listeners | Reject until announcements can be gated on every listener's readiness in the location. | Aggregate VIP readiness and coordinated advertisement. |
-| IPv4 in `families` | Reject where the public pool, backend bindings, or Galactic IPv4 feature gate is unavailable. | Capability reported by every serving cell in the location. |
+| IPv4 in `families` | Reject until the platform names a public IPv4 address class; a location whose cell has not turned IPv4 on reports the address as not served. | Available once both are set. |
 
 Validation returns the unsupported field and reason when a consumer submits
 an unsupported spec. A previously valid route that becomes unprogrammable
@@ -663,9 +671,8 @@ listener and backend port protocols to match; `HTTPProxy` must continue to
 reject UDP backends. Selected cells need a health probe runner, Galactic
 gateways, backend VIP bindings, consistent per-flow selection that survives
 gateway failover, and a way to report programming and announcement state.
-IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
-Galactic's existing IPv4 feature enabled with backend bindings, and a serving
-capability gate before API admission is enabled.
+IPv4 VIPs additionally need a public IPv4 address class and Galactic's IPv4
+feature enabled on every gateway in a serving cell.
 NSO needs a managed DNS zone and per-location A/AAAA record lifecycle tied to
 VIP allocation and announcement; hostname assignment must remain stable across
 IP replacement and temporary health loss.

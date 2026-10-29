@@ -409,6 +409,7 @@ func controllerRegistrations(
 		}
 		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
 			Location: serverConfig.Location,
+			IPv4VIPs: serverConfig.NetworkLoadBalancer.IPv4VIPs,
 		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 

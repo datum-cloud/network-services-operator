@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        plugin: [alb, network]
+        plugin: [alb, network, nlb]
     steps:
       - name: Mint a catalog token from the release bot app
         id: app-token

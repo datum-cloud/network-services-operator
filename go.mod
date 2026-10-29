@@ -27,7 +27,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.datum.net/datumctl v0.18.1
-	go.datum.net/galactic v0.7.3-0.20261026190205-a34ce1c36b46
+	go.datum.net/galactic v0.7.3-0.20261027185216-5eca1af399dd
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
 	go.miloapis.com/instrumentation v0.6.0
@@ -144,7 +144,7 @@ require (
 	github.com/envoyproxy/go-control-plane/ratelimit v0.1.1-0.20260409050421-3f47accd6e14 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
-	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
+	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect

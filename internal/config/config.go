@@ -132,6 +132,14 @@ type NetworkServicesOperator struct {
 type NetworkLoadBalancerConfig struct {
 	// DNS configures how each location's generated hostname is published.
 	DNS NetworkLoadBalancerDNSConfig `json:"dns,omitempty"`
+
+	Quota NetworkLoadBalancerQuotaConfig `json:"quota,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+type NetworkLoadBalancerQuotaConfig struct {
+	PublicIPv4 bool `json:"publicIPv4,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -18,5 +18,6 @@ resources:
   - httproutefilter-registration.yaml
   - networkloadbalancer-registration.yaml
   - networkloadbalancerroute-registration.yaml
+  - public-ipv4-address-registration.yaml
   - securitypolicy-registration.yaml
   - trafficprotectionpolicy-registration.yaml

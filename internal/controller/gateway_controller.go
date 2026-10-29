@@ -463,6 +463,9 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 			break
 		}
 	}
+	// Quota grants are not watched here. Retry a refused domain periodically
+	// so increasing quota recovers the listener without another spec change.
+	result.RequeueAfter = earliestRequeue(result.RequeueAfter, domainQuotaRequeue(hostnameRefusals))
 	result.RequeueAfter = earliestRequeue(result.RequeueAfter, certificateServiceRequeue, dnsAuthorityRecheck)
 
 	addresses := make([]gatewayv1.GatewayStatusAddress, 0, len(targetDomainHostnames))
@@ -1802,6 +1805,18 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 			}
 
 			if err := upstreamClient.Create(ctx, domain); client.IgnoreAlreadyExists(err) != nil {
+				if isDomainQuotaDenial(err) {
+					for hostname := range hostnames {
+						if domainCoversHostname(domainName, strings.TrimPrefix(hostname, "*.")) {
+							verifiedHostnames.Delete(hostname)
+							refusals[hostname] = hostnameRefusal{
+								reason:  domainQuotaExceededReason,
+								message: fmt.Sprintf("Cannot verify hostname %q because creating Domain %q exceeds the project's quota. Delete unused Domains or request a higher limit.", hostname, domainName),
+							}
+						}
+					}
+					continue
+				}
 				return nil, nil, fmt.Errorf("failed creating domain: %w", err)
 			}
 
@@ -1813,6 +1828,24 @@ func (r *GatewayReconciler) ensureHostnameVerification(
 	slices.Sort(verifiedHostnamesSlice)
 
 	return verifiedHostnamesSlice, refusals, nil
+}
+
+const domainQuotaExceededReason = "DomainQuotaExceeded"
+
+// Admission currently returns quota exhaustion as Forbidden with this message,
+// rather than a distinct status reason. Keep the match narrow so RBAC denials
+// and other admission failures remain controller errors.
+func isDomainQuotaDenial(err error) bool {
+	return apierrors.IsForbidden(err) && strings.Contains(err.Error(), "Insufficient quota resources.")
+}
+
+func domainQuotaRequeue(refusals map[string]hostnameRefusal) time.Duration {
+	for _, refusal := range refusals {
+		if refusal.reason == domainQuotaExceededReason {
+			return time.Minute
+		}
+	}
+	return 0
 }
 
 // gatewayCanonicalHostname returns the managed canonical hostname for a gateway.

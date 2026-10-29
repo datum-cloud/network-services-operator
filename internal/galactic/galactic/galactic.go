@@ -89,8 +89,12 @@ type MasterPlugin struct {
 	// file the hypervisor reads, rather than leaving it to be discovered from
 	// the node. Only the tap plugin reads it, and it is omitted when false so
 	// every conflist rendered until now is byte-identical.
-	DAN  bool  `json:"dan,omitempty"`
-	IPAM *IPAM `json:"ipam,omitempty"`
+	DAN bool `json:"dan,omitempty"`
+	// HostOnlyPorts are TCP ports the guest serves only to its own node. The tap
+	// plugin drops traffic to them unless it is addressed to the guest's
+	// link-local address, which only the node can reach.
+	HostOnlyPorts []uint16 `json:"hostOnlyPorts,omitempty"`
+	IPAM          *IPAM    `json:"ipam,omitempty"`
 }
 
 // BGPPlugin is the galactic-bgp stanza. It is never optional: the master plugin
@@ -120,8 +124,11 @@ type Address struct {
 // Conflist renders the conflist for one attachment. Addresses are the addresses
 // NSO already allocated; an empty list means the guest addresses itself and no
 // IPAM block is emitted. Set dan for a guest whose hypervisor is handed the
-// device rather than discovering it.
-func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool) NetConfList {
+// device rather than discovering it, and hostOnlyPorts for the ports a guest
+// serves only to its node.
+func Conflist(
+	name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool, hostOnlyPorts []uint16,
+) NetConfList {
 	master := MasterPlugin{
 		Type:          plugin,
 		VPC:           vpc,
@@ -129,6 +136,7 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Ad
 		Namespace:     SystemNamespace,
 		MTU:           mtu,
 		DAN:           dan,
+		HostOnlyPorts: hostOnlyPorts,
 	}
 	if len(addresses) > 0 {
 		master.IPAM = &IPAM{Type: PluginIPAM, Addresses: addresses}
@@ -144,8 +152,10 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Ad
 }
 
 // ConflistJSON renders the conflist as the string a NAD's spec.config holds.
-func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool) (string, error) {
-	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses, dan))
+func ConflistJSON(
+	name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool, hostOnlyPorts []uint16,
+) (string, error) {
+	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses, dan, hostOnlyPorts))
 	if err != nil {
 		return "", fmt.Errorf("marshal CNI conflist: %w", err)
 	}

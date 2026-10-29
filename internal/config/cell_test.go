@@ -90,6 +90,33 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			wantSub: "galactic.attachmentMode",
 		},
 		{
+			name: "hypervisor host-only ports",
+			mutate: func(c *CellControllerManager) {
+				c.Galactic.HypervisorHostOnlyPorts = []uint16{20000}
+			},
+		},
+		{
+			name: "zero host-only port",
+			mutate: func(c *CellControllerManager) {
+				c.Galactic.HypervisorHostOnlyPorts = []uint16{0}
+			},
+			wantSub: "galactic.hypervisorHostOnlyPorts: port 0",
+		},
+		{
+			name: "repeated host-only port",
+			mutate: func(c *CellControllerManager) {
+				c.Galactic.HypervisorHostOnlyPorts = []uint16{20000, 20000}
+			},
+			wantSub: "port 20000 is listed twice",
+		},
+		{
+			name: "too many host-only ports",
+			mutate: func(c *CellControllerManager) {
+				c.Galactic.HypervisorHostOnlyPorts = []uint16{1, 2, 3, 4, 5}
+			},
+			wantSub: "at most 4 ports",
+		},
+		{
 			name: "ipv4 load balancer addresses without load balancers",
 			mutate: func(c *CellControllerManager) {
 				c.NetworkLoadBalancer.IPv4VIPs = true

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -314,7 +315,7 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 		return nil, fmt.Errorf("list load balancer routes: %w", err)
 	}
 	selected := map[string]bool{}
-	attached := false
+listeners:
 	for _, listener := range lb.Spec.Listeners {
 		if !slices.Contains(listener.AddressRefs, addressName) {
 			continue
@@ -334,9 +335,9 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 		}
 		if winner == nil {
-			return nil, nil
+			continue
 		}
-		attached = true
+		listenerLocations := map[string]bool{}
 		for _, backend := range winner.Spec.Backends {
 			var service networkingv1alpha.NetworkService
 			key := client.ObjectKey{Namespace: winner.Namespace, Name: backend.NetworkService.Name}
@@ -345,7 +346,7 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 			if err := cl.Get(ctx, key, &service); err != nil {
 				if apierrors.IsNotFound(err) {
-					return nil, nil
+					continue listeners
 				}
 				return nil, fmt.Errorf("get backend NetworkService %s: %w", key, err)
 			}
@@ -357,21 +358,18 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			if err != nil {
 				return nil, err
 			}
-			locations := map[string]bool{}
 			for i := range members {
 				member := &members[i]
 				if member.Spec.Network.Name == lb.Spec.NetworkRef.Name {
 					if location := member.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]; location != "" {
-						locations[location] = true
+						listenerLocations[location] = true
 					}
 				}
 			}
-			for location := range locations {
-				selected[location] = true
-			}
 		}
+		maps.Copy(selected, listenerLocations)
 	}
-	if !attached {
+	if len(selected) == 0 {
 		return nil, nil
 	}
 	names := make([]string, 0, len(selected))

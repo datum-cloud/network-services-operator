@@ -148,7 +148,7 @@ func buildNetworkLoadBalancerCellIntents(ctx context.Context, cl client.Client, 
 			continue
 		}
 		listener := &parent.Spec.Listeners[listenerIndex]
-		if unsupportedRouteListenerCapability(route, &parent, listener) != "" || len(listener.AddressRefs) != 1 {
+		if unsupportedRouteListenerCapability(route, listener) != "" || len(listener.AddressRefs) != 1 {
 			continue
 		}
 		var network networkingv1alpha.Network

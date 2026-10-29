@@ -58,14 +58,6 @@ func (v *NetworkLoadBalancerValidator) validateCapabilities(lb *networkingv1alph
 		if listener.Protocol == networkingv1alpha.NetworkLoadBalancerProtocolTLS || listener.TLS != nil || listener.Hostname != "" {
 			errs = append(errs, field.Forbidden(path, "UnsupportedCapability: TLS listeners require a proxy-capable edge path"))
 		}
-		for _, addressName := range listener.AddressRefs {
-			if slices.ContainsFunc(lb.Spec.Listeners[:i], func(other networkingv1alpha.NetworkLoadBalancerListener) bool {
-				return slices.Contains(other.AddressRefs, addressName)
-			}) {
-				errs = append(errs, field.Forbidden(path.Child("addressRefs"),
-					"UnsupportedCapability: one address request cannot be shared by multiple listeners yet"))
-			}
-		}
 	}
 	if len(errs) != 0 {
 		return apierrors.NewInvalid(schema.GroupKind{Group: networkingv1alpha.GroupVersion.Group, Kind: "NetworkLoadBalancer"}, lb.Name, errs)

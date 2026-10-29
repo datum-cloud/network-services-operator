@@ -243,7 +243,11 @@ func reportedIntentCondition(intent *networkingv1alpha.NetworkLoadBalancerCellIn
 func combineIntentConditions(intents []*networkingv1alpha.NetworkLoadBalancerCellIntent, conditionType string) metav1.Condition {
 	conditions := make([]metav1.Condition, 0, len(intents))
 	for _, intent := range intents {
-		conditions = append(conditions, reportedIntentCondition(intent, conditionType))
+		condition := reportedIntentCondition(intent, conditionType)
+		if condition.Status != metav1.ConditionTrue && intent.Spec.Source.ListenerName != "" {
+			condition.Message = fmt.Sprintf("Listener %q: %s", intent.Spec.Source.ListenerName, condition.Message)
+		}
+		conditions = append(conditions, condition)
 	}
 	return combineConditions(conditions, conditionType)
 }

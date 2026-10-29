@@ -12,9 +12,11 @@ spec:
   # programmed. The `controller` label names the offending reconciler, and
   # `cluster`/`namespace`/`deployment` name where it is running.
   #
-  # Each alert selects one series that the next group records, so that an
-  # environment which wraps the alerts (an owner join, say) restates no
-  # threshold. A brief burst, such as an API server roll, stays under the
+  # Each alert selects one series that the next group records, and joins its
+  # owner from deployment:datum_service:info, the map the platform publishes:
+  # the first arm carries the map's `service` and `team`, the second fires a
+  # deployment the map does not name, without them. A pod that no Deployment
+  # owns has no `deployment` label, so it takes the second arm. A brief burst, such as an API server roll, stays under the
   # 15-minute minimum and pages nothing; `keep_firing_for` holds an alert
   # through brief dips under the threshold.
   - name: nso-controller-health
@@ -23,7 +25,10 @@ spec:
     # Fires when more than 20% of a controller's reconcile attempts fail in
     # every 5-minute slice of 15 minutes, sustained for 15 minutes more.
     - alert: ControllerReconcileErrorRatioHigh
-      expr: controller_runtime:reconcile_stalled:warning
+      expr: |
+        max without (datum_service) (label_replace(controller_runtime:reconcile_stalled:warning * on (cluster, namespace, deployment) group_left (datum_service, team) deployment:datum_service:info, "service", "$1", "datum_service", "(.*)"))
+        or
+        (controller_runtime:reconcile_stalled:warning unless on (cluster, namespace, deployment) deployment:datum_service:info)
       for: 15m
       keep_firing_for: 30m
       labels:
@@ -38,7 +43,10 @@ spec:
     # minutes more. At this rate the controller has effectively stopped
     # applying changes.
     - alert: ControllerReconcileErrorRatioCritical
-      expr: controller_runtime:reconcile_stalled:critical
+      expr: |
+        max without (datum_service) (label_replace(controller_runtime:reconcile_stalled:critical * on (cluster, namespace, deployment) group_left (datum_service, team) deployment:datum_service:info, "service", "$1", "datum_service", "(.*)"))
+        or
+        (controller_runtime:reconcile_stalled:critical unless on (cluster, namespace, deployment) deployment:datum_service:info)
       for: 10m
       keep_firing_for: 30m
       labels:
@@ -54,7 +62,10 @@ spec:
     # for ever. It warns the owning team and never pages; it is how a sparse
     # controller's steady failure is seen.
     - alert: ControllerReconcileErrorFloor
-      expr: controller_runtime:reconcile_error_floor:24h
+      expr: |
+        max without (datum_service) (label_replace(controller_runtime:reconcile_error_floor:24h * on (cluster, namespace, deployment) group_left (datum_service, team) deployment:datum_service:info, "service", "$1", "datum_service", "(.*)"))
+        or
+        (controller_runtime:reconcile_error_floor:24h unless on (cluster, namespace, deployment) deployment:datum_service:info)
       labels:
         severity: warning
       annotations:

@@ -19,6 +19,11 @@ Prometheus, not only by this operator. A firing alert may therefore name a
 controller belonging to another component — read the `namespace` label before
 assuming the problem is in NSO.
 
+An alert carries the `service` and `team` that own its deployment when the
+platform's owner map, `deployment:datum_service:info`, names that deployment.
+An alert without them belongs to a deployment the map does not name, or to a
+pod that no Deployment owns.
+
 ## Alert timing
 
 Both alerts read the lowest 5-minute error ratio over the last 15 minutes, for a

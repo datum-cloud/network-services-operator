@@ -8,10 +8,9 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -25,19 +24,11 @@ import (
 // which is the only place the two are related.
 const hubNamespaceProjectIndex = "hubNamespaceProjectIndex"
 
-// presenceEventBufferSize is how many presences may be waiting to be picked up
-// by the channel source.
-//
-// It does not need to be large. source.Channel runs a goroutine that drains this
-// channel continuously into a destination buffer of its own, so this only has to
-// cover the moment between a send and that goroutine being scheduled.
-const presenceEventBufferSize = 64
-
-// NewNetworkPresenceEvents builds the channel the sync controller writes and the
-// presence controller reads.
-func NewNetworkPresenceEvents() chan event.GenericEvent {
-	return make(chan event.GenericEvent, presenceEventBufferSize)
-}
+// NetworkPresenceObservedAnnotation carries, on every hub binding declaring a
+// presence, the last state of a project-plane object the presence is derived
+// from. The presence controller watches the bindings, so changing it is how a
+// change it cannot see reaches it, in whichever replica it runs.
+const NetworkPresenceObservedAnnotation = "networking.datumapis.com/presence-observed"
 
 // NetworkPresenceSyncReconciler brings a presence back to the controller that
 // owns it when something it is derived from changes.
@@ -48,19 +39,20 @@ func NewNetworkPresenceEvents() chan event.GenericEvent {
 // context that finished being deleted, are both invisible there.
 //
 // This controller watches those control planes and does nothing else: it maps
-// what it sees onto the presence the change is about and hands the key over. It
-// writes no object, holds no finalizer, deletes nothing and reports no status,
-// so the presence keeps exactly one writer.
+// what it sees onto the presence the change is about and records the change in
+// one annotation on the hub bindings declaring it. That write goes through the
+// API server, so it reaches the presence controller however the two are spread
+// across replicas. It writes nothing else, holds no finalizer, deletes nothing
+// and reports no status, so the presence keeps exactly one writer.
 type NetworkPresenceSyncReconciler struct {
-	// Events is the channel the presence controller consumes.
-	Events chan<- event.GenericEvent
+	Projects ProjectClusterResolver
 
 	hub client.Client
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // reconcileNetworkContext maps a context in a project control plane onto the
@@ -68,22 +60,28 @@ type NetworkPresenceSyncReconciler struct {
 // and in that project's own namespace, and its name is the presence's name, so
 // the hub namespaces standing for that pair are the whole answer.
 //
-// The object is never read. The event that matters most is the context
-// finishing being deleted, and there is nothing left to read by then; the
-// request names everything the mapping needs.
+// The event that matters most is the context finishing being deleted, and there
+// is nothing left to read by then; the request names everything the mapping
+// needs, and a context that is gone is recorded as such.
 func (r *NetworkPresenceSyncReconciler) reconcileNetworkContext(
 	ctx context.Context,
 	req mcreconcile.Request,
 ) (ctrl.Result, error) {
 	namespaces, err := r.hubNamespaces(ctx, string(req.ClusterName), req.Namespace)
+	if err != nil || len(namespaces) == 0 {
+		return ctrl.Result{}, err
+	}
+
+	observed, err := r.observe(ctx, req, &networkingv1alpha.NetworkContext{})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
+	var errs []error
 	for _, namespace := range namespaces {
-		r.enqueue(ctx, namespace, req.Name)
+		errs = append(errs, r.signal(ctx, namespace, req.Name, observed))
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, errors.Join(errs...)
 }
 
 // reconcileNetwork maps a network onto every presence derived from it. The
@@ -99,31 +97,59 @@ func (r *NetworkPresenceSyncReconciler) reconcileNetwork(
 	req mcreconcile.Request,
 ) (ctrl.Result, error) {
 	namespaces, err := r.hubNamespaces(ctx, string(req.ClusterName), req.Namespace)
+	if err != nil || len(namespaces) == 0 {
+		return ctrl.Result{}, err
+	}
+
+	observed, err := r.observe(ctx, req, &networkingv1alpha.Network{})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
+	var errs []error
 	for _, namespace := range namespaces {
 		var bindings networkingv1alpha.NetworkBindingList
 		if err := r.hub.List(ctx, &bindings, client.InNamespace(namespace)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed listing network bindings in %q: %w", namespace, err)
 		}
 
-		seen := map[string]struct{}{}
 		for i := range bindings.Items {
 			binding := &bindings.Items[i]
 			if binding.Spec.Network.Name != req.Name {
 				continue
 			}
-			name := networkContextNameForBinding(binding)
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			r.enqueue(ctx, namespace, name)
+			errs = append(errs, r.mark(ctx, binding, observed))
 		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, errors.Join(errs...)
+}
+
+// observe names the state of the project-plane object a request is about: its
+// kind, UID and resource version, or that it is gone.
+func (r *NetworkPresenceSyncReconciler) observe(
+	ctx context.Context,
+	req mcreconcile.Request,
+	obj client.Object,
+) (string, error) {
+	kind := fmt.Sprintf("%T", obj)
+	switch obj.(type) {
+	case *networkingv1alpha.Network:
+		kind = "Network"
+	case *networkingv1alpha.NetworkContext:
+		kind = "NetworkContext"
+	}
+
+	project, err := r.Projects.ClusterForProject(ctx, string(req.ClusterName))
+	if err != nil {
+		return "", fmt.Errorf("failed reaching project %q: %w", req.ClusterName, err)
+	}
+	if err := project.GetClient().Get(ctx, req.NamespacedName, obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			return kind + "/" + req.Name + "/gone", nil
+		}
+		return "", fmt.Errorf("failed reading %s %q: %w", kind, req.NamespacedName, err)
+	}
+	return kind + "/" + req.Name + "/" + string(obj.GetUID()) + "/" + obj.GetResourceVersion(), nil
 }
 
 // hubNamespaces lists the hub namespaces standing for one namespace of one
@@ -151,26 +177,48 @@ func (r *NetworkPresenceSyncReconciler) hubNamespaces(
 	return names, nil
 }
 
-// enqueue hands one presence to the presence controller.
-//
-// The handover never blocks. Nothing drains this channel unless the presence
-// controller is running in this process, and under cluster sharding it may not
-// be: the sharded managers run every replica, while the presence controller runs
-// on the singleton manager in whichever replica holds its lease. Blocking would
-// stall this controller's workers behind a reader that is never going to arrive.
-// Dropping leaves the presence to the presence controller's periodic resync
-// instead, which is slower but bounded. See the note on SetupWithManager.
-func (r *NetworkPresenceSyncReconciler) enqueue(ctx context.Context, namespace, name string) {
-	presence := &networkingv1alpha.NetworkContext{}
-	presence.Namespace = namespace
-	presence.Name = name
-
-	select {
-	case r.Events <- event.GenericEvent{Object: presence}:
-	default:
-		log.FromContext(ctx).Info("network presence sync event dropped; nothing is reading the channel",
-			"namespace", namespace, "name", name)
+// signal records an observation on every hub binding in a namespace that
+// declares the named presence.
+func (r *NetworkPresenceSyncReconciler) signal(ctx context.Context, namespace, presence, observed string) error {
+	var bindings networkingv1alpha.NetworkBindingList
+	if err := r.hub.List(ctx, &bindings, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("failed listing network bindings in %q: %w", namespace, err)
 	}
+
+	var errs []error
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if networkContextNameForBinding(binding) != presence {
+			continue
+		}
+		errs = append(errs, r.mark(ctx, binding, observed))
+	}
+	return errors.Join(errs...)
+}
+
+// mark writes an observation onto one binding, and only when it differs from
+// the one already there, so a resync of unchanged objects writes nothing.
+func (r *NetworkPresenceSyncReconciler) mark(
+	ctx context.Context,
+	binding *networkingv1alpha.NetworkBinding,
+	observed string,
+) error {
+	if !binding.DeletionTimestamp.IsZero() || binding.Annotations[NetworkPresenceObservedAnnotation] == observed {
+		return nil
+	}
+
+	patch := client.MergeFrom(binding.DeepCopy())
+	if binding.Annotations == nil {
+		binding.Annotations = map[string]string{}
+	}
+	binding.Annotations[NetworkPresenceObservedAnnotation] = observed
+	if err := r.hub.Patch(ctx, binding, patch); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed signalling network binding %q: %w", client.ObjectKeyFromObject(binding), err)
+	}
+	return nil
 }
 
 func hubNamespaceKey(project, projectNamespace string) string {
@@ -204,8 +252,8 @@ func hubNamespaceProjectIndexFunc(obj client.Object) []string {
 // replicated copy of every context under the same name, and reconciling those
 // would map a presence onto itself.
 //
-// Why this is a separate controller feeding a channel, rather than the presence
-// controller simply watching these types itself:
+// Why this is a separate controller, rather than the presence controller simply
+// watching these types itself:
 //
 // The presence controller has to stay on the singleton manager. It is the only
 // writer to a presence and to the statuses of every binding declaring it, and
@@ -222,16 +270,12 @@ func hubNamespaceProjectIndexFunc(obj client.Object) []string {
 // watch the hub as a static source, but it would put it back on the sharded
 // managers, which is the one thing it cannot afford.
 //
-// The cost of the split is that producer and consumer are only in the same
-// process while cluster sharding is off, which is the default and is how every
-// configuration in this repository runs. Turning sharding on shards this
-// controller across replicas while the presence controller stays in one of
-// them, and the events raised in the others are dropped rather than delivered.
-// The presence controller's periodic resync is what bounds how long such an
-// edit takes to land; this channel only makes it prompt where it can.
+// The two meet on the hub bindings instead, which the presence controller
+// already watches, so the signal survives this controller being sharded across
+// replicas the presence controller does not run in.
 func (r *NetworkPresenceSyncReconciler) SetupWithManager(mgr mcmanager.Manager, hub manager.Manager) error {
-	if r.Events == nil {
-		return errors.New("a network presence event channel is required")
+	if r.Projects == nil {
+		return errors.New("a project cluster resolver is required")
 	}
 	r.hub = hub.GetClient()
 

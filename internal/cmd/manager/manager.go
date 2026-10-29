@@ -739,11 +739,6 @@ func controllerRegistrations(
 	serverConfig config.NetworkServicesOperator,
 	deps controllerDeps,
 ) []namedSetup {
-	// One channel between the two presence controllers, so a project-plane event
-	// and a hub-side binding event land in the same workqueue and the presence
-	// keeps exactly one writer.
-	presenceEvents := controller.NewNetworkPresenceEvents()
-
 	return []namedSetup{
 		{"network", true, func() error {
 			return (&controller.NetworkReconciler{
@@ -766,7 +761,6 @@ func controllerRegistrations(
 		{"networkpresence", true, func() error {
 			return (&controller.NetworkPresenceReconciler{
 				Projects:             controller.NewProjectClusterResolver(mgr),
-				Events:               presenceEvents,
 				UnclaimedGracePeriod: serverConfig.NetworkPresence.UnclaimedGracePeriod.Duration,
 				ResyncPeriod:         serverConfig.NetworkPresence.ResyncPeriod.Duration,
 
@@ -775,11 +769,11 @@ func controllerRegistrations(
 		}},
 		// Everything the presence controller reads besides the binding lives in a
 		// project control plane, which only the multicluster manager watches. The
-		// sync controller watches them there and hands the presence back to the
-		// controller that owns it; it writes nothing itself.
+		// sync controller watches them there and signals the presence controller
+		// through an annotation on the hub bindings declaring the presence.
 		{"networkpresencesync", true, func() error {
 			return (&controller.NetworkPresenceSyncReconciler{
-				Events: presenceEvents,
+				Projects: controller.NewProjectClusterResolver(mgr),
 			}).SetupWithManager(mgr, deps.federationManager)
 		}},
 		{"internaldns-project", serverConfig.InternalDNS.Enabled, func() error {

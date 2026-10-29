@@ -838,3 +838,21 @@ func TestNetworkPresenceProjectsTheInternetAccessMode(t *testing.T) {
 	require.Equal(t, networkingv1alpha.NetworkInternetEgressEnabled, networkContext.Spec.Egress.Internet.Mode,
 		"a change to the network's mode reaches every location")
 }
+
+// Under cluster sharding the event for a network edit is raised in a replica
+// this controller does not run in, so a settled presence has to come back on its
+// own for the edit to reach the location.
+func TestNetworkPresenceResyncsASettledPresence(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.reconciler.ResyncPeriod = 30 * time.Second
+	s.createBinding("consumer-a")
+	s.reconcile()
+	s.markContextReady()
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, result.RequeueAfter,
+		"nothing else brings a settled presence back after a network edit")
+	requireReady(t, s.binding("consumer-a"), metav1.ConditionTrue,
+		networkingv1alpha.NetworkBindingReasonNetworkContextReady)
+}

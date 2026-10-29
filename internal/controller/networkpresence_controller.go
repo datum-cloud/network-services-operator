@@ -106,6 +106,17 @@ type NetworkPresenceReconciler struct {
 	// stamped with an internet access mode yet.
 	DefaultInternetEgressMode networkingv1alpha.NetworkInternetEgressMode
 
+	// ResyncPeriod is how often a settled presence is looked at again. The
+	// network, location and context it is derived from live in project control
+	// planes this controller does not watch, and the events the sync controller
+	// raises for them reach this controller only when both run in the same
+	// replica. Under cluster sharding they usually do not, so without a resync a
+	// network edit, such as turning its internet access off, would not reach a
+	// location that already carries the network.
+	//
+	// Zero disables the resync.
+	ResyncPeriod time.Duration
+
 	hub client.Client
 }
 
@@ -158,7 +169,7 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if refused {
 		return ctrl.Result{RequeueAfter: refusedPresenceRetryInterval}, nil
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: r.ResyncPeriod}, nil
 }
 
 const refusedPresenceRetryInterval = time.Minute

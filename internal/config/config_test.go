@@ -601,3 +601,18 @@ func TestNetworkEgressValidation(t *testing.T) {
 		t.Fatal("an unknown mode must be rejected")
 	}
 }
+
+func TestNetworkPresenceResyncDefaultsToAMinute(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.NetworkPresence.ResyncPeriod.Duration != time.Minute {
+		t.Fatalf("resyncPeriod = %s, want 1m", cfg.NetworkPresence.ResyncPeriod.Duration)
+	}
+}
+
+func TestNetworkPresenceRejectsANegativeResync(t *testing.T) {
+	cfg := NetworkPresenceConfig{ResyncPeriod: metav1.Duration{Duration: -time.Second}}
+	if err := cfg.validate(); err == nil {
+		t.Fatal("a negative resyncPeriod must be rejected")
+	}
+}

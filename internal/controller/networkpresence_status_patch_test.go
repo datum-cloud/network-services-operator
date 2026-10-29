@@ -3,13 +3,14 @@ package controller
 
 import (
 	"context"
+	"testing"
+
 	"github.com/stretchr/testify/require"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func TestPresenceReportPreservesConcurrentMetadata(t *testing.T) {

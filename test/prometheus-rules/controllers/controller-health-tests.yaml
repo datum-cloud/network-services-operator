@@ -201,3 +201,41 @@ tests:
     - eval_time: 110m
       alertname: ControllerReconcileErrorRatioCritical
       exp_alerts: []
+
+  # A sparse controller that fails every reconcile, as production's `instance-projector` did: it pages nothing
+  # (above), and ControllerReconcileErrorFloor warns its team once its errors hold through 24 hours, not before.
+  - interval: 5m
+    input_series:
+    - series: controller_runtime_reconcile_total{controller="instance-projector",result="error",cluster="prod",namespace="compute-system",pod="compute-manager-6f7d8c9b5-m4n5b"}
+      values: 0+1x320
+    alert_rule_test:
+    - eval_time: 23h
+      alertname: ControllerReconcileErrorFloor
+      exp_alerts: []
+    - eval_time: 25h
+      alertname: ControllerReconcileErrorFloor
+      exp_alerts:
+      - exp_labels:
+          severity: warning
+          controller: instance-projector
+          cluster: prod
+          namespace: compute-system
+          deployment: compute-manager
+        exp_annotations:
+          summary: Controller instance-projector in prod/compute-system/compute-manager has had reconcile errors in each of the last 24 hours
+          description: The 'instance-projector' controller in cluster 'prod', namespace 'compute-system' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook.
+          runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorfloor
+    - eval_time: 25h
+      alertname: ControllerReconcileErrorRatioCritical
+      exp_alerts: []
+
+  # Errors in 23 of the last 24 hours: one quiet hour breaks the floor, because errors that come and go are the
+  # stall alerts' business, not this one's.
+  - interval: 5m
+    input_series:
+    - series: controller_runtime_reconcile_total{controller="network",result="error",cluster="prod",namespace="nso-system",pod="nso-controller-manager-7d9f8b6c4-x2k9p"}
+      values: 0+1x200 200x24 201+1x100
+    alert_rule_test:
+    - eval_time: 26h
+      alertname: ControllerReconcileErrorFloor
+      exp_alerts: []

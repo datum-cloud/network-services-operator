@@ -48,12 +48,27 @@ spec:
         description: "More than 50% of the '{{ $labels.controller }}' controller's reconcile attempts are failing in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
         runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical"
 
-  # The stall alerts' conditions. A series is one controller in one deployment:
+    # Fires when a controller has had reconcile errors in each of the last 24
+    # hours. A floor that holds that long is almost always a failure no retry
+    # can fix, or a wait, returned as a plain error: the controller retries it
+    # for ever. It warns the owning team and never pages; it is how a sparse
+    # controller's steady failure is seen.
+    - alert: ControllerReconcileErrorFloor
+      expr: controller_runtime:reconcile_error_floor:24h
+      labels:
+        severity: warning
+      annotations:
+        summary: "Controller {{ $labels.controller }} in {{ $labels.cluster }}/{{ $labels.namespace }}/{{ $labels.deployment }} has had reconcile errors in each of the last 24 hours"
+        description: "The '{{ $labels.controller }}' controller in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook."
+        runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorfloor"
+
+  # The alerts' conditions. A series is one controller in one deployment:
   # the deployment comes from the pod's name (<deployment>-<hash>-<id>),
   # because two binaries in one namespace can run controllers with the same
   # name. A controller counts as busy when it reconciled in every 5-minute
   # slice of 15 minutes and more than 0.005 times a second over 30 minutes. A
-  # sparse controller that fails every reconcile is not busy and pages nothing.
+  # sparse controller that fails every reconcile is not busy and pages nothing;
+  # ControllerReconcileErrorFloor warns its team once its errors hold for a day.
   - name: nso-controller-health.rules
     interval: 30s
     rules:
@@ -74,3 +89,9 @@ spec:
       expr: controller_runtime:reconcile_error_ratio:min15m > 0.2
     - record: controller_runtime:reconcile_stalled:critical
       expr: controller_runtime:reconcile_error_ratio:min15m > 0.5
+    # The hours, of the last 24, in which a controller returned any error.
+    - record: controller_runtime:reconcile_error_hours:24h
+      expr: |
+        count_over_time((sum by (cluster, namespace, deployment, controller) (label_replace(increase(controller_runtime_reconcile_total{result="error"}[1h]), "deployment", "$1", "pod", "(.+)-[^-]+-[^-]+$")) > 0)[24h:1h])
+    - record: controller_runtime:reconcile_error_floor:24h
+      expr: controller_runtime:reconcile_error_hours:24h >= 24

@@ -86,7 +86,8 @@ reaching its target.
 **A sparse controller fires neither tier, even when every reconcile fails — by
 design.** The volume floor keeps a handful of reconciles from paging. Such a
 controller's objects show the failure sooner in their own conditions (not
-Ready), and an orphan among them is covered under
+Ready), its team gets `ControllerReconcileErrorFloor` once its errors hold for a
+day, and an orphan among them is covered under
 [Shared diagnosis](#shared-diagnosis).
 
 **Impact.** Whatever the controller manages is not receiving updates. The last
@@ -130,3 +131,25 @@ API server or permissions change caused a broad failure, roll it back and verify
 the controller regains a healthy reconcile ratio. Judge recovery by the ratio,
 not the alert state — the alert holds for up to 30 minutes after the ratio
 recovers (see [Alert timing](#alert-timing)).
+
+## ControllerReconcileErrorFloor
+
+**Meaning (warning, to the owning team; never a page).** The named controller
+has returned reconcile errors in each of the last 24 hours. A floor that holds
+that long is almost always one of two patterns in the controller, each returned
+as a plain error that controller-runtime retries for ever:
+
+- **A failure no retry can fix**, such as input that can never succeed or an
+  object a person must act on. The fix: set a condition that names the case and
+  return `reconcile.TerminalError(err)`, which is logged and counted once and not
+  retried.
+- **A wait for something else**, such as another object becoming ready. The fix:
+  set a condition, watch what the controller waits for (or return `RequeueAfter`
+  a poll interval), and return no error.
+
+**Diagnose.** Group the controller's `Reconciler error` lines (see
+[Shared diagnosis](#shared-diagnosis)): a handful of objects failing the same way
+is one of the patterns above, and an orphan is covered there too.
+
+**Remediate.** Fix the controller, or the data when the object is wrong, so the
+floor goes to zero. The warning resolves at the first hour without an error.

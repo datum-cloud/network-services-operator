@@ -249,14 +249,6 @@ func (s *Server) PostTranslateModify(
 	tppRoutesSpan.SetAttributes(attribute.Int("routes.tpp_applied", tppCount))
 	tppRoutesSpan.End()
 
-	for key, b := range built {
-		ns, name, ok := splitNamespaceName(key)
-		if !ok {
-			continue
-		}
-		extmetrics.TPPAppliedGeneration.WithLabelValues(ns, name).Set(float64(b.Generation))
-	}
-
 	// --- Connector family ---
 	// Replace clusters BEFORE adding CONNECT routes so route wiring sees the
 	// final cluster set. Apply connector routes AFTER TPP so CONNECT routes

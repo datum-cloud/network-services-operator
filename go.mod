@@ -13,7 +13,7 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.1-0.20260409050421-3f47accd6e14
 	github.com/go-logr/logr v1.4.4
 	github.com/go-redis/redis/v7 v7.4.1
-	github.com/google/cel-go v0.29.2
+	github.com/google/cel-go v0.30.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.1.0

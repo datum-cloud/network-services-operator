@@ -27,7 +27,7 @@ func TestConflistChainIsComplete(t *testing.T) {
 		[]Address{
 			{Address: "fd00:10:ff01:0:1::1/96", Gateway: "fd00:10:ff01::1"},
 			{Address: "172.20.1.7/32", Gateway: "172.20.1.1"},
-		}, false)
+		}, false, nil)
 
 	if conflist.CNIVersion != "1.0.0" {
 		t.Errorf("cniVersion: got %q, want %q", conflist.CNIVersion, "1.0.0")
@@ -64,7 +64,7 @@ func TestConflistChainIsComplete(t *testing.T) {
 }
 
 func TestConflistOmitsIPAMForSelfAddressingGuest(t *testing.T) {
-	raw, err := ConflistJSON("web-eth0", PluginTap, "0000000jU", "01a", 0, nil, false)
+	raw, err := ConflistJSON("web-eth0", PluginTap, "0000000jU", "01a", 0, nil, false, nil)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
@@ -142,11 +142,11 @@ func TestAdvertisementNameEncodesBase62IdentityAsHex(t *testing.T) {
 // to the hypervisor. Every attachment rendered until now leaves it out, so its
 // absence has to stay the default.
 func TestConflistCarriesTheDeclaredDeviceRequest(t *testing.T) {
-	declared, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, true)
+	declared, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, true, nil)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
-	discovered, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false)
+	discovered, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false, nil)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
@@ -156,6 +156,28 @@ func TestConflistCarriesTheDeclaredDeviceRequest(t *testing.T) {
 	}
 	if _, present := masterStanza(t, discovered)["dan"]; present {
 		t.Errorf("discovered attachment carries the field: %s", discovered)
+	}
+}
+
+// The tap plugin fences these ports off from everything but the node. A
+// conflist without them has to stay byte-identical to one rendered before the
+// field existed.
+func TestConflistCarriesHostOnlyPorts(t *testing.T) {
+	fenced, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false, []uint16{20000})
+	if err != nil {
+		t.Fatalf("ConflistJSON: %v", err)
+	}
+	open, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false, nil)
+	if err != nil {
+		t.Fatalf("ConflistJSON: %v", err)
+	}
+
+	ports, ok := masterStanza(t, fenced)["hostOnlyPorts"].([]any)
+	if !ok || len(ports) != 1 || ports[0] != float64(20000) {
+		t.Errorf("fenced attachment: got %v, want [20000]", masterStanza(t, fenced)["hostOnlyPorts"])
+	}
+	if _, present := masterStanza(t, open)["hostOnlyPorts"]; present {
+		t.Errorf("attachment without host-only ports carries the field: %s", open)
 	}
 }
 

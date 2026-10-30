@@ -105,6 +105,11 @@ type NetworkInterfaceReconciler struct {
 	// policy, which is the only way a disabled network's interfaces can be
 	// reported as blocked.
 	TrafficPolicyEnforced bool
+
+	// HypervisorHostOnlyPorts are the TCP ports a discovered hypervisor guest
+	// serves only to its node, such as a unikernel's exec agent. Declared
+	// guests run their own agent over a channel the network never carries.
+	HypervisorHostOnlyPorts []uint16
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
@@ -298,7 +303,7 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 	}
 	config, err := galactic.ConflistJSON(attachment.Name, masterPlugin(attachment.Spec.Interface.Mode),
 		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses,
-		declaresDevice(attachment.Spec.Interface.Mode))
+		declaresDevice(attachment.Spec.Interface.Mode), r.hostOnlyPorts(attachment.Spec.Interface.Mode))
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +361,15 @@ func masterPlugin(mode cloudv1alpha1.VPCAttachmentInterfaceMode) string {
 // hypervisor instead of leaving the hypervisor to discover it.
 func declaresDevice(mode cloudv1alpha1.VPCAttachmentInterfaceMode) bool {
 	return mode == cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared
+}
+
+// hostOnlyPorts returns the ports a guest attached in mode serves only to its
+// node.
+func (r *NetworkInterfaceReconciler) hostOnlyPorts(mode cloudv1alpha1.VPCAttachmentInterfaceMode) []uint16 {
+	if mode != cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor {
+		return nil
+	}
+	return r.HypervisorHostOnlyPorts
 }
 
 // interfaceAddresses copies the addresses NSO allocated onto the attachment, so

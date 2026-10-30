@@ -355,10 +355,11 @@ func controllerRegistrations(
 			namedSetup{"galactic-networkinterface", func() (bool, error) {
 				return true, (&galacticcontroller.NetworkInterfaceReconciler{
 					Client: mgr.GetLocalManager().GetClient(), Scheme: mgr.GetLocalManager().GetScheme(),
-					APIReader:             mgr.GetLocalManager().GetAPIReader(),
-					AttachmentMode:        cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
-					LabeledNamespaces:     serverConfig.Galactic.AttachmentLabelNamespaces,
-					TrafficPolicyEnforced: serverConfig.Galactic.TrafficPolicyEnforced,
+					APIReader:               mgr.GetLocalManager().GetAPIReader(),
+					AttachmentMode:          cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
+					LabeledNamespaces:       serverConfig.Galactic.AttachmentLabelNamespaces,
+					TrafficPolicyEnforced:   serverConfig.Galactic.TrafficPolicyEnforced,
+					HypervisorHostOnlyPorts: serverConfig.Galactic.HypervisorHostOnlyPorts,
 				}).SetupWithManager(mgr.GetLocalManager())
 			}},
 		)

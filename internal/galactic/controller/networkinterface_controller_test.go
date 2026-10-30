@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"maps"
+	"slices"
 	"testing"
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
@@ -372,5 +373,27 @@ func TestDeclaresDevice(t *testing.T) {
 	}
 	if !declaresDevice(cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared) {
 		t.Error("a declared hypervisor attachment must ask for a description")
+	}
+}
+
+// Only a discovered hypervisor guest serves an agent over its network, so only
+// its attachment fences the agent's ports off.
+func TestHostOnlyPortsApplyToDiscoveredHypervisorGuests(t *testing.T) {
+	r := &NetworkInterfaceReconciler{HypervisorHostOnlyPorts: []uint16{20000}}
+
+	tests := []struct {
+		mode cloudv1alpha1.VPCAttachmentInterfaceMode
+		want []uint16
+	}{
+		{cloudv1alpha1.VPCAttachmentInterfaceModeNetns, nil},
+		{cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, []uint16{20000}},
+		{cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared, nil},
+	}
+	for _, test := range tests {
+		t.Run(string(test.mode), func(t *testing.T) {
+			if got := r.hostOnlyPorts(test.mode); !slices.Equal(got, test.want) {
+				t.Errorf("got %v, want %v", got, test.want)
+			}
+		})
 	}
 }

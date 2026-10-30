@@ -19,6 +19,13 @@ spec:
     kind: HTTPProxy
 
   auditRules:
+    # Create rejected because the project reached its quota. Milo's quota
+    # admission marks these with the quota.miloapis.com/outcome audit annotation.
+    # The resource was never created, so the summary has no link.
+    - name: create-quota-denied
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.responseStatus.code) && audit.responseStatus.code == 403 && has(audit.annotations) && 'quota.miloapis.com/outcome' in audit.annotations && audit.annotations['quota.miloapis.com/outcome'] == 'denied' && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
+      summary: "{{ actor }} couldn't create {{ has(audit.objectRef.name) && audit.objectRef.name != '' ? 'load balancer ' + audit.objectRef.name : 'a load balancer' }}: quota reached"
+
     - name: create-annotated-backend
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && has(audit.responseObject) && type(audit.responseObject) == map && has(audit.responseObject.metadata) && has(audit.responseObject.metadata.annotations) && 'networking.datumapis.com/display-name' in audit.responseObject.metadata.annotations && 'networking.datumapis.com/display-value' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['networking.datumapis.com/display-value'] != '' && has(audit.responseStatus.code) && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300 && !(has(audit.requestURI) && audit.requestURI.contains('dryRun='))"
       summary: "{{ actor }} created load balancer {{ link(audit.responseObject.metadata.annotations['networking.datumapis.com/display-name'], audit.objectRef) }} pointing to {{ audit.responseObject.metadata.annotations['networking.datumapis.com/display-value'] }}"

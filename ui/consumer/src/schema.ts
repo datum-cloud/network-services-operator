@@ -359,3 +359,105 @@ export function httpProxyProgrammedStatusToLabel(
   if (status === 'False') return httpProxyProgrammedReasonToLabel(reason);
   return 'Unknown';
 }
+
+export const nlbProtocolSchema = z.enum(['TCP', 'UDP', 'TLS']);
+export type NlbProtocol = z.infer<typeof nlbProtocolSchema>;
+
+export const networkLoadBalancerListenerSchema = z.object({
+  name: z.string(),
+  protocol: nlbProtocolSchema,
+  port: z.number(),
+  /** The address request this listener accepts on; the API allows only one today. */
+  addressRef: z.string().optional(),
+  /** Position in spec.listeners, counting listeners the portal skips, for JSON Patch paths. */
+  index: z.number().optional(),
+});
+
+export type NetworkLoadBalancerListener = z.infer<typeof networkLoadBalancerListenerSchema>;
+
+export const networkLoadBalancerEndpointSchema = z.object({
+  requestName: z.string(),
+  location: z.string(),
+  /** The generated name for this address in this location, e.g. us-central-1.plea-fried-wgyt2.prism… */
+  hostname: z.string().optional(),
+  /** Allocated addresses only; a family still pending has no value and is left out. */
+  addresses: z.array(z.object({ family: z.string(), value: z.string() })).default([]),
+});
+
+export type NetworkLoadBalancerEndpoint = z.infer<typeof networkLoadBalancerEndpointSchema>;
+
+export const networkLoadBalancerResourceSchema = z.object({
+  uid: z.string(),
+  name: z.string(),
+  resourceVersion: z.string().optional(),
+  createdAt: z.coerce.date(),
+  networkName: z.string().optional(),
+  listeners: z.array(networkLoadBalancerListenerSchema).default([]),
+  /** spec.exposure.addresses names, in order, for JSON Patch paths. */
+  addressNames: z.array(z.string()).optional(),
+  endpoints: z.array(networkLoadBalancerEndpointSchema).default([]),
+  readyStatus: z.enum(['True', 'False', 'Unknown']),
+  readyReason: z.string().optional(),
+  readyMessage: z.string().optional(),
+});
+
+export type NetworkLoadBalancer = z.infer<typeof networkLoadBalancerResourceSchema>;
+
+export const networkLoadBalancerListSchema = z.object({
+  items: z.array(networkLoadBalancerResourceSchema),
+});
+
+export type NetworkLoadBalancerList = z.infer<typeof networkLoadBalancerListSchema>;
+
+export const networkLoadBalancerRouteParentSchema = z.object({
+  name: z.string(),
+  listener: z.string().optional(),
+  port: z.number().optional(),
+});
+
+export type NetworkLoadBalancerRouteParent = z.infer<typeof networkLoadBalancerRouteParentSchema>;
+
+export const networkLoadBalancerRouteResourceSchema = z.object({
+  uid: z.string(),
+  name: z.string(),
+  resourceVersion: z.string().optional(),
+  parents: z.array(networkLoadBalancerRouteParentSchema).default([]),
+  backendNames: z.array(z.string()).default([]),
+  backends: z
+    .array(
+      z.object({
+        name: z.string(),
+        port: z.string(),
+        healthCheck: z.object({ protocol: z.string(), port: z.string().optional() }).optional(),
+      })
+    )
+    .default([]),
+  /** status.parents: how each parent listener took the route. */
+  parentStatuses: z
+    .array(
+      z.object({
+        name: z.string(),
+        listener: z.string(),
+        effective: z.boolean(),
+        /** Accepted, ResolvedRefs and Programmed rolled into one: the first that isn't True. */
+        status: z.enum(['True', 'False', 'Unknown']),
+        reason: z.string().optional(),
+        message: z.string().optional(),
+      })
+    )
+    .default([]),
+});
+
+export type NetworkLoadBalancerRoute = z.infer<typeof networkLoadBalancerRouteResourceSchema>;
+
+const NLB_READY_REASON_COPY: Record<string, string> = {
+  AllocationPending: 'Address pending',
+  PendingDataPlane: 'Programming',
+  NotServed: 'Not serving',
+};
+
+export function nlbReadyStatusToLabel(status: NetworkReadyStatus, reason: string | undefined): string {
+  if (status === 'True') return 'Ready';
+  if (status === 'False') return (reason && NLB_READY_REASON_COPY[reason]) ?? reason ?? 'Not ready';
+  return 'Unknown';
+}

@@ -5,6 +5,9 @@ import {
   toNetworkInterface,
   toNetworkInterfaceList,
   toNetworkList,
+  toNetworkLoadBalancer,
+  toNetworkLoadBalancerList,
+  toNetworkLoadBalancerRouteList,
   toNetworkService,
   toNetworkServiceList,
   toSubnet,
@@ -12,6 +15,7 @@ import {
   type RawHTTPProxy,
   type RawNetwork,
   type RawNetworkInterface,
+  type RawNetworkLoadBalancer,
   type RawNetworkService,
   type RawSubnet,
 } from './adapter';
@@ -596,5 +600,185 @@ describe('toHTTPProxyList', () => {
 
   it('returns an empty array for an empty list', () => {
     expect(toHTTPProxyList([])).toEqual([]);
+  });
+});
+
+const baseRawNLB: RawNetworkLoadBalancer = {
+  metadata: { uid: 'nlb-uid', name: 'edge-nlb', creationTimestamp: '2026-10-29T00:00:00Z' },
+  spec: {
+    networkRef: { name: 'default-vpc' },
+    listeners: [
+      { name: 'pg', protocol: 'TCP', port: 5432 },
+      { name: 'game', protocol: 'UDP', port: 7777 },
+    ],
+  },
+  status: {
+    conditions: [{ type: 'Ready', status: 'False', reason: 'NoRoutes', message: 'No listener has a route.' }],
+  },
+};
+
+describe('toNetworkLoadBalancer', () => {
+  it('maps the network, listeners and Ready condition', () => {
+    expect(toNetworkLoadBalancer(baseRawNLB)).toMatchObject({
+      uid: 'nlb-uid',
+      name: 'edge-nlb',
+      createdAt: new Date('2026-10-29T00:00:00Z'),
+      networkName: 'default-vpc',
+      listeners: [
+        { name: 'pg', protocol: 'TCP', port: 5432 },
+        { name: 'game', protocol: 'UDP', port: 7777 },
+      ],
+      readyStatus: 'False',
+      readyReason: 'NoRoutes',
+      readyMessage: 'No listener has a route.',
+    });
+  });
+
+  it('defaults to Unknown with no listeners when status and spec are empty', () => {
+    const nlb = toNetworkLoadBalancer({ metadata: { name: 'bare' } });
+    expect(nlb.readyStatus).toBe('Unknown');
+    expect(nlb.listeners).toEqual([]);
+    expect(nlb.networkName).toBeUndefined();
+  });
+
+  it('drops listeners with a protocol it does not know', () => {
+    const nlb = toNetworkLoadBalancer({
+      spec: { listeners: [{ name: 'odd', protocol: 'SCTP', port: 9 }, { name: 'dns', protocol: 'UDP', port: 53 }] },
+    });
+    expect(nlb.listeners.map((l) => l.name)).toEqual(['dns']);
+  });
+});
+
+describe('toNetworkLoadBalancerList', () => {
+  it('maps every item and leaves out one being deleted', () => {
+    const list = toNetworkLoadBalancerList([
+      baseRawNLB,
+      { ...baseRawNLB, metadata: { name: 'going', deletionTimestamp: '2026-10-30T00:00:00Z' } },
+    ]);
+    expect(list.map((n) => n.name)).toEqual(['edge-nlb']);
+  });
+
+  it('returns an empty array for an empty list', () => {
+    expect(toNetworkLoadBalancerList([])).toEqual([]);
+  });
+});
+
+describe('toNetworkLoadBalancerRouteList', () => {
+  it('maps parents and distinct backend names, leaving out a route being deleted', () => {
+    const list = toNetworkLoadBalancerRouteList([
+      {
+        metadata: { uid: 'r1', name: 'edge-udp', resourceVersion: '7' },
+        spec: {
+          parentRefs: [{ name: 'edge-nlb', listener: 'udp-7777' }, { name: 'other', port: 53 }],
+          backends: [
+            { networkService: { name: 'game-server' } },
+            { networkService: { name: 'game-server' } },
+            {},
+          ],
+        },
+      },
+      { metadata: { name: 'going', deletionTimestamp: '2026-10-30T00:00:00Z' } },
+    ]);
+    expect(list).toEqual([
+      {
+        uid: 'r1',
+        name: 'edge-udp',
+        resourceVersion: '7',
+        parents: [
+          { name: 'edge-nlb', listener: 'udp-7777', port: undefined },
+          { name: 'other', listener: undefined, port: 53 },
+        ],
+        backendNames: ['game-server'],
+        backends: [
+          { name: 'game-server', port: '', healthCheck: undefined },
+          { name: 'game-server', port: '', healthCheck: undefined },
+        ],
+        parentStatuses: [],
+      },
+    ]);
+  });
+
+  it('maps backends with health checks and rolls each parent status into one', () => {
+    const [route] = toNetworkLoadBalancerRouteList([
+      {
+        metadata: { name: 'edge-udp' },
+        spec: {
+          backends: [
+            {
+              networkService: { name: 'game-server', port: 'game' },
+              healthCheck: { protocol: 'TCP', port: 'health' },
+            },
+          ],
+        },
+        status: {
+          parents: [
+            {
+              name: 'edge-nlb',
+              listener: 'udp-7777',
+              effective: true,
+              conditions: [
+                { type: 'Accepted', status: 'True', reason: 'Attached' },
+                { type: 'ResolvedRefs', status: 'True', reason: 'Resolved' },
+                { type: 'Programmed', status: 'True', reason: 'Programmed' },
+              ],
+            },
+            {
+              name: 'other',
+              listener: 'udp-53',
+              conditions: [
+                { type: 'Accepted', status: 'True', reason: 'Attached' },
+                {
+                  type: 'ResolvedRefs',
+                  status: 'False',
+                  reason: 'HealthCheckInvalid',
+                  message: 'needs a TCP port',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(route.backends).toEqual([
+      { name: 'game-server', port: 'game', healthCheck: { protocol: 'TCP', port: 'health' } },
+    ]);
+    expect(route.parentStatuses).toEqual([
+      { name: 'edge-nlb', listener: 'udp-7777', effective: true, status: 'True', reason: undefined, message: undefined },
+      {
+        name: 'other',
+        listener: 'udp-53',
+        effective: false,
+        status: 'False',
+        reason: 'HealthCheckInvalid',
+        message: 'needs a TCP port',
+      },
+    ]);
+  });
+});
+
+describe('toNetworkLoadBalancer status', () => {
+  it('keeps each endpoint’s hostname and allocated addresses, dropping pending ones', () => {
+    const nlb = toNetworkLoadBalancer({
+      spec: { listeners: [{ name: 'udp-7777', protocol: 'UDP', port: 7777, addressRefs: ['udp-7777'] }] },
+      status: {
+        endpoints: [
+          {
+            requestName: 'udp-7777',
+            location: 'iad',
+            canonicalHostname: 'us-east-1.plea-fried-wgyt2.prism.example',
+            addresses: [{ family: 'IPv6', value: '2001:db8::3' }, { family: 'IPv4' }],
+          },
+        ],
+      },
+    });
+    expect(nlb.listeners[0].addressRef).toBe('udp-7777');
+    expect(nlb.endpoints).toEqual([
+      {
+        requestName: 'udp-7777',
+        location: 'iad',
+        hostname: 'us-east-1.plea-fried-wgyt2.prism.example',
+        addresses: [{ family: 'IPv6', value: '2001:db8::3' }],
+      },
+    ]);
   });
 });

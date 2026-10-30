@@ -6,7 +6,15 @@ import { cn } from '@datum-cloud/datum-ui/utils';
 import { BookOpenIcon, CheckIcon, CopyIcon, DownloadIcon, SquareTerminalIcon } from 'lucide-react';
 import { useState } from 'react';
 
-export function CommandBlock({ value, danger }: { value: string; danger?: boolean }) {
+export function CommandBlock({
+  value,
+  danger,
+  className,
+}: {
+  value: string;
+  danger?: boolean;
+  className?: string;
+}) {
   const [, copy] = useCopyToClipboard();
   const [copied, setCopied] = useState(false);
 
@@ -19,7 +27,11 @@ export function CommandBlock({ value, danger }: { value: string; danger?: boolea
   };
 
   return (
-    <div className="bg-background flex items-start gap-3 rounded-lg border px-3 py-3 sm:items-center sm:px-4">
+    <div
+      className={cn(
+        'bg-background flex items-start gap-3 rounded-lg border px-3 py-3 sm:items-center sm:px-4',
+        className
+      )}>
       <span
         className={cn(
           'min-w-0 flex-1 break-all font-mono text-xs leading-relaxed sm:text-sm',

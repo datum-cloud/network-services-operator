@@ -24,6 +24,8 @@ export function MoreActions<TData>({
           <button
             key={a.key ?? a.label}
             type="button"
+            disabled={typeof a.disabled === 'function' ? a.disabled(row) : a.disabled}
+            title={typeof a.tooltip === 'function' ? a.tooltip(row) : a.tooltip}
             onClick={() => {
               a.onClick(row);
               setOpen(false);

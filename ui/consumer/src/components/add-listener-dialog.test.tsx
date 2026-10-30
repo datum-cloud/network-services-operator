@@ -1,5 +1,6 @@
 import { AddListenerDialog, checkListener } from './add-listener-dialog';
 import { toAddListenerRequests, toNlbCreateErrors } from './nlb-create-form';
+import type { ListenerRow } from './nlb-overview-model';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -178,6 +179,152 @@ describe('AddListenerDialog', () => {
       expect(
         await screen.findByText('This load balancer already has a TCP 80 listener.')
       ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+    SELECT_TEST_TIMEOUT
+  );
+});
+
+describe('AddListenerDialog editing', () => {
+  const dns: NetworkService = {
+    ...game,
+    uid: 'dns',
+    name: 'dns',
+    ports: [
+      { name: 'dns', port: 53, protocol: 'UDP' },
+      { name: 'dns-tcp', port: 53, protocol: 'TCP' },
+    ],
+  };
+
+  const route = {
+    uid: 'r',
+    name: 'edge-nlb-udp-7777',
+    resourceVersion: '5',
+    parents: [{ name: 'edge-nlb', listener: 'udp-7777' }],
+    backendNames: ['game-server'],
+    backends: [
+      { name: 'game-server', port: 'game', healthCheck: { protocol: 'TCP', port: 'health' } },
+    ],
+    parentStatuses: [],
+  };
+
+  const udpListener = {
+    name: 'udp-7777',
+    protocol: 'UDP' as const,
+    port: 7777,
+    addressRef: 'udp-7777',
+    index: 1,
+  };
+  const withUdp: NetworkLoadBalancer = { ...nlb, listeners: [...nlb.listeners, udpListener] };
+
+  function row(overrides: Partial<ListenerRow> = {}): ListenerRow {
+    return {
+      listener: udpListener,
+      locations: 0,
+      route,
+      backend: route.backends[0],
+      status: { label: 'Serving', type: 'success' },
+      ...overrides,
+    };
+  }
+
+  function renderEdit(editing: ListenerRow) {
+    vi.mocked(api.useNetworkServices).mockReturnValue({
+      data: [game, dns],
+      isLoading: false,
+      error: null,
+    } as never);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <AddListenerDialog
+          projectId="demo-project"
+          nlb={withUdp}
+          open
+          onOpenChange={vi.fn()}
+          editing={editing}
+        />
+      </QueryClientProvider>
+    );
+  }
+
+  function choose(index: number, option: string) {
+    fireEvent.click(screen.getAllByRole('combobox')[index]);
+    fireEvent.click(screen.getByRole('option', { name: option }));
+  }
+
+  it(
+    'only patches the route when just the backend changes',
+    async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      renderEdit(row());
+
+      choose(1, 'dns');
+      choose(2, 'dns · 53/UDP');
+      choose(3, 'dns-tcp · 53/TCP');
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toMatch(/\/networkloadbalancerroutes\/edge-nlb-udp-7777$/);
+      expect((init.headers as Record<string, string>)['Content-Type']).toBe(
+        'application/merge-patch+json'
+      );
+      expect(JSON.parse(init.body as string).spec.backends).toEqual([
+        {
+          networkService: { name: 'dns', port: 'dns' },
+          healthCheck: { protocol: 'TCP', port: 'dns-tcp' },
+        },
+      ]);
+    },
+    SELECT_TEST_TIMEOUT
+  );
+
+  it(
+    'patches the listener in place when its port changes, then the route',
+    async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      renderEdit(row());
+
+      fireEvent.change(screen.getByPlaceholderText('e.g. 7777'), { target: { value: '7778' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      const [[nlbUrl, nlbInit], [routeUrl]] = fetchMock.mock.calls as [string, RequestInit][];
+      expect(nlbUrl).toMatch(/\/networkloadbalancers\/edge-nlb$/);
+      expect(JSON.parse(nlbInit.body as string)).toContainEqual({
+        op: 'replace',
+        path: '/spec/listeners/1/port',
+        value: 7778,
+      });
+      expect(routeUrl).toMatch(/\/networkloadbalancerroutes\/edge-nlb-udp-7777$/);
+    },
+    SELECT_TEST_TIMEOUT
+  );
+
+  it(
+    'won’t change a route that also serves other listeners',
+    async () => {
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      renderEdit(
+        row({
+          route: {
+            ...route,
+            parents: [...route.parents, { name: 'edge-nlb', listener: 'tcp-80' }],
+          },
+        })
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(await screen.findByText(/also serves other listeners/)).toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalled();
     },
     SELECT_TEST_TIMEOUT

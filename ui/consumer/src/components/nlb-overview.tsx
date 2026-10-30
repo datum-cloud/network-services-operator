@@ -11,6 +11,7 @@ import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } fr
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
+import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import {
   ArrowRightIcon,
@@ -167,15 +168,35 @@ function HealthCheckCell({ row }: { row: ListenerRow }) {
   );
 }
 
+export interface ListenerActions {
+  onAdd: () => void;
+  onEdit: (row: ListenerRow) => void;
+  onDelete: (row: ListenerRow) => void;
+}
+
 function ListenersCard({
   rows,
   backendHref,
-  onAddListener,
+  actions,
 }: {
   rows: ListenerRow[];
   backendHref?: string;
-  onAddListener?: () => void;
+  actions?: ListenerActions;
 }) {
+  const rowActions: ActionItem<ListenerRow>[] = actions
+    ? [
+        { key: 'edit', label: 'Edit', onClick: actions.onEdit },
+        {
+          key: 'delete',
+          label: 'Delete',
+          variant: 'destructive',
+          // An NLB needs at least one listener; the API refuses an empty list.
+          disabled: rows.length <= 1,
+          tooltip: rows.length <= 1 ? 'A load balancer needs at least one listener.' : undefined,
+          onClick: actions.onDelete,
+        },
+      ]
+    : [];
   return (
     <div
       className="bg-card overflow-hidden rounded-lg border"
@@ -185,13 +206,13 @@ function ListenersCard({
         <span className="text-sm font-medium">Listeners</span>
         <span className="text-muted-foreground text-sm">one port, one backend</span>
         <span className="flex-1" />
-        {onAddListener && (
+        {actions && (
           <Button
             type="primary"
             theme="solid"
             size="small"
             htmlType="button"
-            onClick={onAddListener}>
+            onClick={actions.onAdd}>
             <Icon icon={PlusIcon} className="size-4" />
             Add listener
           </Button>
@@ -206,6 +227,7 @@ function ListenersCard({
               <th className="px-4 py-2 font-semibold">Address</th>
               <th className="px-4 py-2 font-semibold">Send to</th>
               <th className="px-4 py-2 font-semibold">Health check</th>
+              {actions && <th className="w-12 px-4 py-2" aria-label="Actions" />}
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -224,6 +246,18 @@ function ListenersCard({
                 <td className="px-4 py-3">
                   <HealthCheckCell row={row} />
                 </td>
+                {actions && (
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end">
+                      <MoreActions
+                        row={row}
+                        actions={rowActions}
+                        className="size-6 border"
+                        iconClassName="size-3.5"
+                      />
+                    </div>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -326,14 +360,15 @@ export function NlbOverview({
   routes,
   services,
   servicesHref,
-  onAddListener,
+  listenerActions,
 }: {
   nlb: NetworkLoadBalancer;
   routes: NetworkLoadBalancerRoute[];
   services: NetworkService[];
   /** Where a backend links to: its network's services list. */
   servicesHref?: string;
-  onAddListener?: () => void;
+  /** Add, edit and delete; without them the listeners are read-only. */
+  listenerActions?: ListenerActions;
 }) {
   const rows = toListenerRows(nlb, routes, services);
   const cards = toBackendCards(rows);
@@ -360,7 +395,7 @@ export function NlbOverview({
         <div className="nlb-band">
           <AddressesCard nlb={nlb} />
           <div className="flex min-w-0 flex-col gap-6">
-            <ListenersCard rows={rows} backendHref={servicesHref} onAddListener={onAddListener} />
+            <ListenersCard rows={rows} backendHref={servicesHref} actions={listenerActions} />
             <BackendCards cards={cards} href={servicesHref} />
           </div>
         </div>

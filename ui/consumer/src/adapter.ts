@@ -418,6 +418,7 @@ interface RawNetworkLoadBalancerListener {
 
 interface RawNetworkLoadBalancerSpec {
   networkRef?: { name?: string };
+  exposure?: { addresses?: { name?: string }[] };
   listeners?: RawNetworkLoadBalancerListener[];
 }
 
@@ -447,7 +448,7 @@ const NLB_PROTOCOLS: readonly NlbProtocol[] = ['TCP', 'UDP', 'TLS'];
 function toNetworkLoadBalancerListeners(
   listeners: RawNetworkLoadBalancerListener[] | undefined
 ): NetworkLoadBalancerListener[] {
-  return (listeners ?? []).flatMap((l) =>
+  return (listeners ?? []).flatMap((l, index) =>
     l.protocol && (NLB_PROTOCOLS as readonly string[]).includes(l.protocol)
       ? [
           {
@@ -455,6 +456,7 @@ function toNetworkLoadBalancerListeners(
             protocol: l.protocol as NlbProtocol,
             port: l.port ?? 0,
             addressRef: l.addressRefs?.[0],
+            index,
           },
         ]
       : []
@@ -472,6 +474,7 @@ export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadB
     createdAt: raw.metadata?.creationTimestamp ? new Date(raw.metadata.creationTimestamp) : new Date(),
     networkName: raw.spec?.networkRef?.name,
     listeners: toNetworkLoadBalancerListeners(raw.spec?.listeners),
+    addressNames: (raw.spec?.exposure?.addresses ?? []).map((a) => a.name ?? ''),
     endpoints: (raw.status?.endpoints ?? []).map((e) => ({
       requestName: e.requestName ?? '',
       location: e.location ?? '',

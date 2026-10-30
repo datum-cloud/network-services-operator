@@ -544,17 +544,36 @@ export function planNlbDelete(nlbName: string, routes: NetworkLoadBalancerRoute[
   };
 }
 
-async function detachRoute(projectId: string, route: NetworkLoadBalancerRoute, parents: NetworkLoadBalancerRoute['parents']) {
+/** Merge-patches a route; parentRefs and backends are atomic lists, so they're replaced whole. */
+export async function mergePatchNetworkLoadBalancerRoute(projectId: string, name: string, body: object): Promise<void> {
   const res = await fetch(
-    `${getProjectScopedBase(projectId)}${NETWORKLOADBALANCERROUTES_PATH}/${encodeURIComponent(route.name)}`,
+    `${getProjectScopedBase(projectId)}${NETWORKLOADBALANCERROUTES_PATH}/${encodeURIComponent(name)}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/merge-patch+json', Accept: 'application/json' },
-      // parentRefs is an atomic list, so a merge patch replaces it whole.
-      body: JSON.stringify({ metadata: { resourceVersion: route.resourceVersion }, spec: { parentRefs: parents } }),
+      body: JSON.stringify(body),
     }
   );
-  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): update route ${route.name}`);
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): update route ${name}`);
+}
+
+export function detachRoute(
+  projectId: string,
+  route: NetworkLoadBalancerRoute,
+  parents: NetworkLoadBalancerRoute['parents']
+): Promise<void> {
+  return mergePatchNetworkLoadBalancerRoute(projectId, route.name, {
+    metadata: { resourceVersion: route.resourceVersion },
+    spec: { parentRefs: parents },
+  });
+}
+
+export function deleteNetworkLoadBalancerRoute(projectId: string, name: string): Promise<void> {
+  return proxyDelete(
+    projectId,
+    `${NETWORKLOADBALANCERROUTES_PATH}/${encodeURIComponent(name)}`,
+    `delete route ${name}`
+  );
 }
 
 export function useDeleteNetworkLoadBalancer(

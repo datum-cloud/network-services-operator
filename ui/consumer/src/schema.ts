@@ -369,6 +369,8 @@ export const networkLoadBalancerListenerSchema = z.object({
   port: z.number(),
   /** The address request this listener accepts on; the API allows only one today. */
   addressRef: z.string().optional(),
+  /** Position in spec.listeners, counting listeners the portal skips, for JSON Patch paths. */
+  index: z.number().optional(),
 });
 
 export type NetworkLoadBalancerListener = z.infer<typeof networkLoadBalancerListenerSchema>;
@@ -389,6 +391,8 @@ export const networkLoadBalancerResourceSchema = z.object({
   createdAt: z.coerce.date(),
   networkName: z.string().optional(),
   listeners: z.array(networkLoadBalancerListenerSchema).default([]),
+  /** spec.exposure.addresses names, in order, for JSON Patch paths. */
+  addressNames: z.array(z.string()).optional(),
   endpoints: z.array(networkLoadBalancerEndpointSchema).default([]),
   readyStatus: z.enum(['True', 'False', 'Unknown']),
   readyReason: z.string().optional(),

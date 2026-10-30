@@ -3,7 +3,7 @@ import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -168,6 +168,74 @@ describe('NlbDetail', () => {
     renderPage();
     fireEvent.click(screen.getByRole('button', { name: 'Add listener' }));
     expect(await screen.findByRole('dialog')).toHaveTextContent('Add listener');
+  });
+
+  it('edits a listener from its row menu', async () => {
+    renderPage();
+    const row = within(screen.getByTestId('networking-plugin-nlb-listeners'))
+      .getByText('7777')
+      .closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Edit UDP 7777');
+    expect(within(dialog).getByPlaceholderText('e.g. 7777')).toHaveValue(7777);
+  });
+
+  it('deletes a listener and its route, then its listener and address from the NLB', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    mockQuery(useNlbMock, {
+      data: { ...nlb, resourceVersion: '9', addressNames: ['udp-7777', 'tcp-80'] },
+    });
+    renderPage();
+
+    const row = within(screen.getByTestId('networking-plugin-nlb-listeners'))
+      .getByText('7777')
+      .closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(
+      dialog.getByText(
+        /releases its public address\. It also deletes its route edge-nlb-udp-7777\./
+      )
+    ).toBeInTheDocument();
+    fireEvent.change(dialog.getByPlaceholderText('Type in here...'), {
+      target: { value: 'DELETE' },
+    });
+    fireEvent.click(dialog.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [[routeUrl, routeInit], [nlbUrl, nlbInit]] = fetchMock.mock.calls as [
+      string,
+      RequestInit,
+    ][];
+    expect([routeInit.method, routeUrl.split('/default/')[1]]).toEqual([
+      'DELETE',
+      'networkloadbalancerroutes/edge-nlb-udp-7777',
+    ]);
+    expect([nlbInit.method, nlbUrl.split('/default/')[1]]).toEqual([
+      'PATCH',
+      'networkloadbalancers/edge-nlb',
+    ]);
+    expect(JSON.parse(nlbInit.body as string)).toContainEqual({
+      op: 'remove',
+      path: '/spec/listeners/0',
+    });
+    globalThis.fetch = originalFetch;
+  });
+
+  it('won’t delete the only listener', () => {
+    mockQuery(useNlbMock, { data: { ...nlb, listeners: [nlb.listeners[0]] } });
+    renderPage();
+    fireEvent.click(
+      within(screen.getByTestId('networking-plugin-nlb-listeners')).getByRole('button', {
+        name: 'Actions',
+      })
+    );
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
   });
 
   it('waits for routes before showing listeners', () => {

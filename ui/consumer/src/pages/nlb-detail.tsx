@@ -1,5 +1,7 @@
 import { AddListenerDialog } from '../components/add-listener-dialog';
+import { DeleteListenerDialog } from '../components/delete-listener-dialog';
 import { NlbOverview } from '../components/nlb-overview';
+import type { ListenerRow } from '../components/nlb-overview-model';
 import { NetworkOverviewSkeleton } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
 import {
@@ -38,7 +40,9 @@ export default function NlbDetail() {
   const { data: routes = [], isLoading: routesLoading } = useNetworkLoadBalancerRoutes(projectId);
   const { data: services = [] } = useNetworkServices(projectId);
   const hrefs = useHrefs(nlbName);
-  const [addOpen, setAddOpen] = useState(false);
+  // Open to add when there's no row to edit.
+  const [listenerDialog, setListenerDialog] = useState<{ editing?: ListenerRow }>();
+  const [deleting, setDeleting] = useState<ListenerRow>();
 
   const projectHref = projectId ? `/project/${projectId}` : '/';
   const servicesHref = nlb?.networkName
@@ -88,13 +92,25 @@ export default function NlbDetail() {
             routes={routes}
             services={services}
             servicesHref={servicesHref}
-            onAddListener={() => setAddOpen(true)}
+            listenerActions={{
+              onAdd: () => setListenerDialog({}),
+              onEdit: (row) => setListenerDialog({ editing: row }),
+              onDelete: setDeleting,
+            }}
           />
           <AddListenerDialog
             projectId={projectId}
             nlb={nlb}
-            open={addOpen}
-            onOpenChange={setAddOpen}
+            open={listenerDialog !== undefined}
+            onOpenChange={(open) => !open && setListenerDialog(undefined)}
+            editing={listenerDialog?.editing}
+          />
+          <DeleteListenerDialog
+            projectId={projectId}
+            nlb={nlb}
+            routes={routes}
+            row={deleting}
+            onOpenChange={(open) => !open && setDeleting(undefined)}
           />
         </>
       )}

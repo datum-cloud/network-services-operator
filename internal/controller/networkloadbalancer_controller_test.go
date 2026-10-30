@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -775,4 +776,22 @@ func TestNetworkLoadBalancerDependencyEventsEnqueueAffectedLoadBalancers(t *test
 	}
 	require.NoError(t, s.client.Update(s.ctx, &lb))
 	require.Equal(t, []reconcile.Request{key}, loadBalancersForLocationEvent(s.ctx, s.client, location))
+}
+
+func TestNetworkLoadBalancerReliesOnEventsInsteadOfPeriodicResync(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	result, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
+	require.NoError(t, err)
+	require.True(t, result.Requeue, "a claim IPAM has not answered retries with backoff")
+	require.Zero(t, result.RequeueAfter)
+
+	for i, claim := range s.claims() {
+		claim.Status.AllocatedCIDR = fmt.Sprintf("2001:db8::%x/128", i+1)
+		require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
+	}
+	for range 2 {
+		result, err = s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
+		require.NoError(t, err)
+		require.Equal(t, ctrl.Result{}, result, "an allocated load balancer waits for the next event")
+	}
 }

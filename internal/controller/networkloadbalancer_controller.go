@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -43,7 +42,6 @@ import (
 const (
 	networkLoadBalancerFinalizer  = "networking.datumapis.com/networkloadbalancer-release"
 	networkLoadBalancerOwnerLabel = "networking.datumapis.com/network-load-balancer-uid"
-	networkLoadBalancerRetry      = time.Minute
 )
 
 type NetworkLoadBalancerReconciler struct {
@@ -135,6 +133,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 	wanted := make(map[string]bool, len(requests))
 	status := make([]networkingv1alpha.NetworkLoadBalancerEndpointStatus, 0, len(requests)+len(lb.Status.Endpoints))
 	allAllocated := len(requests) > 0
+	awaitingIPAM := false
 	var firstFailure string
 	for _, request := range requests {
 		claimName := loadBalancerClaimName(&lb, request)
@@ -195,6 +194,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		entry.ClaimRef = claimRef
 		if claimErr != nil {
 			allAllocated = false
+			awaitingIPAM = true
 			reason := string(classifyAllocationFailure(claimErr))
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, reason, claimErr.Error())
@@ -203,6 +203,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			}
 		} else if address == "" {
 			allAllocated = false
+			awaitingIPAM = true
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, "AllocationPending", "IPAM has not assigned an address yet")
 		} else {
@@ -258,7 +259,11 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		if firstFailure == "" {
 			firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
 		}
-		return r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+		result, err := r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+		if err == nil && awaitingIPAM {
+			result.Requeue = true
+		}
+		return result, err
 	}
 	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 }
@@ -660,12 +665,12 @@ func (r *NetworkLoadBalancerReconciler) release(
 		}
 	}
 	if !equality.Semantic.DeepEqual(before.Status, lb.Status) {
-		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		return ctrl.Result{}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	}
 	for _, endpoint := range lb.Status.Endpoints {
 		for _, address := range endpoint.Addresses {
 			if addressPendingWithdrawal(address) {
-				return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+				return ctrl.Result{}, nil
 			}
 		}
 	}
@@ -727,7 +732,7 @@ func (r *NetworkLoadBalancerReconciler) report(
 		}
 	}
 	if equality.Semantic.DeepEqual(before.Status, lb.Status) {
-		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+		return ctrl.Result{}, nil
 	}
 	// Location controllers also write nested address conditions. A version
 	// precondition prevents this allocation pass from overwriting their newer
@@ -735,9 +740,7 @@ func (r *NetworkLoadBalancerReconciler) report(
 	if err := cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update load balancer status: %w", err)
 	}
-	// Periodic reconciliation notices IPAM completion and changes to the
-	// dynamically selected "All" location set without a cross-cluster watch.
-	return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+	return ctrl.Result{}, nil
 }
 
 func addressIdentityChanged(before, after []networkingv1alpha.NetworkLoadBalancerEndpointStatus) bool {

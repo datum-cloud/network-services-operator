@@ -7,7 +7,9 @@
     "NetworkList": "./src/pages/network-list.tsx",
     "NetworkDetail": "./src/pages/network-detail.tsx",
     "NetworkHomeHero": "./src/components/network-home-hero.tsx",
-    "CreateNetworkDialog": "./src/components/create-network-dialog.tsx"
+    "CreateNetworkDialog": "./src/components/create-network-dialog.tsx",
+    "NlbList": "./src/pages/nlb-list.tsx",
+    "NlbDetail": "./src/pages/nlb-detail.tsx"
   },
   "extensions": [
     {
@@ -48,6 +50,43 @@
           { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "list" },
           { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "create" },
           { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "delete" }
+        ]
+      }
+    },
+    {
+      "type": "portal.nav/project",
+      "properties": {
+        "id": "nlb",
+        "title": "NLB",
+        "icon": "network",
+        "path": "nlb",
+        "order": 35,
+        "section": "deliver"
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": "nlb",
+        "component": { "$codeRef": "NlbList" }
+      },
+      "requirements": {
+        "permissions": [
+          { "group": "networking.datumapis.com", "resource": "networkloadbalancers", "verb": "list" }
+        ]
+      }
+    },
+    {
+      "type": "portal.page/project",
+      "properties": {
+        "path": "nlb/:nlbName/*",
+        "component": { "$codeRef": "NlbDetail" }
+      },
+      "requirements": {
+        "permissions": [
+          { "group": "networking.datumapis.com", "resource": "networkloadbalancers", "verb": "get" },
+          { "group": "networking.datumapis.com", "resource": "networkloadbalancerroutes", "verb": "list" },
+          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "list" }
         ]
       }
     },

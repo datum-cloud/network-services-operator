@@ -3,17 +3,23 @@ import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
-  return { ...actual, useNetworkLoadBalancers: vi.fn(), useNetworkServices: vi.fn() };
+  return {
+    ...actual,
+    useNetworkLoadBalancers: vi.fn(),
+    useNetworkServices: vi.fn(),
+    useNetworks: vi.fn(),
+  };
 });
 
 const useNetworkLoadBalancersMock = vi.mocked(api.useNetworkLoadBalancers);
 const useNetworkServicesMock = vi.mocked(api.useNetworkServices);
+const useNetworksMock = vi.mocked(api.useNetworks);
 
 function LocationProbe() {
   const location = useLocation();
@@ -91,6 +97,7 @@ beforeEach(() => {
   useNetworkLoadBalancersMock.mockReset();
   useNetworkServicesMock.mockReset();
   mockServices([]);
+  useNetworksMock.mockReturnValue({ data: [], isLoading: false, error: null } as never);
 });
 
 describe('NlbList state machine', () => {
@@ -203,5 +210,23 @@ describe('NLB empty state', () => {
     renderPage();
     expect(screen.queryByTestId('networking-plugin-nlb-backends')).not.toBeInTheDocument();
     expect(screen.getByTestId('networking-plugin-nlb-empty')).toBeInTheDocument();
+  });
+
+  it('opens the create dialog with a starter protocol and port filled in', async () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId('networking-plugin-nlb-starter-game-server'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Create load balancer')).toBeInTheDocument();
+    expect(within(dialog).getByPlaceholderText('e.g. 5432')).toHaveValue(7777);
+    expect(within(dialog).getAllByRole('combobox')[1]).toHaveTextContent('UDP');
+  });
+
+  it('closes the create dialog and clears the query on cancel', async () => {
+    renderPage();
+    fireEvent.click(screen.getByRole('button', { name: /Create load balancer/ }));
+    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByTestId('location-search')).toBeEmptyDOMElement();
   });
 });

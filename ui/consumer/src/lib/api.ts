@@ -30,13 +30,21 @@ export const PLUGIN_ID = 'network.networking.datumapis.com';
 
 const REFETCH_INTERVAL_MS = 10_000;
 
+/** One entry of a Kubernetes Status's details.causes, e.g. field "spec.listeners[0].port". */
+export interface ApiErrorCause {
+  field?: string;
+  message?: string;
+}
+
 export class ApiError extends Error {
   status: number;
+  causes: ApiErrorCause[];
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, causes: ApiErrorCause[] = []) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.causes = causes;
   }
 }
 
@@ -52,6 +60,8 @@ const NETWORKSERVICES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/
 const HTTPPROXIES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/httpproxies';
 const NETWORKLOADBALANCERS_PATH =
   '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkloadbalancers';
+const NETWORKLOADBALANCERROUTES_PATH =
+  '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkloadbalancerroutes';
 
 async function proxyFetch<T>(projectId: string, path: string): Promise<T> {
   const url = `${getProjectScopedBase(projectId)}${path}`;
@@ -438,4 +448,35 @@ export function useDeleteNetworkService(
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkServices', projectId] });
     },
   });
+}
+
+async function toApiError(res: Response, fallback: string): Promise<ApiError> {
+  try {
+    const body = (await res.json()) as { message?: string; details?: { causes?: ApiErrorCause[] } };
+    return new ApiError(res.status, body.message ?? fallback, body.details?.causes ?? []);
+  } catch {
+    return new ApiError(res.status, fallback);
+  }
+}
+
+async function proxyCreate(projectId: string, path: string, body: unknown, describe: string): Promise<void> {
+  const res = await fetch(`${getProjectScopedBase(projectId)}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): ${describe}`);
+}
+
+export interface NlbCreateRequests {
+  nlb: { metadata: { name: string; namespace: string } } & Record<string, unknown>;
+  route: { metadata: { name: string; namespace: string } } & Record<string, unknown>;
+}
+
+export function createNetworkLoadBalancer(projectId: string, body: NlbCreateRequests['nlb']): Promise<void> {
+  return proxyCreate(projectId, NETWORKLOADBALANCERS_PATH, body, `create load balancer ${body.metadata.name}`);
+}
+
+export function createNetworkLoadBalancerRoute(projectId: string, body: NlbCreateRequests['route']): Promise<void> {
+  return proxyCreate(projectId, NETWORKLOADBALANCERROUTES_PATH, body, `create route ${body.metadata.name}`);
 }

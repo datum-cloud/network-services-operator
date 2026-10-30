@@ -211,6 +211,8 @@ func TestInternalDNSCellProgramsOnePathPerResolver(t *testing.T) {
 	primary := map[string]string{"service.datum.net/internal-dns": "true", "internal-dns.datum.net/tier": "node"}
 	secondary := map[string]string{"service.datum.net/internal-dns": "true", "internal-dns.datum.net/tier": "node-b"}
 	r := &InternalDNSCellReconciler{
+		Location:    config.LocationConfig{Name: "ord-1"},
+		localReader: noServingLocations{cl},
 		Config: config.InternalDNSConfig{Resolvers: []config.InternalDNSResolver{
 			{Frontend: "fd53::53", ProducerAttachmentSelector: primary},
 			{Frontend: "fd53::54", ProducerAttachmentSelector: secondary},
@@ -336,8 +338,10 @@ func TestInternalDNSCellReportsNoAttachments(t *testing.T) {
 		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
 		WithObjects(networkContext.DeepCopy()).Build()
 	r := &InternalDNSCellReconciler{
-		Config:     config.InternalDNSConfig{Frontend: "fd53::53"},
-		HubCluster: &fakeCluster{cl: hub},
+		Location:    config.LocationConfig{Name: "ord-1"},
+		localReader: noServingLocations{cl},
+		Config:      config.InternalDNSConfig{Frontend: "fd53::53"},
+		HubCluster:  &fakeCluster{cl: hub},
 	}
 	if _, err := r.reconcile(ctx, cl, networkContext); err != nil {
 		t.Fatal(err)

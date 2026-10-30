@@ -419,6 +419,7 @@ func controllerRegistrations(
 			return false, nil
 		}
 		return true, (&controller.InternalDNSCellReconciler{
+			Location:   serverConfig.Location,
 			Config:     serverConfig.InternalDNS,
 			HubCluster: hubCluster,
 		}).SetupWithManager(mgr)

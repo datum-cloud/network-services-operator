@@ -333,7 +333,7 @@ export function useDeleteNetwork(
 export interface CreateNetworkServiceInput {
   name: string;
   matchLabels: Record<string, string>;
-  ports: { name: string; port: number }[];
+  ports: { name: string; port: number; protocol: 'TCP' | 'UDP' }[];
 }
 
 async function createNetworkService(
@@ -353,7 +353,7 @@ async function createNetworkService(
       metadata: { name: input.name, namespace: 'default' },
       spec: {
         networkInterfaces: { selector: { matchLabels: input.matchLabels } },
-        ports: input.ports.map((p) => ({ name: p.name, port: p.port, protocol: 'TCP' })),
+        ports: input.ports.map((p) => ({ name: p.name, port: p.port, protocol: p.protocol })),
       },
     }),
   });

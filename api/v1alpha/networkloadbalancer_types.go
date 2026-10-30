@@ -100,6 +100,8 @@ type NetworkLoadBalancerExposure struct {
 
 // NetworkLoadBalancerListener accepts one transport and port on its named
 // address requests. TCP and UDP may use the same port.
+// +kubebuilder:validation:XValidation:rule="has(self.port) != has(self.portRange)",message="exactly one of port and portRange is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.portRange) || self.portRange.start == self.portRange.end || self.protocol == 'UDP'",message="true port ranges require UDP"
 type NetworkLoadBalancerListener struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -110,10 +112,12 @@ type NetworkLoadBalancerListener struct {
 	// +kubebuilder:validation:Required
 	Protocol NetworkLoadBalancerProtocol `json:"protocol"`
 
-	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port"`
+	Port int32 `json:"port,omitempty"`
+	// +optional
+	PortRange *PortRange `json:"portRange,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinItems=1
@@ -130,7 +134,7 @@ type NetworkLoadBalancerListener struct {
 
 // NetworkLoadBalancerSpec defines the network, public addresses, and listeners.
 // +kubebuilder:validation:XValidation:message="each listener address reference must name an address request",rule="self.listeners.all(l, l.addressRefs.all(r, r in self.exposure.addresses.map(a, a.name)))"
-// +kubebuilder:validation:XValidation:message="listeners sharing an address cannot use the same protocol and port",rule="self.listeners.all(l1, self.listeners.all(l2, l1.name == l2.name || l1.protocol != l2.protocol || l1.port != l2.port || !l1.addressRefs.exists(r, r in l2.addressRefs)))"
+// +kubebuilder:validation:XValidation:message="listeners sharing an address cannot have overlapping transport ports",rule="self.listeners.all(a, self.listeners.all(b, a.name == b.name || (a.protocol == 'UDP') != (b.protocol == 'UDP') || !a.addressRefs.exists(r, r in b.addressRefs) || (has(a.portRange) ? a.portRange.end : a.port) < (has(b.portRange) ? b.portRange.start : b.port) || (has(b.portRange) ? b.portRange.end : b.port) < (has(a.portRange) ? a.portRange.start : a.port)))"
 // +kubebuilder:validation:XValidation:message="TLS configuration is required only for TLS listeners",rule="self.listeners.all(l, l.protocol == 'TLS' ? has(l.tls) : !has(l.tls))"
 type NetworkLoadBalancerSpec struct {
 	// The network must exist in the load balancer's namespace.
@@ -160,13 +164,16 @@ type NetworkLoadBalancerIPClaimRef struct {
 
 // NetworkLoadBalancerAddressStatus describes one family at a location.
 type NetworkLoadBalancerAddressStatus struct {
-	Family       IPFamily                       `json:"family"`
-	Value        string                         `json:"value,omitempty"`
-	ClaimRef     *NetworkLoadBalancerIPClaimRef `json:"claimRef,omitempty"`
-	Announced    bool                           `json:"announced,omitempty"`
-	DNSPublished bool                           `json:"dnsPublished,omitempty"`
-	Reason       string                         `json:"reason,omitempty"`
-	Message      string                         `json:"message,omitempty"`
+	Retiring          bool                           `json:"retiring,omitempty"`
+	Coordinated       bool                           `json:"coordinated,omitempty"`
+	Family            IPFamily                       `json:"family"`
+	Value             string                         `json:"value,omitempty"`
+	ClaimRef          *NetworkLoadBalancerIPClaimRef `json:"claimRef,omitempty"`
+	WithdrawalPending bool                           `json:"withdrawalPending,omitempty"`
+	Announced         bool                           `json:"announced,omitempty"`
+	DNSPublished      bool                           `json:"dnsPublished,omitempty"`
+	Reason            string                         `json:"reason,omitempty"`
+	Message           string                         `json:"message,omitempty"`
 
 	// Conditions include Allocated, Programmed, and Announced with
 	// observedGeneration. An entry with no value reports a pending or failed
@@ -176,12 +183,22 @@ type NetworkLoadBalancerAddressStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+type NetworkLoadBalancerListenerStatus struct {
+	Name string `json:"name"`
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
 // NetworkLoadBalancerEndpointStatus is stable for one address request and
 // location, even while individual address families are unavailable.
 type NetworkLoadBalancerEndpointStatus struct {
-	RequestName       string `json:"requestName"`
-	Location          string `json:"location"`
-	CanonicalHostname string `json:"canonicalHostname,omitempty"`
+	// +listType=map
+	// +listMapKey=name
+	Listeners         []NetworkLoadBalancerListenerStatus `json:"listeners,omitempty"`
+	RequestName       string                              `json:"requestName"`
+	Location          string                              `json:"location"`
+	CanonicalHostname string                              `json:"canonicalHostname,omitempty"`
 	// +listType=map
 	// +listMapKey=family
 	Addresses []NetworkLoadBalancerAddressStatus `json:"addresses,omitempty"`

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,7 @@ const nlbProgrammingTestNamespace = "ns-project"
 func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCellProgrammingReconciler, *networkingv1alpha.NetworkLoadBalancerCellIntent) {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
 	require.NoError(t, cloudv1alpha1.AddToScheme(scheme))
 	require.NoError(t, networkv1alpha1.AddToScheme(scheme))
@@ -81,10 +83,10 @@ func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCel
 			}},
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent).
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cell-uid"}}).
 		WithStatusSubresource(&networkingv1alpha.NetworkLoadBalancerCellIntent{}, &networkv1alpha1.NetworkService{}).Build()
 	r := &NetworkLoadBalancerCellProgrammingReconciler{
-		Client: cl, Scheme: scheme,
+		Client: cl, Scheme: scheme, HubCluster: &fakeCluster{cl: cl, reader: cl},
 		resolveLocation: func(context.Context) (string, error) { return "us-central-1", nil },
 	}
 	return cl, r, intent

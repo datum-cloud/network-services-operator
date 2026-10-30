@@ -29,7 +29,6 @@ import (
 	clientgoapplyconfigurations "k8s.io/client-go/applyconfigurations"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -42,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/recorder"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayapplyconfiguration "sigs.k8s.io/gateway-api/applyconfiguration"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -3089,10 +3089,10 @@ func (c *clusterWithClient) GetFieldIndexer() client.FieldIndexer { return nil }
 func (c *clusterWithClient) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (c *clusterWithClient) GetEventRecorder(string) events.EventRecorder { return nil }
-func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper            { return nil }
-func (c *clusterWithClient) GetAPIReader() client.Reader                  { return c.c }
-func (c *clusterWithClient) Start(context.Context) error                  { return nil }
+func (c *clusterWithClient) GetEventRecorder(string) recorder.EventRecorder { return nil }
+func (c *clusterWithClient) GetRESTMapper() apimeta.RESTMapper              { return nil }
+func (c *clusterWithClient) GetAPIReader() client.Reader                    { return c.c }
+func (c *clusterWithClient) Start(context.Context) error                    { return nil }
 
 func TestSetCertificatesReadyCondition(t *testing.T) {
 	t.Parallel()

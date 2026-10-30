@@ -332,8 +332,8 @@ func TestNetworkLoadBalancerBackendPlacementResolvesUniquePortParent(t *testing.
 	})
 	require.NoError(t, s.client.Update(s.ctx, &lb))
 	lb = s.reconcile()
-	require.Empty(t, lb.Status.AddressRequests[1].ResolvedLocations,
-		"ambiguous port parent must not allocate backend-derived addresses")
+	require.Equal(t, []string{"iad"}, lb.Status.AddressRequests[1].ResolvedLocations,
+		"ambiguous port parent retains the prior allocation while resolution is pending")
 }
 
 func TestNetworkLoadBalancerTooManySelectedEndpointsDoesNotAllocate(t *testing.T) {

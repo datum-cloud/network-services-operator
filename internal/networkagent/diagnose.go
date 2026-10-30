@@ -383,10 +383,11 @@ type MemberView struct {
 }
 
 type PortView struct {
-	Name        string `json:"name"`
-	Port        int32  `json:"port"`
-	Protocol    string `json:"protocol,omitempty"`
-	AppProtocol string `json:"appProtocol,omitempty"`
+	Name        string                       `json:"name"`
+	Port        int32                        `json:"port,omitempty"`
+	PortRange   *networkingv1alpha.PortRange `json:"portRange,omitempty"`
+	Protocol    string                       `json:"protocol,omitempty"`
+	AppProtocol string                       `json:"appProtocol,omitempty"`
 }
 
 type ServiceDiagnosis struct {
@@ -421,7 +422,7 @@ func diagnoseService(s *networkingv1alpha.NetworkService, e *evidence, now time.
 		d.Selects = sel.String()
 	}
 	for _, p := range s.Spec.Ports {
-		d.Ports = append(d.Ports, PortView{Name: p.Name, Port: p.Port, Protocol: string(p.Protocol),
+		d.Ports = append(d.Ports, PortView{Name: p.Name, Port: p.Port, PortRange: p.PortRange, Protocol: string(p.Protocol),
 			AppProtocol: string(ptr.Deref(p.AppProtocol, ""))})
 	}
 

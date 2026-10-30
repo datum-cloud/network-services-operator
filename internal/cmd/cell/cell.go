@@ -409,8 +409,12 @@ func controllerRegistrations(
 			return false, nil
 		}
 		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
-			Location: serverConfig.Location,
-			IPv4VIPs: serverConfig.NetworkLoadBalancer.IPv4VIPs,
+			HubCluster:             hubCluster,
+			Location:               serverConfig.Location,
+			MaxExposedPorts:        serverConfig.NetworkLoadBalancer.MaxExposedPorts,
+			SharedAddressListeners: serverConfig.NetworkLoadBalancer.SharedAddressListeners,
+			UDPPortRanges:          serverConfig.NetworkLoadBalancer.UDPPortRanges,
+			IPv4VIPs:               serverConfig.NetworkLoadBalancer.IPv4VIPs,
 		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 

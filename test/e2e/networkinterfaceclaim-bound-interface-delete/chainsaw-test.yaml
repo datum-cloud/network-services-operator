@@ -133,6 +133,19 @@ spec:
               # interface within seconds, so a waiting delete can watch the
               # replacement appear under the same name and never return.
               kubectl -n ipam-e2e-alpha delete networkinterface nic-boundifdel --wait=false
+              was=$(cat "${TMPDIR:-/tmp}/nic-boundifdel-addresses.uid")
+              [ -n "$was" ] || { echo "the original interface UID was not recorded"; exit 1; }
+              deadline=$(($(date +%s) + 100))
+              while :; do
+                snapshot=$(kubectl -n ipam-e2e-alpha get networkinterface nic-boundifdel --ignore-not-found --request-timeout=5s -o 'jsonpath={.metadata.uid}{"|"}{.metadata.deletionTimestamp}')
+                now=${snapshot%%|*}
+                deleting=${snapshot#*|}
+                if [ -n "$now" ] && [ "$now" != "$was" ] && [ -z "$deleting" ]; then
+                  break
+                fi
+                [ "$(date +%s)" -lt "$deadline" ] || { echo "timed out waiting for a non-deleting replacement: original UID ${was}, last observation ${snapshot}"; exit 1; }
+                sleep 1
+              done
         - assert:
             resource:
               apiVersion: networking.datumapis.com/v1alpha

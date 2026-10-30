@@ -22,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
@@ -33,6 +32,7 @@ import (
 	mgrconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/recorder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -945,10 +945,10 @@ func (f *replicatorFakeCluster) GetFieldIndexer() client.FieldIndexer { return n
 func (f *replicatorFakeCluster) GetEventRecorderFor(string) record.EventRecorder {
 	return record.NewFakeRecorder(10)
 }
-func (f *replicatorFakeCluster) GetEventRecorder(string) events.EventRecorder { return nil }
-func (f *replicatorFakeCluster) GetRESTMapper() meta.RESTMapper               { return nil }
-func (f *replicatorFakeCluster) GetAPIReader() client.Reader                  { return f.c }
-func (f *replicatorFakeCluster) Start(context.Context) error                  { return nil }
+func (f *replicatorFakeCluster) GetEventRecorder(string) recorder.EventRecorder { return nil }
+func (f *replicatorFakeCluster) GetRESTMapper() meta.RESTMapper                 { return nil }
+func (f *replicatorFakeCluster) GetAPIReader() client.Reader                    { return f.c }
+func (f *replicatorFakeCluster) Start(context.Context) error                    { return nil }
 
 type replicatorFakeManager struct {
 	mcmanager.Manager

@@ -30,6 +30,7 @@ var inScopeAPIFiles = []string{
 }
 
 var outOfScopeAPIFiles = map[string]string{
+	"portrange_types.go":                        "shared interval value type, no status reasons",
 	"domain_types.go":                           "load balancer hostnames; the ALB agent's",
 	"edgereachability_types.go":                 "hub-side record with no customer-facing status",
 	"groupversion_info.go":                      "scheme registration, no reasons",

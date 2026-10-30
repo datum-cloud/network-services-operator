@@ -182,6 +182,7 @@ rules:
   - galactic.datumapis.com
   resources:
   - networkfabricidentities
+  - networkgateways
   verbs:
   - get
   - list
@@ -189,6 +190,7 @@ rules:
 - apiGroups:
   - galactic.datumapis.com
   resources:
+  - networkserviceaddresses
   - networkservices
   - serviceendpoints
   - serviceroutepolicies

@@ -95,3 +95,25 @@ func TestHTTPProxyReportsUDPBackendAndRecoversWithTCP(t *testing.T) {
 	require.NoError(t, cl.List(ctx, &slices))
 	require.Len(t, slices.Items, 1)
 }
+
+func TestHTTPProxyRejectsRangeAndNormalizesEqualEndpoints(t *testing.T) {
+	for _, end := range []int32{443, 444} {
+		s := &api.NetworkService{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: "default"}, Spec: api.NetworkServiceSpec{NetworkInterfaces: api.NetworkServiceInterfaceSelector{Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "backend"}}}, Ports: []api.NetworkServicePort{{Name: "service", PortRange: &api.PortRange{Start: 443, End: end}}}}}
+		scheme := runtime.NewScheme()
+		require.NoError(t, api.AddToScheme(scheme))
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(s).Build()
+		resolved, err := resolveNetworkServiceBackend(context.Background(), cl, s.Namespace, &api.NetworkServiceBackendRef{Name: s.Name, Port: "service"})
+		if end == 443 {
+			require.NoError(t, err)
+			require.EqualValues(t, 443, resolved.port)
+			continue
+		}
+		require.IsType(t, &errNetworkServiceBackendUnsupportedRange{}, err)
+		condition := &metav1.Condition{}
+		_, reported, done := collectDesiredResourcesErrorResult(err, condition)
+		require.NoError(t, reported)
+		require.True(t, done)
+		require.Equal(t, "UnsupportedBackendPortRange", condition.Reason)
+		require.Equal(t, metav1.ConditionFalse, condition.Status)
+	}
+}

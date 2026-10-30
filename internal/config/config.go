@@ -130,6 +130,9 @@ type NetworkServicesOperator struct {
 
 // NetworkLoadBalancerConfig configures network load balancer behavior.
 type NetworkLoadBalancerConfig struct {
+	SharedAddressListeners bool  `json:"sharedAddressListeners,omitempty"`
+	UDPPortRanges          bool  `json:"udpPortRanges,omitempty"`
+	MaxExposedPorts        int32 `json:"maxExposedPorts,omitempty"`
 	// DNS configures how each location's generated hostname is published.
 	DNS NetworkLoadBalancerDNSConfig `json:"dns,omitempty"`
 }

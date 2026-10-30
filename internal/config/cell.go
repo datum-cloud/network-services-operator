@@ -114,10 +114,10 @@ type GalacticCellConfig struct {
 	// exec agent. Galactic drops traffic to them unless it is addressed to the
 	// guest's link-local address.
 	//
-	// Set it only once every node in the cell runs a Galactic that supports
-	// host-only ports. An older tap plugin ignores the list and leaves the
-	// ports open, and a newer one whose datapath is not loaded refuses the
-	// attachment.
+	// Set it only once every node in the cell runs a Galactic that installs
+	// galactic-tap-host-only. The conflist names that plugin, so a node
+	// without it fails the attachment rather than leaving the ports open, as
+	// does a node whose datapath is not loaded.
 	HypervisorHostOnlyPorts []uint16 `json:"hypervisorHostOnlyPorts,omitempty"`
 }
 

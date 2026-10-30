@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,10 +19,14 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -36,8 +39,11 @@ import (
 const (
 	networkLoadBalancerFinalizer  = "networking.datumapis.com/networkloadbalancer-release"
 	networkLoadBalancerOwnerLabel = "networking.datumapis.com/network-load-balancer-uid"
-	networkLoadBalancerRetry      = time.Minute
 )
+
+// errAddressesPending marks a pass that left an address waiting on IPAM. IPAM
+// changes are not watched, so the work queue's backoff retries the pass.
+var errAddressesPending = errors.New("load balancer addresses are pending in IPAM")
 
 type NetworkLoadBalancerReconciler struct {
 	IPAM            IPAMClientFactory
@@ -51,6 +57,9 @@ type NetworkLoadBalancerReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkloadbalancerroutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkservices,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -128,6 +137,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 	wanted := make(map[string]bool, len(requests))
 	status := make([]networkingv1alpha.NetworkLoadBalancerEndpointStatus, 0, len(requests)+len(lb.Status.Endpoints))
 	allAllocated := len(requests) > 0
+	ipamPending := false
 	var firstFailure string
 	for _, request := range requests {
 		claimName := loadBalancerClaimName(&lb, request)
@@ -174,6 +184,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			setLoadBalancerCondition(&prior.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "ReplacingRetiredAllocation", "A retired allocation cannot be served again; waiting for a new claim")
 			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
 			allAllocated = false
+			ipamPending = true
 			continue
 		}
 		entry := prior
@@ -188,6 +199,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		entry.ClaimRef = claimRef
 		if claimErr != nil {
 			allAllocated = false
+			ipamPending = true
 			reason := string(classifyAllocationFailure(claimErr))
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, reason, claimErr.Error())
@@ -196,6 +208,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			}
 		} else if address == "" {
 			allAllocated = false
+			ipamPending = true
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, "AllocationPending", "IPAM has not assigned an address yet")
 		} else {
@@ -247,13 +260,25 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		}
 	}
 
-	if !allAllocated {
-		if firstFailure == "" {
-			firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
-		}
-		return r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+	return r.reportAllocation(ctx, cl, &lb, status, requests, allAllocated, ipamPending, firstFailure)
+}
+
+func (r *NetworkLoadBalancerReconciler) reportAllocation(
+	ctx context.Context, cl client.Client, lb *networkingv1alpha.NetworkLoadBalancer,
+	status []networkingv1alpha.NetworkLoadBalancerEndpointStatus, requests []loadBalancerAddressRequest,
+	allAllocated, ipamPending bool, firstFailure string,
+) (ctrl.Result, error) {
+	if allAllocated {
+		return r.report(ctx, cl, lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 	}
-	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
+	if firstFailure == "" {
+		firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
+	}
+	result, err := r.report(ctx, cl, lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+	if err == nil && ipamPending {
+		err = fmt.Errorf("%w: %s", errAddressesPending, firstFailure)
+	}
+	return result, err
 }
 
 func countAddressEndpoints(requests []loadBalancerAddressRequest, prior []networkingv1alpha.NetworkLoadBalancerEndpointStatus) int {
@@ -653,12 +678,12 @@ func (r *NetworkLoadBalancerReconciler) release(
 		}
 	}
 	if !equality.Semantic.DeepEqual(before.Status, lb.Status) {
-		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		return ctrl.Result{}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	}
 	for _, endpoint := range lb.Status.Endpoints {
 		for _, address := range endpoint.Addresses {
 			if addressPendingWithdrawal(address) {
-				return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+				return ctrl.Result{}, nil
 			}
 		}
 	}
@@ -720,7 +745,7 @@ func (r *NetworkLoadBalancerReconciler) report(
 		}
 	}
 	if equality.Semantic.DeepEqual(before.Status, lb.Status) {
-		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+		return ctrl.Result{}, nil
 	}
 	// Location controllers also write nested address conditions. A version
 	// precondition prevents this allocation pass from overwriting their newer
@@ -728,9 +753,7 @@ func (r *NetworkLoadBalancerReconciler) report(
 	if err := cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update load balancer status: %w", err)
 	}
-	// Periodic reconciliation notices IPAM completion and changes to the
-	// dynamically selected "All" location set without a cross-cluster watch.
-	return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+	return ctrl.Result{}, nil
 }
 
 func addressIdentityChanged(before, after []networkingv1alpha.NetworkLoadBalancerEndpointStatus) bool {
@@ -763,10 +786,44 @@ func setLoadBalancerCondition(
 
 func (r *NetworkLoadBalancerReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	watch := func(mapper func(context.Context, client.Client, client.Object) []ctrl.Request) func(multicluster.ClusterName, cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+			return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+				requests := mapper(ctx, cl.GetClient(), obj)
+				out := make([]mcreconcile.Request, 0, len(requests))
+				for _, req := range requests {
+					out = append(out, mcreconcile.Request{ClusterName: clusterName, Request: req})
+				}
+				return out
+			})
+		}
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkLoadBalancer{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Watches(&networkingv1alpha.NetworkLoadBalancerRoute{}, watch(loadBalancersForIntentEvent)).
+		Watches(&networkingv1alpha.NetworkService{}, watch(loadBalancersForIntentEvent)).
+		Watches(&networkingv1alpha.NetworkInterface{}, watch(loadBalancersForIntentEvent)).
+		Watches(&networkingv1alpha.Network{}, watch(loadBalancersForIntentEvent)).
+		Watches(&locationsv1alpha1.Location{}, watch(loadBalancersForLocationEvent)).
 		Named("networkloadbalancer").
 		Complete(r)
+}
+
+func loadBalancersForLocationEvent(ctx context.Context, cl client.Client, _ client.Object) []ctrl.Request {
+	var lbs networkingv1alpha.NetworkLoadBalancerList
+	if err := cl.List(ctx, &lbs); err != nil {
+		log.FromContext(ctx).Error(err, "list load balancers for location event")
+		return nil
+	}
+	var out []ctrl.Request
+	for i := range lbs.Items {
+		if slices.ContainsFunc(lbs.Items[i].Spec.Exposure.Addresses, func(address networkingv1alpha.NetworkLoadBalancerAddressRequest) bool {
+			return address.Locations != nil && address.Locations.From == networkingv1alpha.NetworkLoadBalancerLocationSourceAll
+		}) {
+			out = append(out, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&lbs.Items[i])})
+		}
+	}
+	return out
 }
 
 func addressRequestUsesCoordination(lb *networkingv1alpha.NetworkLoadBalancer, request string) bool {

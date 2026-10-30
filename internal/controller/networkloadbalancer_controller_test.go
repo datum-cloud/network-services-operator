@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -96,10 +98,28 @@ func newLoadBalancerAllocationScenario(t *testing.T) *loadBalancerAllocationScen
 func (s *loadBalancerAllocationScenario) reconcile() networkingv1alpha.NetworkLoadBalancer {
 	s.t.Helper()
 	_, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
-	require.NoError(s.t, err)
+	require.NoError(s.t, ignoreAddressesPending(err))
 	var lb networkingv1alpha.NetworkLoadBalancer
 	require.NoError(s.t, s.client.Get(s.ctx, client.ObjectKeyFromObject(s.lb), &lb))
 	return lb
+}
+
+func ignoreAddressesPending(err error) error {
+	if errors.Is(err, errAddressesPending) {
+		return nil
+	}
+	return err
+}
+
+func (s *loadBalancerAllocationScenario) assignAddresses() {
+	s.t.Helper()
+	for i, claim := range s.claims() {
+		if claim.Status.AllocatedCIDR != "" {
+			continue
+		}
+		claim.Status.AllocatedCIDR = fmt.Sprintf("2001:db8::%x/128", i+1)
+		require.NoError(s.t, s.ipam.Status().Update(s.ctx, &claim))
+	}
 }
 
 func (s *loadBalancerAllocationScenario) claims() []ipamv1alpha1.IPClaim {
@@ -729,4 +749,79 @@ func setEdgeAnnouncement(lb *networkingv1alpha.NetworkLoadBalancer, status metav
 			})
 		}
 	}
+}
+
+func TestNetworkLoadBalancerPendingClaimRetriesThroughBackoff(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	result, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
+	require.ErrorIs(t, err, errAddressesPending)
+	require.Zero(t, result)
+	require.Len(t, s.claims(), 3)
+}
+
+func TestNetworkLoadBalancerAllocatedPassDoesNotRequeue(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	s.reconcile()
+	s.assignAddresses()
+	result, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
+	require.NoError(t, err)
+	require.Zero(t, result)
+	result, err = s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
+	require.NoError(t, err)
+	require.Zero(t, result, "a settled load balancer waits for events")
+}
+
+func TestNetworkLoadBalancerRouteCreatedAfterLoadBalancerAllocates(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	var lb networkingv1alpha.NetworkLoadBalancer
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(s.lb), &lb))
+	lb.Spec.Exposure.Addresses = lb.Spec.Exposure.Addresses[1:]
+	lb.Spec.Exposure.Addresses[0].Locations = nil
+	lb.Spec.Listeners[0].AddressRefs = []string{"edge"}
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	result, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
+	require.NoError(t, err)
+	require.Zero(t, result)
+	require.Empty(t, s.claims(), "no backends means no locations yet")
+
+	service := &networkingv1alpha.NetworkService{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: lb.Namespace}}
+	service.Spec.NetworkInterfaces.Selector = metav1.LabelSelector{MatchLabels: map[string]string{"app": "backend"}}
+	service.Spec.Ports = []networkingv1alpha.NetworkServicePort{{Name: "http", Port: 8080}}
+	require.NoError(t, s.client.Create(s.ctx, service))
+	member := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
+		Name: "member", Namespace: lb.Namespace,
+		Labels: map[string]string{"app": "backend", networkingv1alpha.NetworkInterfaceLocationLabel: "iad"},
+	}}
+	member.Spec.Network.Name = lb.Spec.NetworkRef.Name
+	member.Spec.ClaimRef = &networkingv1alpha.NetworkInterfaceClaimRef{Name: "member"}
+	member.Status.Phase = networkingv1alpha.NetworkInterfacePhaseBound
+	require.NoError(t, s.client.Create(s.ctx, member))
+	require.NoError(t, s.client.Status().Update(s.ctx, member))
+	route := &networkingv1alpha.NetworkLoadBalancerRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: lb.Namespace}}
+	route.Spec.ParentRefs = []networkingv1alpha.NetworkLoadBalancerRouteParentRef{{Name: lb.Name, Listener: "web"}}
+	route.Spec.Backends = []networkingv1alpha.NetworkLoadBalancerRouteBackend{{
+		NetworkService: networkingv1alpha.NetworkLoadBalancerNetworkServiceRef{Name: service.Name, Port: "http"},
+	}}
+	require.NoError(t, s.client.Create(s.ctx, route))
+
+	require.Contains(t, loadBalancersForIntentEvent(s.ctx, s.client, route),
+		ctrl.Request{NamespacedName: client.ObjectKeyFromObject(s.lb)}, "route event must wake its load balancer")
+	lb = s.reconcile()
+	require.Len(t, s.claims(), 1)
+	require.Equal(t, []string{"iad"}, lb.Status.AddressRequests[0].ResolvedLocations)
+}
+
+func TestNetworkLoadBalancerLocationEventWakesAllLocationLoadBalancers(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	location := &locationsv1alpha1.Location{ObjectMeta: metav1.ObjectMeta{Name: "iad"}}
+	require.Empty(t, loadBalancersForLocationEvent(s.ctx, s.client, location))
+
+	var lb networkingv1alpha.NetworkLoadBalancer
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(s.lb), &lb))
+	lb.Spec.Exposure.Addresses[0].Locations = &networkingv1alpha.NetworkLoadBalancerLocationSelection{
+		From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll,
+	}
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	require.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKeyFromObject(s.lb)}},
+		loadBalancersForLocationEvent(s.ctx, s.client, location))
 }

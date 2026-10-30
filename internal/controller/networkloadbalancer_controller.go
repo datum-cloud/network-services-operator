@@ -841,7 +841,9 @@ func loadBalancersForInterfaceEvent(ctx context.Context, cl client.Client, obj c
 		return nil
 	}
 	return loadBalancersMatching(ctx, cl, []client.ListOption{client.InNamespace(iface.Namespace)},
-		func(lb *networkingv1alpha.NetworkLoadBalancer) bool { return lb.Spec.NetworkRef.Name == iface.Spec.Network.Name })
+		func(lb *networkingv1alpha.NetworkLoadBalancer) bool {
+			return lb.Spec.NetworkRef.Name == iface.Spec.Network.Name
+		})
 }
 
 func loadBalancersForNetworkEvent(ctx context.Context, cl client.Client, obj client.Object) []reconcile.Request {

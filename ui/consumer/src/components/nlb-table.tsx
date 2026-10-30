@@ -19,6 +19,7 @@ import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions
 import { toast } from '@datum-cloud/datum-ui/toast';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router';
 
 export interface NlbRow {
   nlb: NetworkLoadBalancer;
@@ -89,22 +90,25 @@ function deleteDescription(row: NlbRow | undefined): string {
   return parts.join(' ');
 }
 
-// Rows don't link anywhere yet: the NLB overview arrives with #802.
 export function NlbTable({
   nlbs,
   routes,
   projectId,
+  nlbHref,
 }: {
   nlbs: NetworkLoadBalancer[];
   routes: NetworkLoadBalancerRoute[] | undefined;
   projectId?: string;
+  nlbHref: (name: string) => string;
 }) {
+  const navigate = useNavigate();
   const [deleteTarget, setDeleteTarget] = useState<NlbRow>();
   const deleteMutation = useDeleteNetworkLoadBalancer(projectId);
   const rows = useMemo(() => toNlbRows(nlbs, routes), [nlbs, routes]);
 
   const columns = useMemo<NlbColumn[]>(() => {
     const actions: ActionItem<NlbRow>[] = [
+      { key: 'view', label: 'View', onClick: (row) => navigate(nlbHref(row.nlb.name)) },
       {
         key: 'delete',
         label: 'Delete',
@@ -121,9 +125,12 @@ export function NlbTable({
         accessorFn: (row) => row.nlb.name,
         header: ({ column }) => <SortableHeader column={column} title="Name" />,
         cell: ({ row }) => (
-          <span className="truncate font-medium" title={row.original.nlb.name}>
+          <Link
+            to={nlbHref(row.original.nlb.name)}
+            className="truncate font-medium hover:underline"
+            title={row.original.nlb.name}>
             {row.original.nlb.name}
-          </span>
+          </Link>
         ),
       },
       {
@@ -181,8 +188,14 @@ export function NlbTable({
         header: '',
         enableSorting: false,
         size: 48,
+        // The menu renders in a portal, but React still bubbles its clicks
+        // through here to the row, which would open the NLB instead of the
+        // chosen action. Stop them at the cell.
         cell: ({ row }) => (
-          <div data-slot="dt-row-actions" className="flex justify-end">
+          <div
+            data-slot="dt-row-actions"
+            className="flex justify-end"
+            onClick={(event) => event.stopPropagation()}>
             <MoreActions
               row={row.original}
               actions={actions}
@@ -193,7 +206,7 @@ export function NlbTable({
         ),
       },
     ];
-  }, []);
+  }, [navigate, nlbHref]);
 
   return (
     <>
@@ -211,6 +224,8 @@ export function NlbTable({
           className="overflow-hidden rounded-lg border"
           data-testid="networking-plugin-nlb-table">
           <DataTable.Content
+            onRowClick={(row) => navigate(nlbHref(row.nlb.name))}
+            rowClassName="cursor-pointer"
             emptyMessage={
               <p className="text-muted-foreground py-8 text-center text-sm">
                 No load balancers match your search.

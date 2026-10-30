@@ -91,6 +91,7 @@ function makeNlb(name: string): NetworkLoadBalancer {
     createdAt: new Date('2026-01-01T00:00:00Z'),
     networkName: 'default',
     listeners: [{ name: 'pg', protocol: 'TCP', port: 5432 }],
+    endpoints: [],
     readyStatus: 'True',
   };
 }

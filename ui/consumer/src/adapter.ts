@@ -413,6 +413,7 @@ interface RawNetworkLoadBalancerListener {
   name?: string;
   protocol?: string;
   port?: number;
+  addressRefs?: string[];
 }
 
 interface RawNetworkLoadBalancerSpec {
@@ -420,8 +421,15 @@ interface RawNetworkLoadBalancerSpec {
   listeners?: RawNetworkLoadBalancerListener[];
 }
 
+interface RawNetworkLoadBalancerEndpointStatus {
+  requestName?: string;
+  location?: string;
+  addresses?: { family?: string; value?: string }[];
+}
+
 interface RawNetworkLoadBalancerStatus {
   conditions?: RawCondition[];
+  endpoints?: RawNetworkLoadBalancerEndpointStatus[];
 }
 
 export interface RawNetworkLoadBalancer {
@@ -441,7 +449,14 @@ function toNetworkLoadBalancerListeners(
 ): NetworkLoadBalancerListener[] {
   return (listeners ?? []).flatMap((l) =>
     l.protocol && (NLB_PROTOCOLS as readonly string[]).includes(l.protocol)
-      ? [{ name: l.name ?? '', protocol: l.protocol as NlbProtocol, port: l.port ?? 0 }]
+      ? [
+          {
+            name: l.name ?? '',
+            protocol: l.protocol as NlbProtocol,
+            port: l.port ?? 0,
+            addressRef: l.addressRefs?.[0],
+          },
+        ]
       : []
   );
 }
@@ -453,9 +468,17 @@ export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadB
   return {
     uid: raw.metadata?.uid ?? '',
     name: raw.metadata?.name ?? '',
+    resourceVersion: raw.metadata?.resourceVersion,
     createdAt: raw.metadata?.creationTimestamp ? new Date(raw.metadata.creationTimestamp) : new Date(),
     networkName: raw.spec?.networkRef?.name,
     listeners: toNetworkLoadBalancerListeners(raw.spec?.listeners),
+    endpoints: (raw.status?.endpoints ?? []).map((e) => ({
+      requestName: e.requestName ?? '',
+      location: e.location ?? '',
+      addresses: (e.addresses ?? []).flatMap((a) =>
+        a.value ? [{ family: a.family ?? '', value: a.value }] : []
+      ),
+    })),
     readyStatus,
     readyReason: ready?.reason,
     readyMessage: ready?.message,
@@ -475,12 +498,40 @@ interface RawNetworkLoadBalancerRouteParentRef {
 
 interface RawNetworkLoadBalancerRouteSpec {
   parentRefs?: RawNetworkLoadBalancerRouteParentRef[];
-  backends?: { networkService?: { name?: string } }[];
+  backends?: {
+    networkService?: { name?: string; port?: string };
+    healthCheck?: { protocol?: string; port?: string };
+  }[];
+}
+
+interface RawNetworkLoadBalancerRouteParentStatus {
+  name?: string;
+  listener?: string;
+  effective?: boolean;
+  conditions?: RawCondition[];
 }
 
 export interface RawNetworkLoadBalancerRoute {
   metadata?: RawObjectMeta;
   spec?: RawNetworkLoadBalancerRouteSpec;
+  status?: { parents?: RawNetworkLoadBalancerRouteParentStatus[] };
+}
+
+const ROUTE_PARENT_CONDITIONS = ['Accepted', 'ResolvedRefs', 'Programmed'];
+
+function toRouteParentStatus(raw: RawNetworkLoadBalancerRouteParentStatus) {
+  const conditions = raw.conditions ?? [];
+  const failing = ROUTE_PARENT_CONDITIONS.map((type) => findCondition(conditions, type)).find(
+    (c) => c?.status !== 'True'
+  );
+  return {
+    name: raw.name ?? '',
+    listener: raw.listener ?? '',
+    effective: raw.effective ?? false,
+    status: failing ? (failing.status ?? 'Unknown') : ('True' as const),
+    reason: failing?.reason,
+    message: failing?.message,
+  };
 }
 
 export interface RawNetworkLoadBalancerRouteList {
@@ -497,6 +548,20 @@ export function toNetworkLoadBalancerRoute(raw: RawNetworkLoadBalancerRoute): Ne
     resourceVersion: raw.metadata?.resourceVersion,
     parents: (raw.spec?.parentRefs ?? []).map((p) => ({ name: p.name ?? '', listener: p.listener, port: p.port })),
     backendNames: [...new Set(backendNames)],
+    backends: (raw.spec?.backends ?? []).flatMap((b) =>
+      b.networkService?.name
+        ? [
+            {
+              name: b.networkService.name,
+              port: b.networkService.port ?? '',
+              healthCheck: b.healthCheck?.protocol
+                ? { protocol: b.healthCheck.protocol, port: b.healthCheck.port }
+                : undefined,
+            },
+          ]
+        : []
+    ),
+    parentStatuses: (raw.status?.parents ?? []).map(toRouteParentStatus),
   };
 }
 

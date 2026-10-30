@@ -3,6 +3,7 @@ import {
   toNetwork,
   toNetworkInterfaceList,
   toNetworkList,
+  toNetworkLoadBalancer,
   toNetworkLoadBalancerList,
   toNetworkLoadBalancerRouteList,
   toNetworkServiceList,
@@ -13,6 +14,7 @@ import type {
   RawNetwork,
   RawNetworkInterfaceList,
   RawNetworkList,
+  RawNetworkLoadBalancer,
   RawNetworkLoadBalancerList,
   RawNetworkLoadBalancerRouteList,
   RawNetworkServiceList,
@@ -221,6 +223,27 @@ export function useNetworkLoadBalancers(
     queryKey: [PLUGIN_ID, 'networkLoadBalancers', projectId],
     enabled: !!projectId,
     queryFn: () => fetchNetworkLoadBalancers(projectId as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
+async function fetchNetworkLoadBalancer(projectId: string, name: string): Promise<NetworkLoadBalancer> {
+  const body = await proxyFetch<RawNetworkLoadBalancer>(
+    projectId,
+    `${NETWORKLOADBALANCERS_PATH}/${encodeURIComponent(name)}`
+  );
+  return toNetworkLoadBalancer(body);
+}
+
+export function useNetworkLoadBalancer(
+  projectId: string | undefined,
+  name: string | undefined
+): UseQueryResult<NetworkLoadBalancer, ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'networkLoadBalancer', projectId, name],
+    enabled: !!projectId && !!name,
+    queryFn: () => fetchNetworkLoadBalancer(projectId as string, name as string),
     refetchInterval: REFETCH_INTERVAL_MS,
     retry: false,
   });
@@ -568,4 +591,17 @@ export function useDeleteNetworkLoadBalancer(
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkLoadBalancerRoutes', projectId] });
     },
   });
+}
+
+/** Applies JSON Patch ops to an NLB, so lists can be appended to without rewriting them. */
+export async function patchNetworkLoadBalancer(projectId: string, name: string, ops: object[]): Promise<void> {
+  const res = await fetch(
+    `${getProjectScopedBase(projectId)}${NETWORKLOADBALANCERS_PATH}/${encodeURIComponent(name)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json-patch+json', Accept: 'application/json' },
+      body: JSON.stringify(ops),
+    }
+  );
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): update load balancer ${name}`);
 }

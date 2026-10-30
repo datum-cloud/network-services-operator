@@ -16,7 +16,7 @@ import { Button } from '@datum-cloud/datum-ui/button';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { HomeIcon, PlusIcon } from 'lucide-react';
-import { Link, useParams, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 
 export default function NlbList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
@@ -25,6 +25,9 @@ export default function NlbList() {
   // leaves those unknown instead of failing the page.
   const { data: routes } = useNetworkLoadBalancerRoutes(projectId);
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const nlbHref = (name: string) => `${pathname.replace(/\/$/, '')}/${encodeURIComponent(name)}`;
   const isEmpty = !isLoading && !error && (nlbs?.length ?? 0) === 0;
 
   const projectHref = projectId ? `/project/${projectId}` : '/';
@@ -81,6 +84,7 @@ export default function NlbList() {
         open={searchParams.get('create') === '1'}
         onOpenChange={(open) => (open ? openCreate() : closeCreate())}
         preset={createPresetFromQuery(searchParams)}
+        onCreated={(name) => navigate(nlbHref(name))}
       />
 
       {isLoading && <NetworkListSkeleton />}
@@ -96,7 +100,7 @@ export default function NlbList() {
       {isEmpty && <NlbEmptyState projectId={projectId} onCreate={openCreate} />}
 
       {!isLoading && !error && nlbs && nlbs.length > 0 && (
-        <NlbTable nlbs={nlbs} routes={routes} projectId={projectId} />
+        <NlbTable nlbs={nlbs} routes={routes} projectId={projectId} nlbHref={nlbHref} />
       )}
     </div>
   );

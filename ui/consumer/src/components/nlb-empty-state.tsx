@@ -87,13 +87,14 @@ const NAMED_BACKENDS = 3;
 // Same colour as the primary button, in both themes. See network-home-hero.tsx.
 const ACCENT_TEXT = { color: 'var(--btn-primary)' };
 
-export function ProtocolBadge({ protocol, port }: { protocol: NlbProtocol; port: number }) {
+/** A listener's protocol, and its port unless a column beside it already shows it. */
+export function ProtocolBadge({ protocol, port }: { protocol: NlbProtocol; port?: number }) {
   return (
     <Badge
       type={protocol === 'UDP' ? 'quaternary' : 'info'}
       theme="light"
       className="font-mono text-xs">
-      {protocol} {port}
+      {port === undefined ? protocol : `${protocol} ${port}`}
     </Badge>
   );
 }

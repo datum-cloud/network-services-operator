@@ -26,6 +26,7 @@ function makeNlb(overrides: Partial<NetworkLoadBalancer>): NetworkLoadBalancer {
     createdAt: new Date('2026-01-01T00:00:00Z'),
     networkName: 'default',
     listeners: [{ name: 'udp-7777', protocol: 'UDP', port: 7777 }],
+    endpoints: [],
     readyStatus: 'True',
     ...overrides,
   };
@@ -42,6 +43,8 @@ function makeRoute(
     resourceVersion: '1',
     parents: parents.map((p) => ({ name: p, listener: 'udp-7777' })),
     backendNames,
+    backends: backendNames.map((b) => ({ name: b, port: 'p' })),
+    parentStatuses: [],
   };
 }
 
@@ -50,7 +53,12 @@ function renderTable(nlbs: NetworkLoadBalancer[], routes: NetworkLoadBalancerRou
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <NlbTable nlbs={nlbs} routes={routes} projectId="demo-project" />
+        <NlbTable
+          nlbs={nlbs}
+          routes={routes}
+          projectId="demo-project"
+          nlbHref={(name) => `/nlb/${name}`}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -118,6 +126,11 @@ describe('NlbTable', () => {
     expect(pending.getByText('TCP 80')).toBeInTheDocument();
     expect(pending.getByText('No route')).toBeInTheDocument();
     expect(pending.getByText('Address pending')).toBeInTheDocument();
+  });
+
+  it('links each name to its overview', () => {
+    renderTable([makeNlb({ name: 'game' })], []);
+    expect(screen.getByRole('link', { name: 'game' })).toHaveAttribute('href', '/nlb/game');
   });
 
   it('shows backends as unknown and hides delete until routes load', () => {

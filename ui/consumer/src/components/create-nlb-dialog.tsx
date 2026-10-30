@@ -17,6 +17,7 @@ import {
   toNlbCreateRequests,
   type NlbCreateErrors,
   type NlbCreateValues,
+  type NlbListenerValues,
 } from './nlb-create-form';
 import type { NlbCreatePreset } from './nlb-empty-state';
 import { Form, useWatch } from '@datum-cloud/datum-ui/form';
@@ -27,7 +28,7 @@ import { useRef, useState } from 'react';
 
 const NO_ERRORS: NlbCreateErrors = { fields: {} };
 
-function FieldApiError({ message }: { message: string | undefined }) {
+export function FieldApiError({ message }: { message: string | undefined }) {
   if (!message) return null;
   return (
     <p role="alert" className="text-destructive mt-1 text-xs font-medium">
@@ -36,7 +37,7 @@ function FieldApiError({ message }: { message: string | undefined }) {
   );
 }
 
-function StepHeading({ step, title, hint }: { step: number; title: string; hint: string }) {
+export function StepHeading({ step, title, hint }: { step: number; title: string; hint: string }) {
   return (
     <p className="flex items-baseline gap-2">
       <span className="bg-foreground text-background flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-semibold">
@@ -48,7 +49,13 @@ function StepHeading({ step, title, hint }: { step: number; title: string; hint:
   );
 }
 
-function BackendPortField({ services, error }: { services: NetworkService[]; error?: string }) {
+export function BackendPortField({
+  services,
+  error,
+}: {
+  services: NetworkService[];
+  error?: string;
+}) {
   const backend = useWatch('backend') as string | undefined;
   const protocol = useWatch('protocol') as 'TCP' | 'UDP' | undefined;
   const service = services.find((s) => s.name === backend);
@@ -78,7 +85,13 @@ function BackendPortField({ services, error }: { services: NetworkService[]; err
   );
 }
 
-function HealthPortField({ services, error }: { services: NetworkService[]; error?: string }) {
+export function HealthPortField({
+  services,
+  error,
+}: {
+  services: NetworkService[];
+  error?: string;
+}) {
   const backend = useWatch('backend') as string | undefined;
   const protocol = useWatch('protocol') as 'TCP' | 'UDP' | undefined;
   const service = services.find((s) => s.name === backend);
@@ -118,8 +131,8 @@ function HealthPortField({ services, error }: { services: NetworkService[]; erro
  * doesn't know the project's services, and the API only reports a mismatch in
  * the route's status after saving.
  */
-function checkBackend(
-  values: NlbCreateValues,
+export function checkBackend(
+  values: NlbListenerValues,
   services: NetworkService[]
 ): NlbCreateErrors['fields'] {
   const service = services.find((s) => s.name === values.backend);
@@ -146,11 +159,14 @@ export function CreateNlbDialog({
   open,
   onOpenChange,
   preset,
+  onCreated,
 }: {
   projectId: string | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   preset?: NlbCreatePreset;
+  /** Called with the new NLB's name once its route exists, e.g. to open its overview. */
+  onCreated?: (name: string) => void;
 }) {
   const queryClient = useQueryClient();
   const { data: networks } = useNetworks(projectId);
@@ -211,6 +227,12 @@ export function CreateNlbDialog({
       }
       toast.success(`Created load balancer ${values.name}`);
       setCreated(undefined);
+      if (onCreated) {
+        // onCreated navigates away; swallow the close that follows so it
+        // doesn't navigate again on top of it.
+        keepOpen.current = true;
+        onCreated(values.name);
+      }
     } finally {
       setPending(false);
     }
@@ -384,7 +406,7 @@ function CreatedListenerSummary({ listener }: { listener: CreatedListener }) {
   );
 }
 
-function asApiError(err: unknown): ApiError {
+export function asApiError(err: unknown): ApiError {
   return err instanceof ApiError
     ? err
     : new ApiError(0, err instanceof Error ? err.message : 'Something went wrong.');

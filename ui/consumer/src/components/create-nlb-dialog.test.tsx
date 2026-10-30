@@ -48,12 +48,18 @@ const services = [
   ]),
 ];
 
-function renderDialog(preset?: NlbCreatePreset) {
+function renderDialog(preset?: NlbCreatePreset, onCreated?: (name: string) => void) {
   const onOpenChange = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <CreateNlbDialog projectId="demo-project" open onOpenChange={onOpenChange} preset={preset} />
+      <CreateNlbDialog
+        projectId="demo-project"
+        open
+        onOpenChange={onOpenChange}
+        preset={preset}
+        onCreated={onCreated}
+      />
     </QueryClientProvider>
   );
   return { onOpenChange };
@@ -244,6 +250,24 @@ describe('CreateNlbDialog', () => {
         await screen.findByText('A UDP listener needs a TCP port on the backend to health check.')
       ).toBeInTheDocument();
       expect(fetchMock).not.toHaveBeenCalled();
+    },
+    SELECT_TEST_TIMEOUT
+  );
+
+  it(
+    'hands the new NLB to onCreated instead of closing',
+    async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(ok()) as unknown as typeof fetch;
+      const onCreated = vi.fn();
+      const { onOpenChange } = renderDialog({ protocol: 'TCP', port: 5432 }, onCreated);
+
+      fireEvent.change(screen.getByPlaceholderText('e.g. edge-nlb'), { target: { value: 'db' } });
+      choose(2, 'postgres');
+      choose(3, 'pg · 5432/TCP');
+      fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith('db'));
+      expect(onOpenChange).not.toHaveBeenCalledWith(false);
     },
     SELECT_TEST_TIMEOUT
   );

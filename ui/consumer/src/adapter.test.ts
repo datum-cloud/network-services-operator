@@ -689,7 +689,90 @@ describe('toNetworkLoadBalancerRouteList', () => {
           { name: 'other', listener: undefined, port: 53 },
         ],
         backendNames: ['game-server'],
+        backends: [
+          { name: 'game-server', port: '', healthCheck: undefined },
+          { name: 'game-server', port: '', healthCheck: undefined },
+        ],
+        parentStatuses: [],
       },
+    ]);
+  });
+
+  it('maps backends with health checks and rolls each parent status into one', () => {
+    const [route] = toNetworkLoadBalancerRouteList([
+      {
+        metadata: { name: 'edge-udp' },
+        spec: {
+          backends: [
+            {
+              networkService: { name: 'game-server', port: 'game' },
+              healthCheck: { protocol: 'TCP', port: 'health' },
+            },
+          ],
+        },
+        status: {
+          parents: [
+            {
+              name: 'edge-nlb',
+              listener: 'udp-7777',
+              effective: true,
+              conditions: [
+                { type: 'Accepted', status: 'True', reason: 'Attached' },
+                { type: 'ResolvedRefs', status: 'True', reason: 'Resolved' },
+                { type: 'Programmed', status: 'True', reason: 'Programmed' },
+              ],
+            },
+            {
+              name: 'other',
+              listener: 'udp-53',
+              conditions: [
+                { type: 'Accepted', status: 'True', reason: 'Attached' },
+                {
+                  type: 'ResolvedRefs',
+                  status: 'False',
+                  reason: 'HealthCheckInvalid',
+                  message: 'needs a TCP port',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(route.backends).toEqual([
+      { name: 'game-server', port: 'game', healthCheck: { protocol: 'TCP', port: 'health' } },
+    ]);
+    expect(route.parentStatuses).toEqual([
+      { name: 'edge-nlb', listener: 'udp-7777', effective: true, status: 'True', reason: undefined, message: undefined },
+      {
+        name: 'other',
+        listener: 'udp-53',
+        effective: false,
+        status: 'False',
+        reason: 'HealthCheckInvalid',
+        message: 'needs a TCP port',
+      },
+    ]);
+  });
+});
+
+describe('toNetworkLoadBalancer status', () => {
+  it('keeps allocated addresses per endpoint and drops pending ones', () => {
+    const nlb = toNetworkLoadBalancer({
+      spec: { listeners: [{ name: 'udp-7777', protocol: 'UDP', port: 7777, addressRefs: ['udp-7777'] }] },
+      status: {
+        endpoints: [
+          {
+            requestName: 'udp-7777',
+            location: 'iad',
+            addresses: [{ family: 'IPv6', value: '2001:db8::3' }, { family: 'IPv4' }],
+          },
+        ],
+      },
+    });
+    expect(nlb.listeners[0].addressRef).toBe('udp-7777');
+    expect(nlb.endpoints).toEqual([
+      { requestName: 'udp-7777', location: 'iad', addresses: [{ family: 'IPv6', value: '2001:db8::3' }] },
     ]);
   });
 });

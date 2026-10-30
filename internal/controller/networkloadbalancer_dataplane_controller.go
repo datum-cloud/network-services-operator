@@ -53,7 +53,9 @@ func (r *NetworkLoadBalancerDataPlaneReconciler) Reconcile(ctx context.Context, 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.reconcileDataPlane(ctx, string(req.ClusterName), cl.GetClient(), req.NamespacedName)
+	return ctrl.Result{}, retryLoadBalancerConflict(cl.GetClient(), cl.GetAPIReader(), func(projectClient client.Client) error {
+		return r.reconcileDataPlane(ctx, string(req.ClusterName), projectClient, req.NamespacedName)
+	})
 }
 
 func (r *NetworkLoadBalancerDataPlaneReconciler) reconcileDataPlane(

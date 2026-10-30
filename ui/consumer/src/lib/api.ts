@@ -3,6 +3,7 @@ import {
   toNetwork,
   toNetworkInterfaceList,
   toNetworkList,
+  toNetworkLoadBalancerList,
   toNetworkServiceList,
   toSubnetList,
 } from '../adapter';
@@ -11,10 +12,18 @@ import type {
   RawNetwork,
   RawNetworkInterfaceList,
   RawNetworkList,
+  RawNetworkLoadBalancerList,
   RawNetworkServiceList,
   RawSubnetList,
 } from '../adapter';
-import type { HTTPProxy, Network, NetworkInterface, NetworkService, Subnet } from '../schema';
+import type {
+  HTTPProxy,
+  Network,
+  NetworkInterface,
+  NetworkLoadBalancer,
+  NetworkService,
+  Subnet,
+} from '../schema';
 import { useMutation, useQueryClient, type UseMutationResult, useQuery, type UseQueryResult } from '@tanstack/react-query';
 
 export const PLUGIN_ID = 'network.networking.datumapis.com';
@@ -41,6 +50,8 @@ const SUBNETS_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/
 const NETWORKINTERFACES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkinterfaces';
 const NETWORKSERVICES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkservices';
 const HTTPPROXIES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/httpproxies';
+const NETWORKLOADBALANCERS_PATH =
+  '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkloadbalancers';
 
 async function proxyFetch<T>(projectId: string, path: string): Promise<T> {
   const url = `${getProjectScopedBase(projectId)}${path}`;
@@ -180,6 +191,34 @@ export function useHTTPProxies(projectId: string | undefined): UseQueryResult<HT
     refetchInterval: REFETCH_INTERVAL_MS,
     retry: false,
   });
+}
+
+async function fetchNetworkLoadBalancers(projectId: string): Promise<NetworkLoadBalancer[]> {
+  const body = await proxyFetch<RawNetworkLoadBalancerList>(
+    projectId,
+    `${NETWORKLOADBALANCERS_PATH}?limit=100`
+  );
+  return toNetworkLoadBalancerList(body.items ?? []);
+}
+
+export function useNetworkLoadBalancers(
+  projectId: string | undefined
+): UseQueryResult<NetworkLoadBalancer[], ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'networkLoadBalancers', projectId],
+    enabled: !!projectId,
+    queryFn: () => fetchNetworkLoadBalancers(projectId as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
+export function computeWorkloadsHref(projectId: string): string {
+  return `/project/${projectId}/services/compute-datumapis-com`;
+}
+
+export function albHref(projectId: string): string {
+  return `/project/${projectId}/alb`;
 }
 
 export function computeWorkloadHref(projectId: string, workloadName: string): string {

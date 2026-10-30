@@ -359,3 +359,33 @@ export function httpProxyProgrammedStatusToLabel(
   if (status === 'False') return httpProxyProgrammedReasonToLabel(reason);
   return 'Unknown';
 }
+
+export const nlbProtocolSchema = z.enum(['TCP', 'UDP', 'TLS']);
+export type NlbProtocol = z.infer<typeof nlbProtocolSchema>;
+
+export const networkLoadBalancerListenerSchema = z.object({
+  name: z.string(),
+  protocol: nlbProtocolSchema,
+  port: z.number(),
+});
+
+export type NetworkLoadBalancerListener = z.infer<typeof networkLoadBalancerListenerSchema>;
+
+export const networkLoadBalancerResourceSchema = z.object({
+  uid: z.string(),
+  name: z.string(),
+  createdAt: z.coerce.date(),
+  networkName: z.string().optional(),
+  listeners: z.array(networkLoadBalancerListenerSchema).default([]),
+  readyStatus: z.enum(['True', 'False', 'Unknown']),
+  readyReason: z.string().optional(),
+  readyMessage: z.string().optional(),
+});
+
+export type NetworkLoadBalancer = z.infer<typeof networkLoadBalancerResourceSchema>;
+
+export const networkLoadBalancerListSchema = z.object({
+  items: z.array(networkLoadBalancerResourceSchema),
+});
+
+export type NetworkLoadBalancerList = z.infer<typeof networkLoadBalancerListSchema>;

@@ -5,6 +5,8 @@ import {
   toNetworkInterface,
   toNetworkInterfaceList,
   toNetworkList,
+  toNetworkLoadBalancer,
+  toNetworkLoadBalancerList,
   toNetworkService,
   toNetworkServiceList,
   toSubnet,
@@ -12,6 +14,7 @@ import {
   type RawHTTPProxy,
   type RawNetwork,
   type RawNetworkInterface,
+  type RawNetworkLoadBalancer,
   type RawNetworkService,
   type RawSubnet,
 } from './adapter';
@@ -596,5 +599,65 @@ describe('toHTTPProxyList', () => {
 
   it('returns an empty array for an empty list', () => {
     expect(toHTTPProxyList([])).toEqual([]);
+  });
+});
+
+const baseRawNLB: RawNetworkLoadBalancer = {
+  metadata: { uid: 'nlb-uid', name: 'edge-nlb', creationTimestamp: '2026-10-29T00:00:00Z' },
+  spec: {
+    networkRef: { name: 'default-vpc' },
+    listeners: [
+      { name: 'pg', protocol: 'TCP', port: 5432 },
+      { name: 'game', protocol: 'UDP', port: 7777 },
+    ],
+  },
+  status: {
+    conditions: [{ type: 'Ready', status: 'False', reason: 'NoRoutes', message: 'No listener has a route.' }],
+  },
+};
+
+describe('toNetworkLoadBalancer', () => {
+  it('maps the network, listeners and Ready condition', () => {
+    expect(toNetworkLoadBalancer(baseRawNLB)).toMatchObject({
+      uid: 'nlb-uid',
+      name: 'edge-nlb',
+      createdAt: new Date('2026-10-29T00:00:00Z'),
+      networkName: 'default-vpc',
+      listeners: [
+        { name: 'pg', protocol: 'TCP', port: 5432 },
+        { name: 'game', protocol: 'UDP', port: 7777 },
+      ],
+      readyStatus: 'False',
+      readyReason: 'NoRoutes',
+      readyMessage: 'No listener has a route.',
+    });
+  });
+
+  it('defaults to Unknown with no listeners when status and spec are empty', () => {
+    const nlb = toNetworkLoadBalancer({ metadata: { name: 'bare' } });
+    expect(nlb.readyStatus).toBe('Unknown');
+    expect(nlb.listeners).toEqual([]);
+    expect(nlb.networkName).toBeUndefined();
+  });
+
+  it('drops listeners with a protocol it does not know', () => {
+    const nlb = toNetworkLoadBalancer({
+      spec: { listeners: [{ name: 'odd', protocol: 'SCTP', port: 9 }, { name: 'dns', protocol: 'UDP', port: 53 }] },
+    });
+    expect(nlb.listeners.map((l) => l.name)).toEqual(['dns']);
+  });
+});
+
+describe('toNetworkLoadBalancerList', () => {
+  it('maps every item and leaves out one being deleted', () => {
+    const list = toNetworkLoadBalancerList([
+      baseRawNLB,
+      { ...baseRawNLB, metadata: { name: 'going', deletionTimestamp: '2026-10-30T00:00:00Z' } },
+    ]);
+    expect(list.map((n) => n.name)).toEqual(['edge-nlb']);
+  });
+
+  it('returns an empty array for an empty list', () => {
+    expect(toNetworkLoadBalancerList([])).toEqual([]);
   });
 });

@@ -7,8 +7,11 @@ import type {
   Network,
   NetworkInterface,
   NetworkInterfacePhase,
+  NetworkLoadBalancer,
+  NetworkLoadBalancerListener,
   NetworkReadyStatus,
   NetworkService,
+  NlbProtocol,
   Subnet,
 } from './schema';
 
@@ -403,4 +406,62 @@ export function toHTTPProxy(raw: RawHTTPProxy): HTTPProxy {
 
 export function toHTTPProxyList(items: RawHTTPProxy[]): HTTPProxy[] {
   return items.map(toHTTPProxy);
+}
+
+interface RawNetworkLoadBalancerListener {
+  name?: string;
+  protocol?: string;
+  port?: number;
+}
+
+interface RawNetworkLoadBalancerSpec {
+  networkRef?: { name?: string };
+  listeners?: RawNetworkLoadBalancerListener[];
+}
+
+interface RawNetworkLoadBalancerStatus {
+  conditions?: RawCondition[];
+}
+
+export interface RawNetworkLoadBalancer {
+  metadata?: RawObjectMeta;
+  spec?: RawNetworkLoadBalancerSpec;
+  status?: RawNetworkLoadBalancerStatus;
+}
+
+export interface RawNetworkLoadBalancerList {
+  items?: RawNetworkLoadBalancer[];
+}
+
+const NLB_PROTOCOLS: readonly NlbProtocol[] = ['TCP', 'UDP', 'TLS'];
+
+function toNetworkLoadBalancerListeners(
+  listeners: RawNetworkLoadBalancerListener[] | undefined
+): NetworkLoadBalancerListener[] {
+  return (listeners ?? []).flatMap((l) =>
+    l.protocol && (NLB_PROTOCOLS as readonly string[]).includes(l.protocol)
+      ? [{ name: l.name ?? '', protocol: l.protocol as NlbProtocol, port: l.port ?? 0 }]
+      : []
+  );
+}
+
+export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadBalancer {
+  const ready = findReadyCondition(raw.status?.conditions ?? []);
+  const readyStatus: NetworkReadyStatus = ready?.status ?? 'Unknown';
+
+  return {
+    uid: raw.metadata?.uid ?? '',
+    name: raw.metadata?.name ?? '',
+    createdAt: raw.metadata?.creationTimestamp ? new Date(raw.metadata.creationTimestamp) : new Date(),
+    networkName: raw.spec?.networkRef?.name,
+    listeners: toNetworkLoadBalancerListeners(raw.spec?.listeners),
+    readyStatus,
+    readyReason: ready?.reason,
+    readyMessage: ready?.message,
+  };
+}
+
+/** Same rule as toNetworkList: one being deleted is left out. */
+export function toNetworkLoadBalancerList(items: RawNetworkLoadBalancer[]): NetworkLoadBalancer[] {
+  return items.filter((item) => !item.metadata?.deletionTimestamp).map(toNetworkLoadBalancer);
 }

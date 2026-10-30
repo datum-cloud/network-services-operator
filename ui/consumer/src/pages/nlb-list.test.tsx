@@ -14,12 +14,14 @@ vi.mock('../lib/api', async () => {
     useNetworkLoadBalancers: vi.fn(),
     useNetworkServices: vi.fn(),
     useNetworks: vi.fn(),
+    useNetworkLoadBalancerRoutes: vi.fn(),
   };
 });
 
 const useNetworkLoadBalancersMock = vi.mocked(api.useNetworkLoadBalancers);
 const useNetworkServicesMock = vi.mocked(api.useNetworkServices);
 const useNetworksMock = vi.mocked(api.useNetworks);
+const useRoutesMock = vi.mocked(api.useNetworkLoadBalancerRoutes);
 
 function LocationProbe() {
   const location = useLocation();
@@ -98,6 +100,7 @@ beforeEach(() => {
   useNetworkServicesMock.mockReset();
   mockServices([]);
   useNetworksMock.mockReturnValue({ data: [], isLoading: false, error: null } as never);
+  useRoutesMock.mockReturnValue({ data: [], isLoading: false, error: null } as never);
 });
 
 describe('NlbList state machine', () => {

@@ -389,3 +389,33 @@ export const networkLoadBalancerListSchema = z.object({
 });
 
 export type NetworkLoadBalancerList = z.infer<typeof networkLoadBalancerListSchema>;
+
+export const networkLoadBalancerRouteParentSchema = z.object({
+  name: z.string(),
+  listener: z.string().optional(),
+  port: z.number().optional(),
+});
+
+export type NetworkLoadBalancerRouteParent = z.infer<typeof networkLoadBalancerRouteParentSchema>;
+
+export const networkLoadBalancerRouteResourceSchema = z.object({
+  uid: z.string(),
+  name: z.string(),
+  resourceVersion: z.string().optional(),
+  parents: z.array(networkLoadBalancerRouteParentSchema).default([]),
+  backendNames: z.array(z.string()).default([]),
+});
+
+export type NetworkLoadBalancerRoute = z.infer<typeof networkLoadBalancerRouteResourceSchema>;
+
+const NLB_READY_REASON_COPY: Record<string, string> = {
+  AllocationPending: 'Address pending',
+  PendingDataPlane: 'Programming',
+  NotServed: 'Not serving',
+};
+
+export function nlbReadyStatusToLabel(status: NetworkReadyStatus, reason: string | undefined): string {
+  if (status === 'True') return 'Ready';
+  if (status === 'False') return (reason && NLB_READY_REASON_COPY[reason]) ?? reason ?? 'Not ready';
+  return 'Unknown';
+}

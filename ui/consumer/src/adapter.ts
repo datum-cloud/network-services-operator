@@ -9,6 +9,7 @@ import type {
   NetworkInterfacePhase,
   NetworkLoadBalancer,
   NetworkLoadBalancerListener,
+  NetworkLoadBalancerRoute,
   NetworkReadyStatus,
   NetworkService,
   NlbProtocol,
@@ -464,4 +465,42 @@ export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadB
 /** Same rule as toNetworkList: one being deleted is left out. */
 export function toNetworkLoadBalancerList(items: RawNetworkLoadBalancer[]): NetworkLoadBalancer[] {
   return items.filter((item) => !item.metadata?.deletionTimestamp).map(toNetworkLoadBalancer);
+}
+
+interface RawNetworkLoadBalancerRouteParentRef {
+  name?: string;
+  listener?: string;
+  port?: number;
+}
+
+interface RawNetworkLoadBalancerRouteSpec {
+  parentRefs?: RawNetworkLoadBalancerRouteParentRef[];
+  backends?: { networkService?: { name?: string } }[];
+}
+
+export interface RawNetworkLoadBalancerRoute {
+  metadata?: RawObjectMeta;
+  spec?: RawNetworkLoadBalancerRouteSpec;
+}
+
+export interface RawNetworkLoadBalancerRouteList {
+  items?: RawNetworkLoadBalancerRoute[];
+}
+
+export function toNetworkLoadBalancerRoute(raw: RawNetworkLoadBalancerRoute): NetworkLoadBalancerRoute {
+  const backendNames = (raw.spec?.backends ?? []).flatMap((b) =>
+    b.networkService?.name ? [b.networkService.name] : []
+  );
+  return {
+    uid: raw.metadata?.uid ?? '',
+    name: raw.metadata?.name ?? '',
+    resourceVersion: raw.metadata?.resourceVersion,
+    parents: (raw.spec?.parentRefs ?? []).map((p) => ({ name: p.name ?? '', listener: p.listener, port: p.port })),
+    backendNames: [...new Set(backendNames)],
+  };
+}
+
+/** Same rule as toNetworkList: one being deleted is left out. */
+export function toNetworkLoadBalancerRouteList(items: RawNetworkLoadBalancerRoute[]): NetworkLoadBalancerRoute[] {
+  return items.filter((item) => !item.metadata?.deletionTimestamp).map(toNetworkLoadBalancerRoute);
 }

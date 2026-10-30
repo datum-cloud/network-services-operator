@@ -1,8 +1,9 @@
 import { CreateNlbDialog } from '../components/create-nlb-dialog';
-import { NlbEmptyState, ProtocolBadge, type NlbCreatePreset } from '../components/nlb-empty-state';
+import { NlbEmptyState, type NlbCreatePreset } from '../components/nlb-empty-state';
+import { NlbTable } from '../components/nlb-table';
 import { NetworkListSkeleton } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
-import { useNetworkLoadBalancers } from '../lib/api';
+import { useNetworkLoadBalancerRoutes, useNetworkLoadBalancers } from '../lib/api';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -12,7 +13,6 @@ import {
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { HomeIcon, PlusIcon } from 'lucide-react';
@@ -21,6 +21,9 @@ import { Link, useParams, useSearchParams } from 'react-router';
 export default function NlbList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
   const { data: nlbs, isLoading, error, refetch } = useNetworkLoadBalancers(projectId);
+  // Only the table's backends column and delete use routes, so a failed read
+  // leaves those unknown instead of failing the page.
+  const { data: routes } = useNetworkLoadBalancerRoutes(projectId);
   const [searchParams, setSearchParams] = useSearchParams();
   const isEmpty = !isLoading && !error && (nlbs?.length ?? 0) === 0;
 
@@ -92,22 +95,8 @@ export default function NlbList() {
 
       {isEmpty && <NlbEmptyState projectId={projectId} onCreate={openCreate} />}
 
-      {/* Placeholder until the NLB table lands in #803. */}
       {!isLoading && !error && nlbs && nlbs.length > 0 && (
-        <ul className="flex flex-col gap-3">
-          {nlbs.map((nlb) => (
-            <li key={nlb.uid}>
-              <Card size="sm">
-                <CardContent className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-sm font-medium">{nlb.name}</span>
-                  {nlb.listeners.map((l) => (
-                    <ProtocolBadge key={l.name} protocol={l.protocol} port={l.port} />
-                  ))}
-                </CardContent>
-              </Card>
-            </li>
-          ))}
-        </ul>
+        <NlbTable nlbs={nlbs} routes={routes} projectId={projectId} />
       )}
     </div>
   );

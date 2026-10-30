@@ -7,6 +7,7 @@ import {
   toNetworkList,
   toNetworkLoadBalancer,
   toNetworkLoadBalancerList,
+  toNetworkLoadBalancerRouteList,
   toNetworkService,
   toNetworkServiceList,
   toSubnet,
@@ -659,5 +660,36 @@ describe('toNetworkLoadBalancerList', () => {
 
   it('returns an empty array for an empty list', () => {
     expect(toNetworkLoadBalancerList([])).toEqual([]);
+  });
+});
+
+describe('toNetworkLoadBalancerRouteList', () => {
+  it('maps parents and distinct backend names, leaving out a route being deleted', () => {
+    const list = toNetworkLoadBalancerRouteList([
+      {
+        metadata: { uid: 'r1', name: 'edge-udp', resourceVersion: '7' },
+        spec: {
+          parentRefs: [{ name: 'edge-nlb', listener: 'udp-7777' }, { name: 'other', port: 53 }],
+          backends: [
+            { networkService: { name: 'game-server' } },
+            { networkService: { name: 'game-server' } },
+            {},
+          ],
+        },
+      },
+      { metadata: { name: 'going', deletionTimestamp: '2026-10-30T00:00:00Z' } },
+    ]);
+    expect(list).toEqual([
+      {
+        uid: 'r1',
+        name: 'edge-udp',
+        resourceVersion: '7',
+        parents: [
+          { name: 'edge-nlb', listener: 'udp-7777', port: undefined },
+          { name: 'other', listener: undefined, port: 53 },
+        ],
+        backendNames: ['game-server'],
+      },
+    ]);
   });
 });

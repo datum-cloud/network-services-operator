@@ -239,7 +239,12 @@ export function CreateNlbDialog({
         loading={pending}
         submitText={created ? 'Retry backend' : 'Create'}
         submitTextLoading="Creating..."
-        className="w-full focus:ring-0 focus:outline-none sm:max-w-xl">
+        className="w-full focus:ring-0 focus:outline-none sm:max-w-xl"
+        // Form.Dialog sizes its body as 80vh minus 9rem for the header and
+        // footer, and this header's description runs two lines, which pushed
+        // the buttons out of view. As a flex column the form gives the body
+        // whatever height is left instead.
+        formClassName="flex min-h-0 flex-col">
         <div className="divide-border space-y-0 divide-y *:px-5 *:py-5 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
           {(errors.general || created) && (
             <div

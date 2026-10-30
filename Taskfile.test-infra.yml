@@ -164,6 +164,9 @@ tasks:
       - task: milo-bundle
       - task: nso-image
       - task: dns-crds
+      # The cell set has to be served on this cluster before the cell controller
+      # manager starts; it watches kinds that only this set installs.
+      - task: cell-crds
       - task: prepare-upstream
       # Everything that needs a certificate has to follow prepare-upstream.
       # Upstream cert-manager crashloops with "the Gateway API CRDs do not seem
@@ -426,6 +429,16 @@ tasks:
       - echo "📜 installing locations CRDs (upstream + downstream)"
       - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.UPSTREAM_CTX}} apply -f -'
       - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -'
+
+  cell-crds:
+    desc: "Install on the upstream cluster (which plays the cell here) the NSO CRDs every cell carries: the same config/crd/downstream union karmada-up applies to the hub and downstream-crds to the downstream cluster."
+    cmds:
+      # The cell controller manager watches NetworkLoadBalancerBackendHealth on
+      # its local cluster. A kind it watches but the cluster does not serve fails
+      # cache sync, and the manager exits after the two-minute sync timeout.
+      - |
+        {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
+          kubectl --context {{.UPSTREAM_CTX}} apply -f -
 
   external-dns:
     desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."

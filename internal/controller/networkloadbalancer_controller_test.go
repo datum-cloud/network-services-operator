@@ -796,9 +796,13 @@ func TestNetworkLoadBalancerReliesOnEventsInsteadOfPeriodicResync(t *testing.T) 
 		claim.Status.AllocatedCIDR = fmt.Sprintf("2001:db8::%x/128", i+1)
 		require.NoError(t, s.ipam.Status().Update(s.ctx, &claim))
 	}
+	settled := s.reconcile()
 	for range 2 {
 		result, err = s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
 		require.NoError(t, err)
 		require.Equal(t, ctrl.Result{}, result, "an allocated load balancer waits for the next event")
 	}
+	var lb networkingv1alpha.NetworkLoadBalancer
+	require.NoError(t, s.client.Get(s.ctx, client.ObjectKeyFromObject(s.lb), &lb))
+	require.Equal(t, settled.ResourceVersion, lb.ResourceVersion, "a pass with nothing new must not write status")
 }

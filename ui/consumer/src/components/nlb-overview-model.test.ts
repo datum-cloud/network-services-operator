@@ -1,4 +1,4 @@
-import { overviewSummary, toBackendCards, toListenerRows } from './nlb-overview-model';
+import { overviewSummary, toListenerRows } from './nlb-overview-model';
 import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } from '../schema';
 import { describe, expect, it } from 'vitest';
 
@@ -136,27 +136,6 @@ describe('toListenerRows', () => {
     expect(statusOf(makeNlb(), [makeRoute('r', [parent()])], [makeService(healthy, members)])).toBe(
       label
     );
-  });
-});
-
-describe('toBackendCards', () => {
-  it('makes one card per backend with every listener and port that uses it', () => {
-    const nlb = makeNlb({
-      listeners: [
-        { name: 'udp-7777', protocol: 'UDP', port: 7777, addressRef: 'udp-7777' },
-        { name: 'tcp-443', protocol: 'TCP', port: 443, addressRef: 'tcp-443' },
-      ],
-    });
-    const routes = [
-      makeRoute('udp', [parent()]),
-      makeRoute('tcp', [parent({ listener: 'tcp-443' })], {
-        backends: [{ name: 'game-server', port: 'https' }],
-      }),
-    ];
-    const cards = toBackendCards(toListenerRows(nlb, routes, [makeService(1, 1)]));
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ name: 'game-server', ports: ['game', 'https'] });
-    expect(cards[0].listeners.map((l) => l.name)).toEqual(['udp-7777', 'tcp-443']);
   });
 });
 

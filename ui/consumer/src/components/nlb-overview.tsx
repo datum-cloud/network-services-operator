@@ -1,42 +1,15 @@
 import { ProtocolBadge } from './nlb-empty-state';
-import {
-  overviewSummary,
-  toBackendCards,
-  toListenerRows,
-  type BackendCard,
-  type ListenerRow,
-  type ListenerStatus,
-} from './nlb-overview-model';
-import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } from '../schema';
+import { overviewSummary, type ListenerRow, type ListenerStatus } from './nlb-overview-model';
+import type { NetworkLoadBalancer } from '../schema';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
+import { toast } from '@datum-cloud/datum-ui/toast';
 import { cn } from '@datum-cloud/datum-ui/utils';
-import {
-  ArrowRightIcon,
-  BoxIcon,
-  ChevronRightIcon,
-  GlobeIcon,
-  InfoIcon,
-  NetworkIcon,
-  PlusIcon,
-} from 'lucide-react';
+import { BoxIcon, CheckIcon, CopyIcon, PlusIcon } from 'lucide-react';
+import { useState } from 'react';
 import { Link } from 'react-router';
-
-const WORKLOAD_NAME_LABEL = 'compute.datumapis.com/workload-name';
-
-// The plugin ships no stylesheet and the portal's CSS has no utility for a
-// fixed-width column beside a fluid one, so the band's two columns are set
-// here. Everything else uses utilities the portal already has.
-const BAND_STYLE = `
-.nlb-band { display: grid; gap: 1.5rem; }
-@media (min-width: 1024px) {
-  .nlb-band { grid-template-columns: 17rem minmax(0, 1fr); align-items: start; }
-  .nlb-band__arrow { display: flex; }
-}
-.nlb-band__arrow { display: none; }
-`;
 
 const DOT: Record<ListenerStatus['type'], string> = {
   success: 'bg-green-500',
@@ -45,59 +18,146 @@ const DOT: Record<ListenerStatus['type'], string> = {
   muted: 'bg-muted-foreground',
 };
 
+const STATUS_TEXT: Record<ListenerStatus['type'], string> = {
+  success: 'text-green-600',
+  warning: 'text-amber-600',
+  danger: 'text-destructive',
+  muted: 'text-muted-foreground',
+};
+
+// The portal's CSS has no flex-basis or max-width utilities these sizes.
+const CELL = { flex: '1 1 9rem' };
+const WIDE_CELL = { flex: '2 1 18rem' };
+const TABLE_TEXT_MAX = { maxWidth: '13rem' };
+
 function Dot({ type }: { type: ListenerStatus['type'] }) {
   return (
     <span aria-hidden className={cn('inline-block size-1.5 shrink-0 rounded-full', DOT[type])} />
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+/** The NLB's status in a pill, for beside its name. */
+export function NlbStatusPill({ rows }: { rows: ListenerRow[] }) {
+  const summary = overviewSummary(rows);
   return (
-    <span className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-      {children}
+    <span
+      data-testid="networking-plugin-nlb-summary"
+      title={summary.label}
+      className={cn(
+        'bg-card flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-medium whitespace-nowrap',
+        STATUS_TEXT[summary.type]
+      )}>
+      <Dot type={summary.type} />
+      {summary.type === 'success' ? 'Forwarding' : summary.label}
     </span>
   );
 }
 
-function AddressesCard({ nlb }: { nlb: NetworkLoadBalancer }) {
+function CopyText({ value, maxWidth }: { value: string; maxWidth?: boolean }) {
+  const [, copy] = useCopyToClipboard();
+  const [copied, setCopied] = useState(false);
   return (
-    <div className="flex items-center gap-3">
-      <Card size="sm" className="flex-1" data-testid="networking-plugin-nlb-addresses">
-        <CardContent className="flex flex-col gap-3">
-          <p className="flex items-center gap-2 text-sm font-medium">
-            <Icon icon={GlobeIcon} size={16} className="text-muted-foreground" />
-            Public addresses
-          </p>
-          <dl className="flex flex-col gap-3 text-sm">
-            <div>
-              <dt className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-                Network
-              </dt>
-              <dd className="font-mono">{nlb.networkName ?? '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-                Family
-              </dt>
-              <dd>IPv6</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-                Locations
-              </dt>
-              <dd>Follows backends</dd>
-            </div>
-          </dl>
-          <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <Icon icon={InfoIcon} size={12} />
-            IPv4 coming soon
-          </p>
-        </CardContent>
-      </Card>
-      <span className="nlb-band__arrow text-muted-foreground">
-        <Icon icon={ArrowRightIcon} size={16} />
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span
+        className="truncate font-mono text-xs"
+        title={value}
+        style={maxWidth ? TABLE_TEXT_MAX : undefined}>
+        {value}
       </span>
+      <button
+        type="button"
+        aria-label={`Copy ${value}`}
+        className="text-muted-foreground hover:text-foreground shrink-0 transition-colors"
+        onClick={() =>
+          copy(value).then(() => {
+            toast.success('Copied to clipboard');
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          })
+        }>
+        <Icon icon={copied ? CheckIcon : CopyIcon} size={12} />
+      </button>
+    </span>
+  );
+}
+
+function InfoCell({
+  label,
+  children,
+  wide,
+}: {
+  label: string;
+  children: React.ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1 px-4 py-3" style={wide ? WIDE_CELL : CELL}>
+      <dt className="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
+        {label}
+      </dt>
+      <dd className="min-w-0 text-sm">{children}</dd>
     </div>
+  );
+}
+
+/**
+ * Each listener has its own address, so the strip can only show one hostname
+ * and address when every listener shares it, as with a single listener.
+ * Otherwise they show per listener in the table.
+ */
+function sharedAddress(rows: ListenerRow[]): ListenerRow | undefined {
+  const first = rows[0];
+  if (rows.length === 1) return first;
+  if (!first?.address) return undefined;
+  return rows.every((r) => r.address === first.address) ? first : undefined;
+}
+
+function InfoStrip({
+  nlb,
+  shared,
+  networkHref,
+}: {
+  nlb: NetworkLoadBalancer;
+  shared?: ListenerRow;
+  networkHref?: string;
+}) {
+  return (
+    <dl
+      className="bg-card flex flex-wrap rounded-lg border"
+      data-testid="networking-plugin-nlb-info">
+      {shared && (
+        <>
+          <InfoCell label="Hostname" wide>
+            {shared.hostname ? (
+              <CopyText value={shared.hostname} />
+            ) : (
+              <span className="text-muted-foreground">Pending</span>
+            )}
+          </InfoCell>
+          <InfoCell label="IPv6 address">
+            {shared.address ? (
+              <CopyText value={shared.address} />
+            ) : (
+              <span className="text-muted-foreground">Pending</span>
+            )}
+          </InfoCell>
+        </>
+      )}
+      <InfoCell label="Network">
+        {networkHref && nlb.networkName ? (
+          <Link to={networkHref} className="text-primary font-mono text-xs hover:underline">
+            {nlb.networkName}
+          </Link>
+        ) : (
+          <span className="font-mono text-xs">{nlb.networkName ?? '—'}</span>
+        )}
+      </InfoCell>
+      <InfoCell label="Family">
+        IPv6
+        <span className="text-muted-foreground block text-xs">IPv4 coming soon</span>
+      </InfoCell>
+      <InfoCell label="Locations">Follows backends</InfoCell>
+    </dl>
   );
 }
 
@@ -105,50 +165,56 @@ function AddressCell({ row }: { row: ListenerRow }) {
   if (!row.address) return <span className="text-muted-foreground text-sm">Pending</span>;
   const others = row.locations - 1;
   return (
-    <span className="flex flex-wrap items-center gap-2">
-      <span className="font-mono text-xs">[{row.address}]</span>
-      {others > 0 && (
-        <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs">
-          +{others} {others === 1 ? 'city' : 'cities'}
-        </span>
-      )}
+    <span className="flex min-w-0 flex-col gap-1">
+      {row.hostname && <CopyText value={row.hostname} maxWidth />}
+      <span className="flex flex-wrap items-center gap-2">
+        <CopyText value={row.address} maxWidth />
+        {others > 0 && (
+          <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs">
+            +{others} {others === 1 ? 'city' : 'cities'}
+          </span>
+        )}
+      </span>
     </span>
   );
 }
 
-function SendToCell({ row, href }: { row: ListenerRow; href?: string }) {
-  const chip = row.backend ? (
-    <span className="bg-background inline-flex items-center gap-2 rounded-md border px-2 py-1">
-      <Dot type={row.status.type} />
-      <span className="font-mono text-xs">{row.backend.name}</span>
-      <span className="text-muted-foreground font-mono text-xs">:{row.backend.port}</span>
-    </span>
-  ) : null;
-
+function BackendCell({ row, href }: { row: ListenerRow; href?: string }) {
+  if (!row.backend) return <span className="text-muted-foreground">—</span>;
+  const name = <span className="text-primary font-mono text-xs">{row.backend.name}</span>;
   return (
-    <span className="flex flex-col items-start gap-1" title={row.status.detail}>
-      {chip && href ? (
+    <span className="flex items-center gap-2 whitespace-nowrap">
+      <Icon icon={BoxIcon} size={14} className="text-muted-foreground" />
+      {href ? (
         <Link to={href} className="hover:underline">
-          {chip}
+          {name}
         </Link>
       ) : (
-        chip
+        name
       )}
-      {/* The dot says it all when the listener is serving; anything else is spelled out. */}
-      {row.status.type === 'success' ? (
-        <span className="sr-only">{row.status.label}</span>
-      ) : (
-        <span
-          className={cn(
-            'flex items-center gap-1.5 text-xs font-medium',
-            row.status.type === 'danger' && 'text-destructive',
-            row.status.type === 'warning' && 'text-amber-600',
-            row.status.type === 'muted' && 'text-muted-foreground'
-          )}>
-          {!chip && <Dot type={row.status.type} />}
-          {row.status.label}
-        </span>
+      <span className="text-muted-foreground font-mono text-xs">:{row.backend.port}</span>
+    </span>
+  );
+}
+
+/** Serving shows the backend's healthy count; anything else says what's wrong. */
+function HealthCell({ row }: { row: ListenerRow }) {
+  const summary = row.service?.summary;
+  const label =
+    row.status.type === 'success' || row.status.label === 'Degraded'
+      ? summary
+        ? `${summary.healthy}/${summary.members} endpoints healthy`
+        : row.status.label
+      : row.status.label;
+  return (
+    <span
+      className={cn(
+        'flex items-center gap-1.5 text-xs font-medium whitespace-nowrap',
+        STATUS_TEXT[row.status.type]
       )}
+      title={row.status.detail}>
+      <Dot type={row.status.type} />
+      {label}
     </span>
   );
 }
@@ -158,7 +224,7 @@ function HealthCheckCell({ row }: { row: ListenerRow }) {
   if (!row.backend) return <span className="text-muted-foreground">—</span>;
   if (!check) return <span className="text-muted-foreground font-mono text-xs">None</span>;
   return (
-    <span className="font-mono text-xs">
+    <span className="font-mono text-xs whitespace-nowrap">
       {check.protocol}
       <span className="text-muted-foreground">
         {/* With no port, a TCP probe uses the backend's serving port. */}
@@ -174,12 +240,14 @@ export interface ListenerActions {
   onDelete: (row: ListenerRow) => void;
 }
 
-function ListenersCard({
+function ListenersSection({
   rows,
+  showAddress,
   backendHref,
   actions,
 }: {
   rows: ListenerRow[];
+  showAddress: boolean;
   backendHref?: string;
   actions?: ListenerActions;
 }) {
@@ -197,14 +265,17 @@ function ListenersCard({
         },
       ]
     : [];
+
   return (
-    <div
-      className="bg-card overflow-hidden rounded-lg border"
-      data-testid="networking-plugin-nlb-listeners">
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
-        <Icon icon={NetworkIcon} size={16} className="text-muted-foreground" />
-        <span className="text-sm font-medium">Listeners</span>
-        <span className="text-muted-foreground text-sm">one port, one backend</span>
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-semibold">Listeners</h2>
+        <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-xs">
+          {rows.length}
+        </span>
+        <span className="text-muted-foreground text-sm">
+          Each listener takes one port and forwards it to one backend.
+        </span>
         <span className="flex-1" />
         {actions && (
           <Button
@@ -218,14 +289,16 @@ function ListenersCard({
           </Button>
         )}
       </div>
-      <div className="overflow-x-auto">
+      <div
+        className="bg-card overflow-x-auto rounded-lg border"
+        data-testid="networking-plugin-nlb-listeners">
         <table className="w-full text-left text-sm">
           <thead className="text-muted-foreground text-xs tracking-wider uppercase">
             <tr className="border-b">
-              <th className="px-4 py-2 font-semibold">Protocol</th>
               <th className="px-4 py-2 font-semibold">Port</th>
-              <th className="px-4 py-2 font-semibold">Address</th>
-              <th className="px-4 py-2 font-semibold">Send to</th>
+              {showAddress && <th className="px-4 py-2 font-semibold">Address</th>}
+              <th className="px-4 py-2 font-semibold">Backend</th>
+              <th className="px-4 py-2 font-semibold">Health</th>
               <th className="px-4 py-2 font-semibold">Health check</th>
               {actions && <th className="w-12 px-4 py-2" aria-label="Actions" />}
             </tr>
@@ -233,15 +306,22 @@ function ListenersCard({
           <tbody className="divide-y">
             {rows.map((row) => (
               <tr key={row.listener.name} data-listener={row.listener.name}>
-                <td className="px-4 py-3">
-                  <ProtocolBadge protocol={row.listener.protocol} />
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <span className="flex items-center gap-2">
+                    <ProtocolBadge protocol={row.listener.protocol} />
+                    <span className="font-mono font-medium">{row.listener.port}</span>
+                  </span>
                 </td>
-                <td className="px-4 py-3 font-mono font-medium">{row.listener.port}</td>
+                {showAddress && (
+                  <td className="px-4 py-3">
+                    <AddressCell row={row} />
+                  </td>
+                )}
                 <td className="px-4 py-3">
-                  <AddressCell row={row} />
+                  <BackendCell row={row} href={backendHref} />
                 </td>
                 <td className="px-4 py-3">
-                  <SendToCell row={row} href={backendHref} />
+                  <HealthCell row={row} />
                 </td>
                 <td className="px-4 py-3">
                   <HealthCheckCell row={row} />
@@ -263,143 +343,38 @@ function ListenersCard({
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
-
-function backendHealth(card: BackendCard): { label: string; type: ListenerStatus['type'] } {
-  const summary = card.service?.summary;
-  if (!card.service || !summary) return { label: 'Not found', type: 'danger' };
-  // No members means the service's selector matches no interfaces yet.
-  if (summary.members === 0) return { label: 'No members', type: 'danger' };
-  const label = `${summary.healthy}/${summary.members} healthy`;
-  if (summary.healthy === 0) return { label, type: 'danger' };
-  if (summary.healthy < summary.members) return { label, type: 'warning' };
-  return { label, type: 'success' };
-}
-
-function backendKind(card: BackendCard): string {
-  const workload = card.service?.networkInterfaceSelector.matchLabels[WORKLOAD_NAME_LABEL];
-  return workload ? 'Compute workload' : 'Service';
-}
-
-const HEALTH_TEXT: Record<ListenerStatus['type'], string> = {
-  success: 'text-green-600',
-  warning: 'text-amber-600',
-  danger: 'text-destructive',
-  muted: 'text-muted-foreground',
-};
-
-function BackendCards({ cards, href }: { cards: BackendCard[]; href?: string }) {
-  if (cards.length === 0) return null;
-  return (
-    <section className="flex flex-col gap-3" data-testid="networking-plugin-nlb-backends">
-      <p className="flex items-center gap-2">
-        <Icon icon={BoxIcon} size={14} className="text-muted-foreground" />
-        <SectionLabel>Backends</SectionLabel>
-        <span className="text-muted-foreground text-xs">
-          NetworkServices that listeners forward to
-        </span>
-      </p>
-      <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {cards.map((card) => {
-          const health = backendHealth(card);
-          const body = (
-            <CardContent className="flex flex-col gap-1">
-              <span className="flex items-center gap-2">
-                <Icon icon={BoxIcon} size={16} />
-                <span className="flex-1 truncate font-mono text-sm font-medium">{card.name}</span>
-                {href && (
-                  <Icon icon={ChevronRightIcon} size={14} className="text-muted-foreground" />
-                )}
-              </span>
-              <span className="text-muted-foreground text-xs">
-                {backendKind(card)} · {card.ports.length === 1 ? 'port' : 'ports'}{' '}
-                {card.ports.join(', ')}
-              </span>
-              <span className="flex items-center justify-between gap-2 text-xs">
-                <span
-                  className={cn('flex items-center gap-1.5 font-medium', HEALTH_TEXT[health.type])}>
-                  <Dot type={health.type} />
-                  {health.label}
-                </span>
-                <span className="text-muted-foreground">
-                  {card.listeners.map((l) => `${l.protocol} ${l.port}`).join(', ')}
-                </span>
-              </span>
-            </CardContent>
-          );
-          return (
-            <li key={card.name} data-health={health.type}>
-              <Card
-                size="sm"
-                className={cn(
-                  health.type === 'danger' && 'border-destructive',
-                  health.type === 'warning' && 'border-amber-500'
-                )}>
-                {href ? (
-                  <Link to={href} className="block">
-                    {body}
-                  </Link>
-                ) : (
-                  body
-                )}
-              </Card>
-            </li>
-          );
-        })}
-      </ul>
     </section>
   );
 }
 
-// Mockup N1, without the tabs (no issue yet), the connections chart (#805)
-// and the health checks panel, which is left for later.
+// An info strip and a listeners table. Simpler than mockup N1: no traffic
+// path band or backend cards, since backend health sits in the table.
 export function NlbOverview({
   nlb,
-  routes,
-  services,
+  rows,
+  networkHref,
   servicesHref,
   listenerActions,
 }: {
   nlb: NetworkLoadBalancer;
-  routes: NetworkLoadBalancerRoute[];
-  services: NetworkService[];
+  rows: ListenerRow[];
+  /** The NLB's network, for the Network link. */
+  networkHref?: string;
   /** Where a backend links to: its network's services list. */
   servicesHref?: string;
   /** Add, edit and delete; without them the listeners are read-only. */
   listenerActions?: ListenerActions;
 }) {
-  const rows = toListenerRows(nlb, routes, services);
-  const cards = toBackendCards(rows);
-  const summary = overviewSummary(rows);
-
+  const shared = sharedAddress(rows);
   return (
     <div className="flex flex-col gap-6" data-testid="networking-plugin-nlb-overview">
-      <style>{BAND_STYLE}</style>
-      {/* datum.net's look: white cards on glacier mist, with navy kept for text. */}
-      <section className="bg-sidebar-accent flex flex-col gap-6 rounded-xl p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <SectionLabel>Traffic path</SectionLabel>
-          <span
-            data-testid="networking-plugin-nlb-summary"
-            className={cn(
-              'bg-card flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-medium',
-              HEALTH_TEXT[summary.type]
-            )}>
-            <Dot type={summary.type} />
-            {summary.label}
-          </span>
-        </div>
-
-        <div className="nlb-band">
-          <AddressesCard nlb={nlb} />
-          <div className="flex min-w-0 flex-col gap-6">
-            <ListenersCard rows={rows} backendHref={servicesHref} actions={listenerActions} />
-            <BackendCards cards={cards} href={servicesHref} />
-          </div>
-        </div>
-      </section>
+      <InfoStrip nlb={nlb} shared={shared} networkHref={networkHref} />
+      <ListenersSection
+        rows={rows}
+        showAddress={!shared}
+        backendHref={servicesHref}
+        actions={listenerActions}
+      />
     </div>
   );
 }

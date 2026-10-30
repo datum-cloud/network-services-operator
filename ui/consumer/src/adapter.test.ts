@@ -757,7 +757,7 @@ describe('toNetworkLoadBalancerRouteList', () => {
 });
 
 describe('toNetworkLoadBalancer status', () => {
-  it('keeps allocated addresses per endpoint and drops pending ones', () => {
+  it('keeps each endpoint’s hostname and allocated addresses, dropping pending ones', () => {
     const nlb = toNetworkLoadBalancer({
       spec: { listeners: [{ name: 'udp-7777', protocol: 'UDP', port: 7777, addressRefs: ['udp-7777'] }] },
       status: {
@@ -765,6 +765,7 @@ describe('toNetworkLoadBalancer status', () => {
           {
             requestName: 'udp-7777',
             location: 'iad',
+            canonicalHostname: 'us-east-1.plea-fried-wgyt2.prism.example',
             addresses: [{ family: 'IPv6', value: '2001:db8::3' }, { family: 'IPv4' }],
           },
         ],
@@ -772,7 +773,12 @@ describe('toNetworkLoadBalancer status', () => {
     });
     expect(nlb.listeners[0].addressRef).toBe('udp-7777');
     expect(nlb.endpoints).toEqual([
-      { requestName: 'udp-7777', location: 'iad', addresses: [{ family: 'IPv6', value: '2001:db8::3' }] },
+      {
+        requestName: 'udp-7777',
+        location: 'iad',
+        hostname: 'us-east-1.plea-fried-wgyt2.prism.example',
+        addresses: [{ family: 'IPv6', value: '2001:db8::3' }],
+      },
     ]);
   });
 });

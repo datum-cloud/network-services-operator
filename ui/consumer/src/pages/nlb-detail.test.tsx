@@ -34,6 +34,7 @@ const nlb: NetworkLoadBalancer = {
     {
       requestName: 'udp-7777',
       location: 'iad',
+      hostname: 'us-east-1.plea-fried-wgyt2.prism.example',
       addresses: [{ family: 'IPv6', value: '2001:db8::3' }],
     },
     {
@@ -91,6 +92,12 @@ function renderPage() {
   );
 }
 
+function listenerRow(name: string): HTMLElement {
+  return screen
+    .getByTestId('networking-plugin-nlb-listeners')
+    .querySelector(`tr[data-listener="${name}"]`) as HTMLElement;
+}
+
 beforeEach(() => {
   mockQuery(useNlbMock, { data: nlb });
   mockQuery(useRoutesMock, { data: [route] });
@@ -98,23 +105,49 @@ beforeEach(() => {
 });
 
 describe('NlbDetail', () => {
-  it('shows each listener with its address, backend, health check and status', () => {
+  it('shows each listener with its address, backend, health and health check', () => {
     renderPage();
-    const listeners = within(screen.getByTestId('networking-plugin-nlb-listeners'));
-    const udp = within(listeners.getByText('7777').closest('tr') as HTMLElement);
+    // Two listeners on two addresses: the addresses show per listener.
+    const udp = within(listenerRow('udp-7777'));
     expect(udp.getByText('UDP')).toBeInTheDocument();
-    expect(udp.getByText('[2001:db8::3]')).toBeInTheDocument();
+    expect(udp.getByText('7777')).toBeInTheDocument();
+    expect(udp.getByText('us-east-1.plea-fried-wgyt2.prism.example')).toBeInTheDocument();
+    // Bare, so it pastes into a client; brackets are only for URLs.
+    expect(udp.getByText('2001:db8::3')).toBeInTheDocument();
+    expect(udp.getByRole('button', { name: 'Copy 2001:db8::3' })).toBeInTheDocument();
     expect(udp.getByText('+1 city')).toBeInTheDocument();
-    expect(udp.getByText('game-server')).toBeInTheDocument();
+    expect(udp.getByRole('link', { name: 'game-server' })).toHaveAttribute(
+      'href',
+      '/project/demo-project/services/networking/networks/kevnett/services'
+    );
     expect(udp.getByText(':health')).toBeInTheDocument();
-    expect(udp.getByText('Degraded')).toBeInTheDocument();
+    expect(udp.getByText('5/6 endpoints healthy')).toBeInTheDocument();
 
-    const tcp = within(listeners.getByText('80').closest('tr') as HTMLElement);
+    const tcp = within(listenerRow('tcp-80'));
     expect(tcp.getByText('Pending')).toBeInTheDocument();
     expect(tcp.getByText('No route')).toBeInTheDocument();
   });
 
-  it('says a backend with no members has none, and names the serving port probe', () => {
+  it('puts a single listener’s hostname and address in the info strip', () => {
+    mockQuery(useNlbMock, { data: { ...nlb, listeners: [nlb.listeners[0]] } });
+    mockQuery(useServicesMock, {
+      data: [{ ...service, summary: { locations: 2, members: 6, healthy: 6 } }],
+    });
+    renderPage();
+    const info = within(screen.getByTestId('networking-plugin-nlb-info'));
+    expect(info.getByText('us-east-1.plea-fried-wgyt2.prism.example')).toBeInTheDocument();
+    expect(info.getByText('2001:db8::3')).toBeInTheDocument();
+    expect(info.getByRole('link', { name: 'kevnett' })).toHaveAttribute(
+      'href',
+      '/project/demo-project/services/networking/networks/kevnett'
+    );
+    expect(
+      within(screen.getByTestId('networking-plugin-nlb-listeners')).queryByText('Address')
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('networking-plugin-nlb-summary')).toHaveTextContent('Forwarding');
+  });
+
+  it('says why a listener isn’t serving, and names the serving port probe', () => {
     mockQuery(useRoutesMock, {
       data: [
         {
@@ -132,25 +165,10 @@ describe('NlbDetail', () => {
         },
       ],
     });
-    mockQuery(useServicesMock, {
-      data: [{ ...service, summary: { locations: 0, members: 0, healthy: 0 } }],
-    });
     renderPage();
-    expect(
-      within(screen.getByTestId('networking-plugin-nlb-backends')).getByText('No members')
-    ).toBeInTheDocument();
-    expect(screen.getByText('· serving port', { exact: false })).toBeInTheDocument();
-    expect(screen.getByText('No reachable backends')).toBeInTheDocument();
-  });
-
-  it('shows backend health and links backends to their network’s services', () => {
-    renderPage();
-    const backends = within(screen.getByTestId('networking-plugin-nlb-backends'));
-    expect(backends.getByText('5/6 healthy')).toBeInTheDocument();
-    expect(backends.getByRole('link')).toHaveAttribute(
-      'href',
-      '/project/demo-project/services/networking/networks/kevnett/services'
-    );
+    const udp = within(listenerRow('udp-7777'));
+    expect(udp.getByText('No reachable backends')).toBeInTheDocument();
+    expect(udp.getByText('· serving port', { exact: false })).toBeInTheDocument();
   });
 
   it('links back to the list and sums up the listeners', () => {
@@ -172,9 +190,7 @@ describe('NlbDetail', () => {
 
   it('edits a listener from its row menu', async () => {
     renderPage();
-    const row = within(screen.getByTestId('networking-plugin-nlb-listeners'))
-      .getByText('7777')
-      .closest('tr') as HTMLElement;
+    const row = listenerRow('udp-7777');
     fireEvent.click(within(row).getByRole('button', { name: 'Actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const dialog = await screen.findByRole('dialog');
@@ -191,9 +207,7 @@ describe('NlbDetail', () => {
     });
     renderPage();
 
-    const row = within(screen.getByTestId('networking-plugin-nlb-listeners'))
-      .getByText('7777')
-      .closest('tr') as HTMLElement;
+    const row = listenerRow('udp-7777');
     fireEvent.click(within(row).getByRole('button', { name: 'Actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     const dialog = within(await screen.findByRole('dialog'));
@@ -225,6 +239,31 @@ describe('NlbDetail', () => {
       path: '/spec/listeners/0',
     });
     globalThis.fetch = originalFetch;
+  });
+
+  it('deletes the load balancer from the Actions menu, then goes back to the list', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    const deleteSpy = vi
+      .spyOn(api, 'useDeleteNetworkLoadBalancer')
+      .mockReturnValue({ mutateAsync } as never);
+    renderPage();
+
+    // The header's menu comes first; each listener row has its own Actions button too.
+    const trigger = screen.getAllByRole('button', { name: 'Actions' })[0];
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete load balancer' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText(/It also deletes its route edge-nlb-udp-7777\./)).toBeInTheDocument();
+    fireEvent.change(dialog.getByPlaceholderText('Type in here...'), {
+      target: { value: 'DELETE' },
+    });
+    fireEvent.click(dialog.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() =>
+      expect(mutateAsync).toHaveBeenCalledWith({ name: 'edge-nlb', routes: [route] })
+    );
+    deleteSpy.mockRestore();
   });
 
   it('won’t delete the only listener', () => {

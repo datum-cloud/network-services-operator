@@ -378,6 +378,8 @@ export type NetworkLoadBalancerListener = z.infer<typeof networkLoadBalancerList
 export const networkLoadBalancerEndpointSchema = z.object({
   requestName: z.string(),
   location: z.string(),
+  /** The generated name for this address in this location, e.g. us-central-1.plea-fried-wgyt2.prism… */
+  hostname: z.string().optional(),
   /** Allocated addresses only; a family still pending has no value and is left out. */
   addresses: z.array(z.object({ family: z.string(), value: z.string() })).default([]),
 });

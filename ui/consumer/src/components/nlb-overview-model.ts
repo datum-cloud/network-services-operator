@@ -18,18 +18,13 @@ export interface ListenerRow {
   listener: NetworkLoadBalancerListener;
   /** The first allocated address, and how many locations have one. */
   address?: string;
+  /** The hostname for that same location's address, once one is generated. */
+  hostname?: string;
   locations: number;
   route?: NetworkLoadBalancerRoute;
   backend?: NetworkLoadBalancerRoute['backends'][number];
   service?: NetworkService;
   status: ListenerStatus;
-}
-
-export interface BackendCard {
-  service?: NetworkService;
-  name: string;
-  ports: string[];
-  listeners: NetworkLoadBalancerListener[];
 }
 
 const ROUTE_REASON_COPY: Record<string, string> = {
@@ -115,6 +110,7 @@ export function toListenerRows(
       (e) => e.requestName === listener.addressRef && e.addresses.length > 0
     );
     const address = endpoints[0]?.addresses[0]?.value;
+    const hostname = endpoints[0]?.hostname;
     const match = routeFor(nlb.name, listener, routes);
     const backend = match?.route.backends[0];
     const service = services.find((s) => s.name === backend?.name);
@@ -122,6 +118,7 @@ export function toListenerRows(
     return {
       listener,
       address,
+      hostname,
       locations: endpoints.length,
       route: match?.route,
       backend,
@@ -129,24 +126,6 @@ export function toListenerRows(
       status: listenerStatus(!!match, match?.parent, address, service),
     };
   });
-}
-
-/** One card per backend any listener sends to, in the order listeners first use them. */
-export function toBackendCards(rows: ListenerRow[]): BackendCard[] {
-  const cards = new Map<string, BackendCard>();
-  for (const row of rows) {
-    if (!row.backend) continue;
-    const card = cards.get(row.backend.name) ?? {
-      service: row.service,
-      name: row.backend.name,
-      ports: [],
-      listeners: [],
-    };
-    if (!card.ports.includes(row.backend.port)) card.ports.push(row.backend.port);
-    card.listeners.push(row.listener);
-    cards.set(row.backend.name, card);
-  }
-  return [...cards.values()];
 }
 
 export function overviewSummary(rows: ListenerRow[]): ListenerStatus {

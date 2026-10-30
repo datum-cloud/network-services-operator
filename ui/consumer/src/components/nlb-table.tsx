@@ -70,7 +70,7 @@ function ConditionalPagination() {
   return <DataTable.Pagination className="datum-ui-data-table__pagination" />;
 }
 
-function deleteDescription(row: NlbRow | undefined): string {
+export function deleteDescription(row: NlbRow | undefined): string {
   if (!row?.routes) return '';
   const { deleteRoutes, detachRoutes } = planNlbDelete(row.nlb.name, row.routes);
   const parts = [`This permanently deletes ${row.nlb.name} and releases its public addresses.`];

@@ -425,6 +425,7 @@ interface RawNetworkLoadBalancerSpec {
 interface RawNetworkLoadBalancerEndpointStatus {
   requestName?: string;
   location?: string;
+  canonicalHostname?: string;
   addresses?: { family?: string; value?: string }[];
 }
 
@@ -478,6 +479,7 @@ export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadB
     endpoints: (raw.status?.endpoints ?? []).map((e) => ({
       requestName: e.requestName ?? '',
       location: e.location ?? '',
+      hostname: e.canonicalHostname || undefined,
       addresses: (e.addresses ?? []).flatMap((a) =>
         a.value ? [{ family: a.family ?? '', value: a.value }] : []
       ),

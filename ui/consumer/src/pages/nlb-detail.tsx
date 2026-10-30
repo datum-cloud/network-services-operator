@@ -1,10 +1,13 @@
 import { AddListenerDialog } from '../components/add-listener-dialog';
 import { DeleteListenerDialog } from '../components/delete-listener-dialog';
-import { NlbOverview } from '../components/nlb-overview';
-import type { ListenerRow } from '../components/nlb-overview-model';
+import { ConfirmDeleteDialog } from '../components/confirm-delete-dialog';
+import { NlbOverview, NlbStatusPill } from '../components/nlb-overview';
+import { toListenerRows, type ListenerRow } from '../components/nlb-overview-model';
+import { deleteDescription } from '../components/nlb-table';
 import { NetworkOverviewSkeleton } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
 import {
+  useDeleteNetworkLoadBalancer,
   useNetworkLoadBalancer,
   useNetworkLoadBalancerRoutes,
   useNetworkServices,
@@ -17,11 +20,19 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
+import { Button } from '@datum-cloud/datum-ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@datum-cloud/datum-ui/dropdown';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
-import { HomeIcon } from 'lucide-react';
+import { toast } from '@datum-cloud/datum-ui/toast';
+import { ChevronDownIcon, HomeIcon } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router';
+import { Link, useLocation, useNavigate, useParams } from 'react-router';
 
 /** The plugin's mount, the NLB list and the NLB itself, from wherever under the NLB we are. */
 function useHrefs(nlbName: string | undefined) {
@@ -43,11 +54,18 @@ export default function NlbDetail() {
   // Open to add when there's no row to edit.
   const [listenerDialog, setListenerDialog] = useState<{ editing?: ListenerRow }>();
   const [deleting, setDeleting] = useState<ListenerRow>();
+  const [deletingNlb, setDeletingNlb] = useState(false);
+  const deleteNlb = useDeleteNetworkLoadBalancer(projectId);
+  const navigate = useNavigate();
 
   const projectHref = projectId ? `/project/${projectId}` : '/';
-  const servicesHref = nlb?.networkName
-    ? `${hrefs.mount}/networks/${encodeURIComponent(nlb.networkName)}/services`
+  const networkHref = nlb?.networkName
+    ? `${hrefs.mount}/networks/${encodeURIComponent(nlb.networkName)}`
     : undefined;
+  const servicesHref = networkHref && `${networkHref}/services`;
+  const ready = nlb && !routesLoading;
+  const rows = ready ? toListenerRows(nlb, routes, services) : [];
+  const attachedRoutes = routes.filter((r) => r.parents.some((p) => p.name === nlbName));
 
   return (
     <div data-testid="networking-plugin-nlb-detail" className="flex min-w-0 flex-col gap-6">
@@ -73,7 +91,34 @@ export default function NlbDetail() {
         </BreadcrumbList>
       </Breadcrumb>
 
-      <PageTitle title={nlbName ?? ''} />
+      <PageTitle
+        title={nlbName ?? ''}
+        actions={
+          ready && (
+            <div className="flex items-center gap-2">
+              <NlbStatusPill rows={rows} />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="quaternary" theme="outline" size="small" htmlType="button">
+                    Actions
+                    <Icon icon={ChevronDownIcon} className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => setListenerDialog({})}>
+                    Add listener
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onSelect={() => setDeletingNlb(true)}>
+                    Delete load balancer
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )
+        }
+      />
 
       {(isLoading || routesLoading) && <NetworkOverviewSkeleton />}
 
@@ -85,12 +130,12 @@ export default function NlbDetail() {
         />
       )}
 
-      {nlb && !routesLoading && (
+      {ready && (
         <>
           <NlbOverview
             nlb={nlb}
-            routes={routes}
-            services={services}
+            rows={rows}
+            networkHref={networkHref}
             servicesHref={servicesHref}
             listenerActions={{
               onAdd: () => setListenerDialog({}),
@@ -111,6 +156,22 @@ export default function NlbDetail() {
             routes={routes}
             row={deleting}
             onOpenChange={(open) => !open && setDeleting(undefined)}
+          />
+          <ConfirmDeleteDialog
+            open={deletingNlb}
+            onOpenChange={setDeletingNlb}
+            title={`Delete load balancer ${nlb.name}?`}
+            description={deleteDescription({ nlb, routes: attachedRoutes })}
+            onConfirm={async () => {
+              try {
+                await deleteNlb.mutateAsync({ name: nlb.name, routes: attachedRoutes });
+                toast.success(`Deleted load balancer ${nlb.name}`);
+                navigate(hrefs.list);
+              } catch (err) {
+                toast.error((err as Error).message);
+                throw err;
+              }
+            }}
           />
         </>
       )}

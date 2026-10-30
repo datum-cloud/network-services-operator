@@ -82,7 +82,9 @@ func (r *NetworkLoadBalancerRouteReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 	ctx = mccontext.WithCluster(ctx, req.ClusterName)
-	return ctrl.Result{}, r.reconcileRoute(ctx, cl.GetClient(), req.NamespacedName)
+	return ctrl.Result{}, retryLoadBalancerConflict(cl.GetClient(), cl.GetAPIReader(), func(projectClient client.Client) error {
+		return r.reconcileRoute(ctx, projectClient, req.NamespacedName)
+	})
 }
 
 func (r *NetworkLoadBalancerRouteReconciler) reconcileRoute(ctx context.Context, cl client.Client, key client.ObjectKey) error {

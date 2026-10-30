@@ -40,6 +40,11 @@ const (
 	// PluginTap is the master plugin for virtual machine guests.
 	PluginTap = "galactic-tap"
 
+	// PluginTapHostOnly is the tap plugin under the name only a node that
+	// enforces hostOnlyPorts installs, so an older node fails ADD instead of
+	// starting the guest with those ports open.
+	PluginTapHostOnly = "galactic-tap-host-only"
+
 	// PluginBGP publishes the attachment into BGP and SRv6.
 	PluginBGP = "galactic-bgp"
 
@@ -137,6 +142,9 @@ func Conflist(
 		MTU:           mtu,
 		DAN:           dan,
 		HostOnlyPorts: hostOnlyPorts,
+	}
+	if plugin == PluginTap && len(hostOnlyPorts) > 0 {
+		master.Type = PluginTapHostOnly
 	}
 	if len(addresses) > 0 {
 		master.IPAM = &IPAM{Type: PluginIPAM, Addresses: addresses}

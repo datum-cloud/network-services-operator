@@ -179,6 +179,13 @@ func TestConflistCarriesHostOnlyPorts(t *testing.T) {
 	if _, present := masterStanza(t, open)["hostOnlyPorts"]; present {
 		t.Errorf("attachment without host-only ports carries the field: %s", open)
 	}
+	if got := masterStanza(t, fenced)["type"]; got != PluginTapHostOnly {
+		t.Errorf("fenced attachment: plugin %v, want %q so a node that cannot enforce the ports fails ADD",
+			got, PluginTapHostOnly)
+	}
+	if got := masterStanza(t, open)["type"]; got != PluginTap {
+		t.Errorf("attachment without host-only ports: plugin %v, want %q", got, PluginTap)
+	}
 }
 
 func masterStanza(t *testing.T, raw string) map[string]any {

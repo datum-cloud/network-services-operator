@@ -44,6 +44,8 @@ const (
 	networkLoadBalancerOwnerLabel = "networking.datumapis.com/network-load-balancer-uid"
 )
 
+var errAwaitingIPAM = errors.New("waiting for IPAM")
+
 type NetworkLoadBalancerReconciler struct {
 	IPAM            IPAMClientFactory
 	PublicIPv6Class string
@@ -255,17 +257,28 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		}
 	}
 
-	if !allAllocated {
-		if firstFailure == "" {
-			firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
-		}
-		result, err := r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
-		if err == nil && awaitingIPAM {
-			result.Requeue = true
-		}
-		return result, err
+	return r.reportAllocation(ctx, cl, &lb, status, requests, allAllocated, awaitingIPAM, firstFailure)
+}
+
+// reportAllocation records the allocation outcome. IPAM has no watchable
+// event for a refused or unanswered claim, so only that case returns an error
+// for the work queue to retry with backoff.
+func (r *NetworkLoadBalancerReconciler) reportAllocation(
+	ctx context.Context, cl client.Client, lb *networkingv1alpha.NetworkLoadBalancer,
+	status []networkingv1alpha.NetworkLoadBalancerEndpointStatus, requests []loadBalancerAddressRequest,
+	allAllocated, awaitingIPAM bool, firstFailure string,
+) (ctrl.Result, error) {
+	if allAllocated {
+		return r.report(ctx, cl, lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 	}
-	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
+	if firstFailure == "" {
+		firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
+	}
+	result, err := r.report(ctx, cl, lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+	if err == nil && awaitingIPAM {
+		err = fmt.Errorf("%w: %s", errAwaitingIPAM, firstFailure)
+	}
+	return result, err
 }
 
 func countAddressEndpoints(requests []loadBalancerAddressRequest, prior []networkingv1alpha.NetworkLoadBalancerEndpointStatus) int {

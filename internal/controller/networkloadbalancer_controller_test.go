@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -98,10 +99,17 @@ func newLoadBalancerAllocationScenario(t *testing.T) *loadBalancerAllocationScen
 func (s *loadBalancerAllocationScenario) reconcile() networkingv1alpha.NetworkLoadBalancer {
 	s.t.Helper()
 	_, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
-	require.NoError(s.t, err)
+	require.NoError(s.t, ignoreAwaitingIPAM(err))
 	var lb networkingv1alpha.NetworkLoadBalancer
 	require.NoError(s.t, s.client.Get(s.ctx, client.ObjectKeyFromObject(s.lb), &lb))
 	return lb
+}
+
+func ignoreAwaitingIPAM(err error) error {
+	if errors.Is(err, errAwaitingIPAM) {
+		return nil
+	}
+	return err
 }
 
 func (s *loadBalancerAllocationScenario) claims() []ipamv1alpha1.IPClaim {
@@ -781,8 +789,7 @@ func TestNetworkLoadBalancerDependencyEventsEnqueueAffectedLoadBalancers(t *test
 func TestNetworkLoadBalancerReliesOnEventsInsteadOfPeriodicResync(t *testing.T) {
 	s := newLoadBalancerAllocationScenario(t)
 	result, err := s.control.reconcile(s.ctx, s.client, client.ObjectKeyFromObject(s.lb))
-	require.NoError(t, err)
-	require.True(t, result.Requeue, "a claim IPAM has not answered retries with backoff")
+	require.ErrorIs(t, err, errAwaitingIPAM, "a claim IPAM has not answered retries with backoff")
 	require.Zero(t, result.RequeueAfter)
 
 	for i, claim := range s.claims() {

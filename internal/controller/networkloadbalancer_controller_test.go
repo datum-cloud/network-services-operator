@@ -16,6 +16,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -729,4 +730,49 @@ func setEdgeAnnouncement(lb *networkingv1alpha.NetworkLoadBalancer, status metav
 			})
 		}
 	}
+}
+
+func TestNetworkLoadBalancerDependencyEventsEnqueueAffectedLoadBalancers(t *testing.T) {
+	s := newLoadBalancerAllocationScenario(t)
+	key := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(s.lb)}
+
+	other := &networkingv1alpha.NetworkLoadBalancer{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: s.lb.Namespace}}
+	other.Spec.NetworkRef.Name = "elsewhere"
+	require.NoError(t, s.client.Create(s.ctx, other))
+
+	route := &networkingv1alpha.NetworkLoadBalancerRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: s.lb.Namespace}}
+	route.Spec.ParentRefs = []networkingv1alpha.NetworkLoadBalancerRouteParentRef{
+		{Name: s.lb.Name, Listener: "web"}, {Name: s.lb.Name, Port: ptr.To[int32](443)},
+	}
+	route.Spec.Backends = []networkingv1alpha.NetworkLoadBalancerRouteBackend{{
+		NetworkService: networkingv1alpha.NetworkLoadBalancerNetworkServiceRef{Name: "backend", Port: "http"},
+	}}
+	require.NoError(t, s.client.Create(s.ctx, route))
+	require.Equal(t, []reconcile.Request{key}, loadBalancersForRouteEvent(s.ctx, s.client, route))
+
+	service := &networkingv1alpha.NetworkService{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: s.lb.Namespace}}
+	require.Equal(t, []reconcile.Request{key}, loadBalancersForNetworkServiceEvent(s.ctx, s.client, service))
+	unrelated := &networkingv1alpha.NetworkService{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: s.lb.Namespace}}
+	require.Empty(t, loadBalancersForNetworkServiceEvent(s.ctx, s.client, unrelated))
+
+	member := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: s.lb.Namespace}}
+	member.Spec.Network.Name = s.lb.Spec.NetworkRef.Name
+	require.Equal(t, []reconcile.Request{key}, loadBalancersForInterfaceEvent(s.ctx, s.client, member))
+
+	network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Name: s.lb.Spec.NetworkRef.Name, Namespace: s.lb.Namespace}}
+	require.Equal(t, []reconcile.Request{key}, loadBalancersForNetworkEvent(s.ctx, s.client, network))
+
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: s.lb.Namespace}}
+	require.ElementsMatch(t, []reconcile.Request{key, {NamespacedName: client.ObjectKeyFromObject(other)}},
+		loadBalancersForNamespaceEvent(s.ctx, s.client, namespace))
+
+	location := &locationsv1alpha1.Location{ObjectMeta: metav1.ObjectMeta{Name: "iad"}}
+	require.Empty(t, loadBalancersForLocationEvent(s.ctx, s.client, location))
+	var lb networkingv1alpha.NetworkLoadBalancer
+	require.NoError(t, s.client.Get(s.ctx, key.NamespacedName, &lb))
+	lb.Spec.Exposure.Addresses[0].Locations = &networkingv1alpha.NetworkLoadBalancerLocationSelection{
+		From: networkingv1alpha.NetworkLoadBalancerLocationSourceAll,
+	}
+	require.NoError(t, s.client.Update(s.ctx, &lb))
+	require.Equal(t, []reconcile.Request{key}, loadBalancersForLocationEvent(s.ctx, s.client, location))
 }

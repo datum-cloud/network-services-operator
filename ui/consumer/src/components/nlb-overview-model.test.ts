@@ -146,3 +146,19 @@ describe('overviewSummary', () => {
     expect(overviewSummary(toListenerRows(makeNlb(), [], [])).label).toBe('Needs attention');
   });
 });
+
+describe('listener status while the data plane catches up', () => {
+  it('shows a new listener as programming, not a fault', () => {
+    for (const status of ['False', 'Unknown'] as const) {
+      const route = makeRoute('r', [parent({ status, reason: 'AwaitingDataPlane' })]);
+      const [row] = toListenerRows(makeNlb(), [route], []);
+      expect(row.status).toMatchObject({ label: 'Programming', type: 'muted', pending: true });
+      expect(overviewSummary([row])).toMatchObject({ label: 'Starting up' });
+    }
+  });
+
+  it('spells out a reason it has no copy for', () => {
+    const route = makeRoute('r', [parent({ status: 'False', reason: 'SomethingNewBroke' })]);
+    expect(toListenerRows(makeNlb(), [route], [])[0].status.label).toBe('Something new broke');
+  });
+});

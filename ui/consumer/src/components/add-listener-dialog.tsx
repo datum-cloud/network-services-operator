@@ -288,10 +288,6 @@ export function AddListenerDialog({
                 </div>
               </div>
             )}
-            <p className="text-muted-foreground text-xs">
-              New IPv6 address · follows backends. One public address per city where the backend
-              runs. IPv4 coming soon.
-            </p>
           </div>
 
           <div className="flex flex-col gap-4">

@@ -95,7 +95,8 @@ function renderPage() {
 function listenerRow(name: string): HTMLElement {
   return screen
     .getByTestId('networking-plugin-nlb-listeners')
-    .querySelector(`tr[data-listener="${name}"]`) as HTMLElement;
+    .querySelector(`[data-listener="${name}"]`)
+    ?.closest('tr') as HTMLElement;
 }
 
 beforeEach(() => {
@@ -109,8 +110,7 @@ describe('NlbDetail', () => {
     renderPage();
     // Two listeners on two addresses: the addresses show per listener.
     const udp = within(listenerRow('udp-7777'));
-    expect(udp.getByText('UDP')).toBeInTheDocument();
-    expect(udp.getByText('7777')).toBeInTheDocument();
+    expect(udp.getByText('UDP 7777')).toBeInTheDocument();
     expect(udp.getByText('us-east-1.plea-fried-wgyt2.prism.example')).toBeInTheDocument();
     // Bare, so it pastes into a client; brackets are only for URLs.
     expect(udp.getByText('2001:db8::3')).toBeInTheDocument();
@@ -124,7 +124,7 @@ describe('NlbDetail', () => {
     expect(udp.getByText('5/6 endpoints healthy')).toBeInTheDocument();
 
     const tcp = within(listenerRow('tcp-80'));
-    expect(tcp.getByText('Pending')).toBeInTheDocument();
+    expect(tcp.getByLabelText('Allocating an address')).toBeInTheDocument();
     expect(tcp.getByText('No route')).toBeInTheDocument();
   });
 
@@ -209,7 +209,8 @@ describe('NlbDetail', () => {
 
     const row = listenerRow('udp-7777');
     fireEvent.click(within(row).getByRole('button', { name: 'Actions' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    // The title's Delete comes first; the row menu's opens last.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!);
     const dialog = within(await screen.findByRole('dialog'));
     expect(
       dialog.getByText(
@@ -241,18 +242,14 @@ describe('NlbDetail', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('deletes the load balancer from the Actions menu, then goes back to the list', async () => {
+  it('deletes the load balancer from the title, then goes back to the list', async () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     const deleteSpy = vi
       .spyOn(api, 'useDeleteNetworkLoadBalancer')
       .mockReturnValue({ mutateAsync } as never);
     renderPage();
 
-    // The header's menu comes first; each listener row has its own Actions button too.
-    const trigger = screen.getAllByRole('button', { name: 'Actions' })[0];
-    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
-    fireEvent.keyDown(trigger, { key: 'Enter' });
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete load balancer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByText(/It also deletes its route edge-nlb-udp-7777\./)).toBeInTheDocument();
     fireEvent.change(dialog.getByPlaceholderText('Type in here...'), {
@@ -274,7 +271,7 @@ describe('NlbDetail', () => {
         name: 'Actions',
       })
     );
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: 'Delete' }).at(-1)).toBeDisabled();
   });
 
   it('waits for routes before showing listeners', () => {

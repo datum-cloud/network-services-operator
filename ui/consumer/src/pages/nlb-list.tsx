@@ -63,7 +63,7 @@ export default function NlbList() {
       </Breadcrumb>
 
       <PageTitle
-        title="Network load balancers"
+        title="Network Load Balancers"
         actions={
           !isEmpty && (
             <Button

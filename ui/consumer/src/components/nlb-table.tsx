@@ -140,7 +140,7 @@ export function NlbTable({
         cell: ({ row }) => (
           <div className="flex flex-wrap gap-1">
             {row.original.nlb.listeners.map((l) => (
-              <ProtocolBadge key={l.name} protocol={l.protocol} port={l.port} />
+              <ProtocolBadge key={l.name} protocol={l.protocol} port={l.port} small />
             ))}
           </div>
         ),

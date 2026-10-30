@@ -255,7 +255,7 @@ describe('CreateNlbDialog', () => {
   );
 
   it(
-    'hands the new NLB to onCreated instead of closing',
+    'hands the new NLB to onCreated, staying open and loading until it navigates',
     async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(ok()) as unknown as typeof fetch;
       const onCreated = vi.fn();
@@ -268,6 +268,10 @@ describe('CreateNlbDialog', () => {
 
       await waitFor(() => expect(onCreated).toHaveBeenCalledWith('db'));
       expect(onOpenChange).not.toHaveBeenCalledWith(false);
+      // Still open and loading, so it doesn't flash before the new page replaces it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Create' })).not.toBeInTheDocument();
     },
     SELECT_TEST_TIMEOUT
   );

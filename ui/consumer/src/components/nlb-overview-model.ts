@@ -41,6 +41,12 @@ const ROUTE_REASON_COPY: Record<string, string> = {
   UnsupportedCapability: 'Not supported',
 };
 
+/** `SomeNewReason` → `Some new reason`, for reasons the copy above doesn't know yet. */
+function humanize(reason: string): string {
+  const words = reason.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function routeFor(
   nlbName: string,
   listener: NetworkLoadBalancerListener,
@@ -80,9 +86,17 @@ function listenerStatus(
       detail: 'No route sends this listener’s traffic anywhere.',
     };
   }
+  // A new or changed listener waits on each location's data plane. That's
+  // progress, not a fault, whichever status the controller reports it with.
+  if (parent?.reason === 'AwaitingDataPlane') {
+    return { label: 'Programming', type: 'muted', pending: true, detail: parent.message };
+  }
   if (parent?.status === 'False') {
     return {
-      label: (parent.reason && ROUTE_REASON_COPY[parent.reason]) ?? parent.reason ?? 'Not attached',
+      label:
+        (parent.reason && ROUTE_REASON_COPY[parent.reason]) ??
+        (parent.reason && humanize(parent.reason)) ??
+        'Not attached',
       type: 'danger',
       detail: parent.message,
     };

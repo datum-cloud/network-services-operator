@@ -21,16 +21,10 @@ import {
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { Button } from '@datum-cloud/datum-ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@datum-cloud/datum-ui/dropdown';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { toast } from '@datum-cloud/datum-ui/toast';
-import { ChevronDownIcon, HomeIcon } from 'lucide-react';
+import { HomeIcon, Trash2Icon } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 
@@ -97,24 +91,15 @@ export default function NlbDetail() {
           ready && (
             <div className="flex items-center gap-2">
               <NlbStatusPill rows={rows} />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="quaternary" theme="outline" size="small" htmlType="button">
-                    Actions
-                    <Icon icon={ChevronDownIcon} className="size-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => setListenerDialog({})}>
-                    Add listener
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="text-destructive"
-                    onSelect={() => setDeletingNlb(true)}>
-                    Delete load balancer
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <Button
+                type="danger"
+                theme="outline"
+                size="xs"
+                htmlType="button"
+                icon={<Icon icon={Trash2Icon} size={12} />}
+                onClick={() => setDeletingNlb(true)}>
+                Delete
+              </Button>
             </div>
           )
         }

@@ -88,12 +88,23 @@ const NAMED_BACKENDS = 3;
 const ACCENT_TEXT = { color: 'var(--btn-primary)' };
 
 /** A listener's protocol, and its port unless a column beside it already shows it. */
-export function ProtocolBadge({ protocol, port }: { protocol: NlbProtocol; port?: number }) {
+export function ProtocolBadge({
+  protocol,
+  port,
+  small,
+}: {
+  protocol: NlbProtocol;
+  port?: number;
+  /** Sized like the status badges, for tables. */
+  small?: boolean;
+}) {
   return (
     <Badge
       type={protocol === 'UDP' ? 'quaternary' : 'info'}
       theme="light"
-      className="font-mono text-xs">
+      className={
+        small ? 'text-5xs px-1 py-0.5 font-mono font-bold tracking-[0.03em]' : 'font-mono text-xs'
+      }>
       {port === undefined ? protocol : `${protocol} ${port}`}
     </Badge>
   );
@@ -131,7 +142,7 @@ export function NlbEmptyState({
 
         <TrafficPath />
 
-        <div className="flex w-full max-w-xl flex-col items-stretch gap-3 sm:flex-row sm:items-center">
+        <div className="flex w-full max-w-xl flex-col items-stretch gap-3 sm:flex-row">
           <Button
             type="primary"
             theme="solid"
@@ -141,8 +152,9 @@ export function NlbEmptyState({
             <Icon icon={PlusIcon} className="size-4" />
             Create load balancer
           </Button>
-          <div className="min-w-0 flex-1 text-left">
-            <CommandBlock value="datumctl apply -f nlb.yaml" />
+          {/* Stretched to the button's height, so the pair line up. */}
+          <div className="flex min-w-0 flex-1 text-left">
+            <CommandBlock value="datumctl apply -f nlb.yaml" className="w-full py-2" />
           </div>
         </div>
 
@@ -166,7 +178,7 @@ export function NlbEmptyState({
                   type="button"
                   data-testid={`networking-plugin-nlb-starter-${starter.id}`}
                   onClick={() => onCreate({ protocol: starter.protocol, port: starter.port })}
-                  className="border-border bg-background hover:bg-muted flex h-full w-full flex-col gap-2 rounded-lg border p-4 text-left transition-colors">
+                  className="border-border bg-card hover:bg-muted flex h-full w-full flex-col gap-2 rounded-lg border p-4 text-left transition-colors">
                   <span className="flex items-center gap-2">
                     <Icon icon={starter.icon} size={16} style={ACCENT_TEXT} />
                     <span className="flex-1 text-sm font-medium">{starter.title}</span>

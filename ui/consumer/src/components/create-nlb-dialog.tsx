@@ -201,6 +201,8 @@ export function CreateNlbDialog({
     if (Object.keys(backendErrors).length > 0) return fail({ fields: backendErrors });
 
     const requests = toNlbCreateRequests(values);
+    // Navigating away tears the dialog down, so it stays loading until then.
+    let leaving = false;
     setPending(true);
     setErrors(NO_ERRORS);
     try {
@@ -218,6 +220,10 @@ export function CreateNlbDialog({
         });
         void queryClient.invalidateQueries({
           queryKey: [PLUGIN_ID, 'networkLoadBalancers', projectId],
+          // Refetching now would swap the page behind the dialog, e.g. the empty
+          // state for the table, just before we navigate away from it. Marked
+          // stale, the list refetches when it's next shown.
+          refetchType: onCreated ? 'none' : 'active',
         });
       }
       try {
@@ -229,12 +235,14 @@ export function CreateNlbDialog({
       setCreated(undefined);
       if (onCreated) {
         // onCreated navigates away; swallow the close that follows so it
-        // doesn't navigate again on top of it.
+        // doesn't navigate again on top of it, and leave the dialog open and
+        // loading until the new page replaces it.
         keepOpen.current = true;
+        leaving = true;
         onCreated(values.name);
       }
     } finally {
-      setPending(false);
+      if (!leaving) setPending(false);
     }
   };
 
@@ -378,10 +386,6 @@ function ListenerFields({
             <FieldApiError message={errors.fields.port} />
           </div>
         </div>
-        <p className="text-muted-foreground text-xs">
-          New IPv6 address · follows backends. One public address per city where the backend runs.
-          IPv4 coming soon.
-        </p>
       </div>
     </>
   );

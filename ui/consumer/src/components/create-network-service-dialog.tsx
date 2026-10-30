@@ -1,6 +1,7 @@
 import { useCreateNetworkService, useNetworkInterfaces } from '../lib/api';
+import { useFormMetadata } from '@conform-to/react';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Form } from '@datum-cloud/datum-ui/form';
+import { Form, useFormContext } from '@datum-cloud/datum-ui/form';
 import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
@@ -13,6 +14,8 @@ const NAME_MESSAGE = 'Lowercase letters, numbers, and hyphens, starting and endi
 
 const WORKLOAD_NAME_LABEL = 'compute.datumapis.com/workload-name';
 
+const PROTOCOLS = ['TCP', 'UDP'] as const;
+
 const portSchema = z.object({
   name: z.string({ error: 'Name the port.' }).regex(NAME_PATTERN, NAME_MESSAGE),
   port: z
@@ -20,6 +23,7 @@ const portSchema = z.object({
     .int('Enter a whole number.')
     .min(1, 'Must be between 1 and 65535.')
     .max(65535, 'Must be between 1 and 65535.'),
+  protocol: z.enum(PROTOCOLS),
 });
 
 const schema = z.object({
@@ -30,23 +34,39 @@ const schema = z.object({
     .min(1, 'Add at least one port this service answers on.')
     .superRefine((ports, ctx) => {
       const seenNames = new Set<string>();
-      const seenNumbers = new Set<number>();
-      ports.forEach((p, i) => {
+      const seenPorts = new Set<string>();
+      for (const p of ports) {
+        const portKey = `${p.protocol}/${p.port}`;
         if (seenNames.has(p.name)) {
-          ctx.addIssue({ code: 'custom', path: [i, 'name'], message: 'Port names must be unique.' });
+          ctx.addIssue({ code: 'custom', message: `Port name ${p.name} is already used.` });
         }
-        if (seenNumbers.has(p.port)) {
-          ctx.addIssue({ code: 'custom', path: [i, 'port'], message: 'Port numbers must be unique.' });
+        if (seenPorts.has(portKey)) {
+          ctx.addIssue({ code: 'custom', message: `${p.protocol} port ${p.port} is already used.` });
         }
         seenNames.add(p.name);
-        seenNumbers.add(p.port);
-      });
+        seenPorts.add(portKey);
+      }
     }),
 });
 
 type CreateServiceValues = z.infer<typeof schema>;
 
-const DEFAULT_VALUES = { ports: [{ name: '', port: undefined }] } as unknown as Partial<CreateServiceValues>;
+const NEW_PORT = { name: '', port: undefined, protocol: 'TCP' };
+
+const DEFAULT_VALUES = { ports: [NEW_PORT] } as unknown as Partial<CreateServiceValues>;
+
+function PortsErrors() {
+  const { displayTouchedFields } = useFormContext();
+  const errors = useFormMetadata().getFieldset().ports?.errors ?? [];
+  if (!displayTouchedFields.includes('ports') || errors.length === 0) return null;
+  return (
+    <ul className="text-destructive space-y-1 text-xs font-medium" role="alert">
+      {errors.map((error) => (
+        <li key={error}>{error}</li>
+      ))}
+    </ul>
+  );
+}
 
 function PortsField() {
   return (
@@ -58,7 +78,7 @@ function PortsField() {
               Ports <span className="text-destructive/80">*</span>
             </span>
             <span className="text-muted-foreground text-xs">
-              The ports members answer on. A backend referencing this service names one by port name.
+              The ports members answer on. A backend referencing this service names one by port name. A UDP port needs a TCP port on the service for its health check.
             </span>
           </div>
           <div className="flex flex-col gap-2">
@@ -74,6 +94,15 @@ function PortsField() {
                     placeholder="e.g. 8080"
                     aria-label={`Port ${index + 1} number`}
                   />
+                </Form.Field>
+                <Form.Field name={`ports.${index}.protocol`} className="w-24">
+                  <Form.Select>
+                    {PROTOCOLS.map((protocol) => (
+                      <Form.SelectItem key={protocol} value={protocol}>
+                        {protocol}
+                      </Form.SelectItem>
+                    ))}
+                  </Form.Select>
                 </Form.Field>
                 <Button
                   htmlType="button"
@@ -94,10 +123,11 @@ function PortsField() {
             theme="outline"
             size="small"
             className="w-fit"
-            onClick={() => append({ name: '', port: undefined })}>
+            onClick={() => append({ ...NEW_PORT })}>
             <Icon icon={PlusIcon} className="size-4" />
             Add port
           </Button>
+          <PortsErrors />
         </div>
       )}
     </Form.FieldArray>

@@ -111,7 +111,7 @@ describe('NetworkServices', () => {
 
     const row = screen.getByText('storefront').closest('tr') as HTMLElement;
     expect(within(row).getByText('storefront')).toBeInTheDocument();
-    expect(within(row).getByText('http:8080')).toBeInTheDocument();
+    expect(within(row).getByText('http:8080/TCP')).toBeInTheDocument();
     expect(within(row).getByText('2')).toBeInTheDocument();
     expect(within(row).getByText('4')).toBeInTheDocument();
     expect(within(row).getByText('3')).toBeInTheDocument();

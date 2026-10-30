@@ -1,15 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package controller
 
 import (
 	"context"
+	"reflect"
+	"testing"
+
 	networking "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"reflect"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func TestInternalDNSForeignOrUnknownLocationDoesNotPublish(t *testing.T) {

@@ -202,11 +202,30 @@ spec:
                         port is the port number every member answers on. It is the port on the
                         member itself, not one the platform publishes.
 
-                        Unique within the service.
+                        Intervals on the same protocol cannot overlap within the service.
                       format: int32
                       maximum: 65535
                       minimum: 1
                       type: integer
+                    portRange:
+                      properties:
+                        end:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        start:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - end
+                      - start
+                      type: object
+                      x-kubernetes-validations:
+                      - message: port range start must not exceed end
+                        rule: self.start <= self.end
                     protocol:
                       default: TCP
                       description: |-
@@ -218,16 +237,25 @@ spec:
                       type: string
                   required:
                   - name
-                  - port
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of port and portRange is required
+                    rule: has(self.port) != has(self.portRange)
+                  - message: true port ranges require UDP
+                    rule: '!has(self.portRange) || self.portRange.start == self.portRange.end
+                      || self.protocol == ''UDP'''
                 maxItems: 16
                 minItems: 1
                 type: array
                 x-kubernetes-validations:
                 - message: Port name must be unique within the service
                   rule: self.all(p1, self.exists_one(p2, p2.name == p1.name))
-                - message: Port number must be unique within the service
-                  rule: self.all(p1, self.exists_one(p2, p2.port == p1.port))
+                - message: service ports cannot overlap on the same protocol
+                  rule: 'self.all(a, self.all(b, a.name == b.name || a.protocol !=
+                    b.protocol || (has(a.portRange) ? a.portRange.end : a.port) <
+                    (has(b.portRange) ? b.portRange.start : b.port) || (has(b.portRange)
+                    ? b.portRange.end : b.port) < (has(a.portRange) ? a.portRange.start
+                    : a.port)))'
               trafficDistribution:
                 default:
                   strategy: Nearest

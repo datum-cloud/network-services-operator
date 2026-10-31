@@ -43,6 +43,103 @@ spec:
               NetworkLoadBalancerCellIntentSpec is a validation request to one location.
               The cell must independently verify the live interface, attachment, and VPC.
             properties:
+              addressGroup:
+                properties:
+                  generation:
+                    format: int64
+                    type: integer
+                  listenerName:
+                    type: string
+                  listeners:
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        port:
+                          format: int32
+                          type: integer
+                        portRange:
+                          properties:
+                            end:
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                            start:
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                          required:
+                          - end
+                          - start
+                          type: object
+                          x-kubernetes-validations:
+                          - message: port range start must not exceed end
+                            rule: self.start <= self.end
+                        protocol:
+                          description: NetworkLoadBalancerProtocol is the transport
+                            accepted by a listener.
+                          enum:
+                          - TCP
+                          - UDP
+                          - TLS
+                          type: string
+                      required:
+                      - name
+                      - protocol
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one port or portRange is required
+                        rule: has(self.port) != has(self.portRange)
+                      - message: true ranges require UDP
+                        rule: '!has(self.portRange) || self.portRange.start == self.portRange.end
+                          || self.protocol == ''UDP'''
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  revision:
+                    type: string
+                  uid:
+                    type: string
+                required:
+                - generation
+                - listenerName
+                - listeners
+                - revision
+                - uid
+                type: object
+              allocation:
+                properties:
+                  claimUID:
+                    minLength: 1
+                    type: string
+                  participants:
+                    items:
+                      type: string
+                    maxItems: 1024
+                    type: array
+                    x-kubernetes-list-type: set
+                  retired:
+                    type: boolean
+                  uid:
+                    minLength: 1
+                    type: string
+                required:
+                - claimUID
+                - retired
+                - uid
+                type: object
+                x-kubernetes-validations:
+                - message: allocation identity is immutable
+                  rule: self.uid == oldSelf.uid && self.claimUID == oldSelf.claimUID
+                - message: retired allocations cannot change
+                  rule: '!oldSelf.retired || self == oldSelf'
+                - message: registered cells cannot be removed
+                  rule: '!has(oldSelf.participants) || (has(self.participants) &&
+                    oldSelf.participants.all(p, p in self.participants))'
               backends:
                 items:
                   properties:
@@ -60,6 +157,25 @@ spec:
                     port:
                       format: int32
                       type: integer
+                    portRange:
+                      properties:
+                        end:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        start:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                      required:
+                      - end
+                      - start
+                      type: object
+                      x-kubernetes-validations:
+                      - message: port range start must not exceed end
+                        rule: self.start <= self.end
                     probe:
                       properties:
                         path:
@@ -85,17 +201,38 @@ spec:
                   required:
                   - address
                   - family
-                  - port
                   - probe
                   - sourceName
                   - sourceNamespace
                   - sourceUID
                   type: object
+                  x-kubernetes-validations:
+                  - message: exactly one port or portRange is required
+                    rule: has(self.port) != has(self.portRange)
                 maxItems: 1024
                 type: array
               listenerPort:
                 format: int32
                 type: integer
+              listenerPortRange:
+                properties:
+                  end:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  start:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                required:
+                - end
+                - start
+                type: object
+                x-kubernetes-validations:
+                - message: port range start must not exceed end
+                  rule: self.start <= self.end
               location:
                 type: string
               networkName:
@@ -142,15 +279,12 @@ spec:
                     type: string
                 required:
                 - addressRequest
-                - listenerName
                 - namespace
                 - parentGeneration
                 - parentName
                 - parentUID
                 - projectCluster
                 - routeGeneration
-                - routeName
-                - routeUID
                 type: object
               state:
                 description: |-
@@ -158,6 +292,7 @@ spec:
                   from an explicit withdrawal. Neither state authorizes traffic programming.
                 enum:
                 - Validate
+                - ValidateAllocation
                 - Withdrawn
                 type: string
               vip:
@@ -171,25 +306,59 @@ spec:
                 - IPv6
                 type: string
             required:
-            - listenerPort
             - location
             - networkName
-            - protocol
             - source
             - state
             - vip
             - vipFamily
             type: object
             x-kubernetes-validations:
-            - message: Validate needs backends; Withdrawn must have none
-              rule: 'self.state == ''Validate'' ? has(self.backends) && size(self.backends)
+            - message: validation needs backends; Withdrawn must have none
+              rule: 'self.state != ''Withdrawn'' ? has(self.backends) && size(self.backends)
                 > 0 : !has(self.backends) || size(self.backends) == 0'
+            - message: coordinated validation requires ValidateAllocation
+              rule: self.state == 'Withdrawn' || ((self.state == 'ValidateAllocation')
+                == has(self.addressGroup))
+            - message: serving intents require source and listener fields
+              rule: has(self.allocation) || (has(self.source.routeName) && has(self.source.routeUID)
+                && has(self.source.listenerName) && has(self.protocol) && (has(self.listenerPort)
+                != has(self.listenerPortRange)))
+            - message: retirement cannot contain serving configuration
+              rule: '!has(self.allocation) || (self.state == ''Withdrawn'' && !has(self.addressGroup)
+                && !has(self.listenerPort) && !has(self.listenerPortRange) && !has(self.protocol)
+                && !has(self.source.routeName) && !has(self.source.routeUID) && !has(self.source.listenerName))'
+            - message: allocation authority identity is immutable
+              rule: 'has(oldSelf.allocation) ? has(self.allocation) && self.source
+                == oldSelf.source && self.location == oldSelf.location && self.networkName
+                == oldSelf.networkName && self.vip == oldSelf.vip && self.vipFamily
+                == oldSelf.vipFamily : !has(self.allocation)'
+            - message: true listener ranges require UDP and address inventory
+              rule: '!has(self.listenerPortRange) || self.listenerPortRange.start
+                == self.listenerPortRange.end || (self.protocol == ''UDP'' && has(self.addressGroup))'
           status:
-            description: |-
-              NetworkLoadBalancerCellIntentStatus is written by the serving cell and
-              aggregated onto the hub copy. Cells outside the intent's location leave it
-              empty.
             properties:
+              allocationRetirements:
+                items:
+                  description: |-
+                    NetworkLoadBalancerCellIntentStatus is written by the serving cell and
+                    aggregated onto the hub copy. Cells outside the intent's location leave it
+                    empty.
+                  properties:
+                    cellUID:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                  required:
+                  - cellUID
+                  - observedGeneration
+                  type: object
+                maxItems: 1024
+                type: array
+                x-kubernetes-list-map-keys:
+                - cellUID
+                x-kubernetes-list-type: map
               conditions:
                 description: Conditions include Programmed and Announced.
                 items:

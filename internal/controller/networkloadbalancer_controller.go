@@ -42,6 +42,7 @@ const (
 type NetworkLoadBalancerReconciler struct {
 	IPAM            IPAMClientFactory
 	PublicIPv6Class string
+	PublicIPv4Class string
 	ManagedDomain   string
 	mgr             mcmanager.Manager
 }
@@ -83,7 +84,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		return ctrl.Result{Requeue: true}, nil
 	}
 	for _, request := range lb.Spec.Exposure.Addresses {
-		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) {
+		if slices.Contains(request.Families, networkingv1alpha.IPv4Protocol) && r.PublicIPv4Class == "" {
 			return r.report(ctx, cl, &lb, nil, nil, metav1.ConditionFalse, "UnsupportedCapability",
 				fmt.Sprintf("address request %q: public IPv4 NLB ingress is unavailable", request.Name))
 		}
@@ -137,9 +138,16 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		claimRef := &networkingv1alpha.NetworkLoadBalancerIPClaimRef{
 			Project: routing.project, Namespace: routing.projectNamespace, Name: claimName, UID: claimUID,
 		}
+		if claimRef.UID == "" && prior.ClaimRef != nil {
+			claimRef.UID = prior.ClaimRef.UID
+		}
+		identityChanged := allocationIdentityChanged(prior, address, claimUID)
 		changed := prior.Value != "" && prior.Value != address ||
 			prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
 		if changed && addressPendingWithdrawal(prior) {
+			if prior.Coordinated && identityChanged {
+				prior.Retiring = true
+			}
 			// Keep the old address visible to withdrawal controllers. In particular,
 			// do not transfer its announcement or publication to a replacement IP.
 			allAllocated = false
@@ -151,17 +159,35 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
 			continue
 		}
+		if allocationRetirementPending(prior) {
+			setLoadBalancerCondition(&prior.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "Withdrawing", "The prior serving publication must drain before this allocation is selected again")
+			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
+			allAllocated = false
+			continue
+		}
+		if retiredAllocationNeedsReplacement(prior, identityChanged) {
+			if prior.ClaimRef != nil {
+				if err := r.deleteAddressClaim(ctx, prior.ClaimRef, string(lb.UID)); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			setLoadBalancerCondition(&prior.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "ReplacingRetiredAllocation", "A retired allocation cannot be served again; waiting for a new claim")
+			appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, prior)
+			allAllocated = false
+			continue
+		}
 		entry := prior
-		if changed || prior.Value == "" && address != "" {
+		if identityChanged || prior.Value == "" && address != "" {
 			// Programming, announcement, and DNS publication describe one concrete
 			// address, not the request that happened to produce it.
-			entry = networkingv1alpha.NetworkLoadBalancerAddressStatus{Family: request.family}
+			entry = networkingv1alpha.NetworkLoadBalancerAddressStatus{Family: request.family, Coordinated: prior.Coordinated && !identityChanged}
 		}
+		entry.Retiring = false
+		entry.Coordinated = entry.Coordinated || addressRequestUsesCoordination(&lb, request.requestName)
 		entry.Family = request.family
 		entry.ClaimRef = claimRef
 		if claimErr != nil {
 			allAllocated = false
-			entry.Value = ""
 			reason := string(classifyAllocationFailure(claimErr))
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, reason, claimErr.Error())
@@ -170,13 +196,15 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			}
 		} else if address == "" {
 			allAllocated = false
-			entry.Value = ""
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, "AllocationPending", "IPAM has not assigned an address yet")
 		} else {
+			if entry.Coordinated {
+				entry.WithdrawalPending = true
+			}
 			entry.Value = address
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
-				metav1.ConditionTrue, "Allocated", "Public IPv6 address is held in IPAM")
+				metav1.ConditionTrue, "Allocated", "Public address is held in IPAM")
 		}
 		appendAddressStatus(&status, lb.Status.Endpoints, request.requestName, request.location, entry)
 	}
@@ -187,6 +215,10 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 				continue
 			}
 			if addressPendingWithdrawal(old) {
+				if old.Coordinated {
+					old.Retiring = true
+					setLoadBalancerCondition(&old.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "Withdrawing", "The address is no longer selected for serving")
+				}
 				appendAddressStatus(&status, lb.Status.Endpoints, endpoint.RequestName, endpoint.Location, old)
 				allAllocated = false
 				continue
@@ -221,7 +253,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		}
 		return r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
 	}
-	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public IPv6 addresses are held")
+	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 }
 
 func countAddressEndpoints(requests []loadBalancerAddressRequest, prior []networkingv1alpha.NetworkLoadBalancerEndpointStatus) int {
@@ -314,6 +346,7 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 	}
 	selected := map[string]bool{}
 	attached := false
+	unresolved := false
 	for _, listener := range lb.Spec.Listeners {
 		if !slices.Contains(listener.AddressRefs, addressName) {
 			continue
@@ -333,7 +366,8 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 		}
 		if winner == nil {
-			return nil, nil
+			unresolved = true
+			continue
 		}
 		attached = true
 		for _, backend := range winner.Spec.Backends {
@@ -344,7 +378,8 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 			if err := cl.Get(ctx, key, &service); err != nil {
 				if apierrors.IsNotFound(err) {
-					return nil, nil
+					unresolved = true
+					continue
 				}
 				return nil, fmt.Errorf("get backend NetworkService %s: %w", key, err)
 			}
@@ -370,7 +405,16 @@ func backendLocationsForAddress(ctx context.Context, cl client.Client,
 			}
 		}
 	}
-	if !attached {
+	if unresolved {
+		for _, prior := range lb.Status.AddressRequests {
+			if prior.Name == addressName {
+				for _, location := range prior.ResolvedLocations {
+					selected[location] = true
+				}
+			}
+		}
+	}
+	if !attached && !unresolved {
 		return nil, nil
 	}
 	names := make([]string, 0, len(selected))
@@ -416,14 +460,18 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	ctx context.Context, cl client.Client, namespace string, lb *networkingv1alpha.NetworkLoadBalancer,
 	request loadBalancerAddressRequest, claimName string,
 ) (string, string, error) {
+	className, prefixLength := r.PublicIPv6Class, int32(128)
+	if request.family == networkingv1alpha.IPv4Protocol {
+		className, prefixLength = r.PublicIPv4Class, 32
+	}
 	claim := &ipamv1alpha1.IPClaim{}
 	claim.Namespace = namespace
 	claim.Name = claimName
 	claim.Labels = map[string]string{networkLoadBalancerOwnerLabel: string(lb.UID)}
 	claim.Spec = ipamv1alpha1.IPClaimSpec{
-		ClassName:     r.PublicIPv6Class,
-		IPFamily:      ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
-		PrefixLength:  ptr.To[int32](128),
+		ClassName:     className,
+		IPFamily:      ipamv1alpha1.IPFamily(request.family),
+		PrefixLength:  ptr.To(prefixLength),
 		ReclaimPolicy: ipamv1alpha1.ReclaimDelete,
 		Scope: map[string]ipamv1alpha1.ScopeRef{
 			ipamScopeRoleNetwork: {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: request.networkName},
@@ -457,7 +505,7 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	if existing.Labels[networkLoadBalancerOwnerLabel] != string(lb.UID) ||
 		existing.Spec.ClassName != claim.Spec.ClassName ||
 		existing.Spec.IPFamily != claim.Spec.IPFamily ||
-		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != 128 ||
+		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != prefixLength ||
 		existing.Spec.ReclaimPolicy != claim.Spec.ReclaimPolicy ||
 		!equality.Semantic.DeepEqual(existing.Spec.Scope, claim.Spec.Scope) {
 		return "", "", fmt.Errorf("IPClaim %q does not match this load balancer's address request", claimName)
@@ -465,15 +513,15 @@ func (r *NetworkLoadBalancerReconciler) holdAddress(
 	address := existing.Status.Address
 	if address == "" && existing.Status.AllocatedCIDR != "" {
 		prefix, err := netip.ParsePrefix(existing.Status.AllocatedCIDR)
-		if err != nil || prefix.Bits() != 128 {
-			return "", "", fmt.Errorf("IPClaim %q did not allocate one IPv6 address", claimName)
+		if err != nil || prefix.Bits() != int(prefixLength) {
+			return "", "", fmt.Errorf("IPClaim %q did not allocate one %s address", claimName, request.family)
 		}
 		address = prefix.Addr().String()
 	}
 	if address != "" {
 		parsed, err := netip.ParseAddr(address)
-		if err != nil || !parsed.Is6() {
-			return "", "", fmt.Errorf("IPClaim %q returned an invalid IPv6 address %q", claimName, address)
+		if err != nil || parsed.Is4() != (request.family == networkingv1alpha.IPv4Protocol) || parsed.Is4In6() {
+			return "", "", fmt.Errorf("IPClaim %q returned an invalid %s address %q", claimName, request.family, address)
 		}
 	}
 	return address, string(existing.UID), nil
@@ -506,6 +554,7 @@ func appendAddressStatus(status *[]networkingv1alpha.NetworkLoadBalancerEndpoint
 		for _, old := range prior {
 			if old.RequestName == requestName && old.Location == location {
 				entry.CanonicalHostname = old.CanonicalHostname
+				entry.Listeners = old.DeepCopy().Listeners
 				break
 			}
 		}
@@ -520,7 +569,7 @@ func addressAnnounced(address networkingv1alpha.NetworkLoadBalancerAddressStatus
 }
 
 func addressPendingWithdrawal(address networkingv1alpha.NetworkLoadBalancerAddressStatus) bool {
-	return addressAnnounced(address) || address.DNSPublished ||
+	return address.WithdrawalPending || addressAnnounced(address) || address.DNSPublished ||
 		apimeta.IsStatusConditionTrue(address.Conditions, networkingv1alpha.NetworkLoadBalancerProgrammed)
 }
 
@@ -592,6 +641,19 @@ func (r *NetworkLoadBalancerReconciler) release(
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(lb, networkLoadBalancerFinalizer) {
 		return ctrl.Result{}, nil
+	}
+	before := lb.DeepCopy()
+	for i := range lb.Status.Endpoints {
+		for j := range lb.Status.Endpoints[i].Addresses {
+			address := &lb.Status.Endpoints[i].Addresses[j]
+			if address.Coordinated && address.WithdrawalPending && !address.Retiring {
+				address.Retiring = true
+				setLoadBalancerCondition(&address.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated, metav1.ConditionFalse, "Withdrawing", "The load balancer is being deleted")
+			}
+		}
+	}
+	if !equality.Semantic.DeepEqual(before.Status, lb.Status) {
+		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	}
 	for _, endpoint := range lb.Status.Endpoints {
 		for _, address := range endpoint.Addresses {
@@ -705,4 +767,31 @@ func (r *NetworkLoadBalancerReconciler) SetupWithManager(mgr mcmanager.Manager) 
 		For(&networkingv1alpha.NetworkLoadBalancer{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("networkloadbalancer").
 		Complete(r)
+}
+
+func addressRequestUsesCoordination(lb *networkingv1alpha.NetworkLoadBalancer, request string) bool {
+	count := 0
+	for _, listener := range lb.Spec.Listeners {
+		if !slices.Contains(listener.AddressRefs, request) {
+			continue
+		}
+		count++
+		if count > 1 || !networkingv1alpha.PortInterval(listener.Port, listener.PortRange).Singleton() {
+			return true
+		}
+	}
+	return false
+}
+
+func allocationRetirementPending(address networkingv1alpha.NetworkLoadBalancerAddressStatus) bool {
+	return address.Coordinated && address.Retiring && address.WithdrawalPending
+}
+
+func allocationIdentityChanged(prior networkingv1alpha.NetworkLoadBalancerAddressStatus, address, claimUID string) bool {
+	return prior.Value != "" && address != "" && prior.Value != address ||
+		prior.ClaimRef != nil && prior.ClaimRef.UID != "" && claimUID != "" && prior.ClaimRef.UID != claimUID
+}
+
+func retiredAllocationNeedsReplacement(address networkingv1alpha.NetworkLoadBalancerAddressStatus, identityChanged bool) bool {
+	return address.Coordinated && address.Retiring && !address.WithdrawalPending && !identityChanged
 }

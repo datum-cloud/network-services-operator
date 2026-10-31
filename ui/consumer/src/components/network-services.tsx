@@ -27,7 +27,7 @@ import { useMemo, useState } from 'react';
 type ServiceColumn = ColumnDef<DataTableFeatures, NetworkService, unknown>;
 
 function formatPorts(service: NetworkService): string {
-  return service.ports.length > 0 ? service.ports.map((p) => `${p.name}:${p.port}`).join(', ') : '—';
+  return service.ports.length > 0 ? service.ports.map((p) => `${p.name}:${p.port}/${p.protocol ?? 'TCP'}`).join(', ') : '—';
 }
 
 function matchesSearch(service: NetworkService, search: string): boolean {

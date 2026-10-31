@@ -3,6 +3,9 @@ import {
   toNetwork,
   toNetworkInterfaceList,
   toNetworkList,
+  toNetworkLoadBalancer,
+  toNetworkLoadBalancerList,
+  toNetworkLoadBalancerRouteList,
   toNetworkServiceList,
   toSubnetList,
 } from '../adapter';
@@ -11,23 +14,42 @@ import type {
   RawNetwork,
   RawNetworkInterfaceList,
   RawNetworkList,
+  RawNetworkLoadBalancer,
+  RawNetworkLoadBalancerList,
+  RawNetworkLoadBalancerRouteList,
   RawNetworkServiceList,
   RawSubnetList,
 } from '../adapter';
-import type { HTTPProxy, Network, NetworkInterface, NetworkService, Subnet } from '../schema';
+import type {
+  HTTPProxy,
+  Network,
+  NetworkInterface,
+  NetworkLoadBalancer,
+  NetworkLoadBalancerRoute,
+  NetworkService,
+  Subnet,
+} from '../schema';
 import { useMutation, useQueryClient, type UseMutationResult, useQuery, type UseQueryResult } from '@tanstack/react-query';
 
 export const PLUGIN_ID = 'network.networking.datumapis.com';
 
 const REFETCH_INTERVAL_MS = 10_000;
 
+/** One entry of a Kubernetes Status's details.causes, e.g. field "spec.listeners[0].port". */
+export interface ApiErrorCause {
+  field?: string;
+  message?: string;
+}
+
 export class ApiError extends Error {
   status: number;
+  causes: ApiErrorCause[];
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, causes: ApiErrorCause[] = []) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.causes = causes;
   }
 }
 
@@ -41,6 +63,10 @@ const SUBNETS_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/
 const NETWORKINTERFACES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkinterfaces';
 const NETWORKSERVICES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkservices';
 const HTTPPROXIES_PATH = '/apis/networking.datumapis.com/v1alpha/namespaces/default/httpproxies';
+const NETWORKLOADBALANCERS_PATH =
+  '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkloadbalancers';
+const NETWORKLOADBALANCERROUTES_PATH =
+  '/apis/networking.datumapis.com/v1alpha/namespaces/default/networkloadbalancerroutes';
 
 async function proxyFetch<T>(projectId: string, path: string): Promise<T> {
   const url = `${getProjectScopedBase(projectId)}${path}`;
@@ -180,6 +206,77 @@ export function useHTTPProxies(projectId: string | undefined): UseQueryResult<HT
     refetchInterval: REFETCH_INTERVAL_MS,
     retry: false,
   });
+}
+
+async function fetchNetworkLoadBalancers(projectId: string): Promise<NetworkLoadBalancer[]> {
+  const body = await proxyFetch<RawNetworkLoadBalancerList>(
+    projectId,
+    `${NETWORKLOADBALANCERS_PATH}?limit=100`
+  );
+  return toNetworkLoadBalancerList(body.items ?? []);
+}
+
+export function useNetworkLoadBalancers(
+  projectId: string | undefined
+): UseQueryResult<NetworkLoadBalancer[], ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'networkLoadBalancers', projectId],
+    enabled: !!projectId,
+    queryFn: () => fetchNetworkLoadBalancers(projectId as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
+async function fetchNetworkLoadBalancer(projectId: string, name: string): Promise<NetworkLoadBalancer> {
+  const body = await proxyFetch<RawNetworkLoadBalancer>(
+    projectId,
+    `${NETWORKLOADBALANCERS_PATH}/${encodeURIComponent(name)}`
+  );
+  return toNetworkLoadBalancer(body);
+}
+
+export function useNetworkLoadBalancer(
+  projectId: string | undefined,
+  name: string | undefined
+): UseQueryResult<NetworkLoadBalancer, ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'networkLoadBalancer', projectId, name],
+    enabled: !!projectId && !!name,
+    queryFn: () => fetchNetworkLoadBalancer(projectId as string, name as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
+async function fetchNetworkLoadBalancerRoutes(projectId: string): Promise<NetworkLoadBalancerRoute[]> {
+  const body = await proxyFetch<RawNetworkLoadBalancerRouteList>(
+    projectId,
+    `${NETWORKLOADBALANCERROUTES_PATH}?limit=100`
+  );
+  return toNetworkLoadBalancerRouteList(body.items ?? []);
+}
+
+// Every route in the project: a route names its NLBs in parentRefs, and
+// there's no field selector for that, so callers filter by parent name.
+export function useNetworkLoadBalancerRoutes(
+  projectId: string | undefined
+): UseQueryResult<NetworkLoadBalancerRoute[], ApiError> {
+  return useQuery({
+    queryKey: [PLUGIN_ID, 'networkLoadBalancerRoutes', projectId],
+    enabled: !!projectId,
+    queryFn: () => fetchNetworkLoadBalancerRoutes(projectId as string),
+    refetchInterval: REFETCH_INTERVAL_MS,
+    retry: false,
+  });
+}
+
+export function computeWorkloadsHref(projectId: string): string {
+  return `/project/${projectId}/services/compute-datumapis-com`;
+}
+
+export function albHref(projectId: string): string {
+  return `/project/${projectId}/alb`;
 }
 
 export function computeWorkloadHref(projectId: string, workloadName: string): string {
@@ -333,7 +430,7 @@ export function useDeleteNetwork(
 export interface CreateNetworkServiceInput {
   name: string;
   matchLabels: Record<string, string>;
-  ports: { name: string; port: number }[];
+  ports: { name: string; port: number; protocol: 'TCP' | 'UDP' }[];
 }
 
 async function createNetworkService(
@@ -353,7 +450,7 @@ async function createNetworkService(
       metadata: { name: input.name, namespace: 'default' },
       spec: {
         networkInterfaces: { selector: { matchLabels: input.matchLabels } },
-        ports: input.ports.map((p) => ({ name: p.name, port: p.port, protocol: 'TCP' })),
+        ports: input.ports.map((p) => ({ name: p.name, port: p.port, protocol: p.protocol })),
       },
     }),
   });
@@ -399,4 +496,131 @@ export function useDeleteNetworkService(
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkServices', projectId] });
     },
   });
+}
+
+async function toApiError(res: Response, fallback: string): Promise<ApiError> {
+  try {
+    const body = (await res.json()) as { message?: string; details?: { causes?: ApiErrorCause[] } };
+    return new ApiError(res.status, body.message ?? fallback, body.details?.causes ?? []);
+  } catch {
+    return new ApiError(res.status, fallback);
+  }
+}
+
+async function proxyCreate(projectId: string, path: string, body: unknown, describe: string): Promise<void> {
+  const res = await fetch(`${getProjectScopedBase(projectId)}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): ${describe}`);
+}
+
+export interface NlbCreateRequests {
+  nlb: { metadata: { name: string; namespace: string } } & Record<string, unknown>;
+  route: { metadata: { name: string; namespace: string } } & Record<string, unknown>;
+}
+
+export function createNetworkLoadBalancer(projectId: string, body: NlbCreateRequests['nlb']): Promise<void> {
+  return proxyCreate(projectId, NETWORKLOADBALANCERS_PATH, body, `create load balancer ${body.metadata.name}`);
+}
+
+export function createNetworkLoadBalancerRoute(projectId: string, body: NlbCreateRequests['route']): Promise<void> {
+  return proxyCreate(projectId, NETWORKLOADBALANCERROUTES_PATH, body, `create route ${body.metadata.name}`);
+}
+
+/**
+ * What deleting an NLB does to its routes. A route attached only to this NLB
+ * goes with it. One also attached elsewhere just drops this NLB from its
+ * parentRefs, so the other NLB keeps its backend.
+ */
+export function planNlbDelete(nlbName: string, routes: NetworkLoadBalancerRoute[]) {
+  const attached = routes.filter((r) => r.parents.some((p) => p.name === nlbName));
+  return {
+    deleteRoutes: attached.filter((r) => r.parents.every((p) => p.name === nlbName)),
+    detachRoutes: attached
+      .filter((r) => r.parents.some((p) => p.name !== nlbName))
+      .map((route) => ({ route, parents: route.parents.filter((p) => p.name !== nlbName) })),
+  };
+}
+
+/** Merge-patches a route; parentRefs and backends are atomic lists, so they're replaced whole. */
+export async function mergePatchNetworkLoadBalancerRoute(projectId: string, name: string, body: object): Promise<void> {
+  const res = await fetch(
+    `${getProjectScopedBase(projectId)}${NETWORKLOADBALANCERROUTES_PATH}/${encodeURIComponent(name)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/merge-patch+json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): update route ${name}`);
+}
+
+export function detachRoute(
+  projectId: string,
+  route: NetworkLoadBalancerRoute,
+  parents: NetworkLoadBalancerRoute['parents']
+): Promise<void> {
+  return mergePatchNetworkLoadBalancerRoute(projectId, route.name, {
+    metadata: { resourceVersion: route.resourceVersion },
+    spec: { parentRefs: parents },
+  });
+}
+
+export function deleteNetworkLoadBalancerRoute(projectId: string, name: string): Promise<void> {
+  return proxyDelete(
+    projectId,
+    `${NETWORKLOADBALANCERROUTES_PATH}/${encodeURIComponent(name)}`,
+    `delete route ${name}`
+  );
+}
+
+export function useDeleteNetworkLoadBalancer(
+  projectId: string | undefined
+): UseMutationResult<void, ApiError, { name: string; routes: NetworkLoadBalancerRoute[] }> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // Routes first, so a failure part way leaves the NLB in place to retry
+    // from rather than routes pointing at nothing.
+    mutationFn: async ({ name, routes }) => {
+      const plan = planNlbDelete(name, routes);
+      for (const { route, parents } of plan.detachRoutes) await detachRoute(projectId as string, route, parents);
+      for (const route of plan.deleteRoutes) {
+        await proxyDelete(
+          projectId as string,
+          `${NETWORKLOADBALANCERROUTES_PATH}/${encodeURIComponent(route.name)}`,
+          `delete route ${route.name}`
+        );
+      }
+      await proxyDelete(
+        projectId as string,
+        `${NETWORKLOADBALANCERS_PATH}/${encodeURIComponent(name)}`,
+        `delete load balancer ${name}`
+      );
+    },
+    onSuccess: (_data, { name }) => {
+      queryClient.setQueryData<NetworkLoadBalancer[]>([PLUGIN_ID, 'networkLoadBalancers', projectId], (nlbs) =>
+        nlbs?.filter((n) => n.name !== name)
+      );
+    },
+    // Even a delete that failed part way may have changed routes.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkLoadBalancers', projectId] });
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkLoadBalancerRoutes', projectId] });
+    },
+  });
+}
+
+/** Applies JSON Patch ops to an NLB, so lists can be appended to without rewriting them. */
+export async function patchNetworkLoadBalancer(projectId: string, name: string, ops: object[]): Promise<void> {
+  const res = await fetch(
+    `${getProjectScopedBase(projectId)}${NETWORKLOADBALANCERS_PATH}/${encodeURIComponent(name)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json-patch+json', Accept: 'application/json' },
+      body: JSON.stringify(ops),
+    }
+  );
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): update load balancer ${name}`);
 }

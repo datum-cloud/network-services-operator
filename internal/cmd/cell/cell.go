@@ -355,10 +355,11 @@ func controllerRegistrations(
 			namedSetup{"galactic-networkinterface", func() (bool, error) {
 				return true, (&galacticcontroller.NetworkInterfaceReconciler{
 					Client: mgr.GetLocalManager().GetClient(), Scheme: mgr.GetLocalManager().GetScheme(),
-					APIReader:             mgr.GetLocalManager().GetAPIReader(),
-					AttachmentMode:        cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
-					LabeledNamespaces:     serverConfig.Galactic.AttachmentLabelNamespaces,
-					TrafficPolicyEnforced: serverConfig.Galactic.TrafficPolicyEnforced,
+					APIReader:               mgr.GetLocalManager().GetAPIReader(),
+					AttachmentMode:          cloudv1alpha1.VPCAttachmentInterfaceMode(serverConfig.Galactic.AttachmentMode),
+					LabeledNamespaces:       serverConfig.Galactic.AttachmentLabelNamespaces,
+					TrafficPolicyEnforced:   serverConfig.Galactic.TrafficPolicyEnforced,
+					HypervisorHostOnlyPorts: serverConfig.Galactic.HypervisorHostOnlyPorts,
 				}).SetupWithManager(mgr.GetLocalManager())
 			}},
 		)
@@ -408,7 +409,12 @@ func controllerRegistrations(
 			return false, nil
 		}
 		return true, (&controller.NetworkLoadBalancerCellProgrammingReconciler{
-			Location: serverConfig.Location,
+			HubCluster:             hubCluster,
+			Location:               serverConfig.Location,
+			MaxExposedPorts:        serverConfig.NetworkLoadBalancer.MaxExposedPorts,
+			SharedAddressListeners: serverConfig.NetworkLoadBalancer.SharedAddressListeners,
+			UDPPortRanges:          serverConfig.NetworkLoadBalancer.UDPPortRanges,
+			IPv4VIPs:               serverConfig.NetworkLoadBalancer.IPv4VIPs,
 		}).SetupWithManager(mgr.GetLocalManager())
 	}})
 

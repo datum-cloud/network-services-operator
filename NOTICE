@@ -2006,7 +2006,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## github.com/fxamacker/cbor/v2
 
 * Name: github.com/fxamacker/cbor/v2
-* Version: v2.9.0
+* Version: v2.9.1
 * License: MIT
 
 ```
@@ -5671,7 +5671,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## github.com/google/cel-go
 
 * Name: github.com/google/cel-go
-* Version: v0.29.0
+* Version: v0.29.2
 * License: Apache-2.0
 
 ```
@@ -9358,7 +9358,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## go.datum.net/galactic/api
 
 * Name: go.datum.net/galactic/api
-* Version: v0.7.3-0.20261026190205-a34ce1c36b46
+* Version: v0.8.1-0.20261030021035-71915ecc6514
 * License: AGPL-3.0
 
 ```
@@ -15897,7 +15897,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/api
 
 * Name: k8s.io/api
-* Version: v0.36.3
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -16109,7 +16109,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/apiextensions-apiserver/pkg/apis/apiextensions
 
 * Name: k8s.io/apiextensions-apiserver/pkg/apis/apiextensions
-* Version: v0.36.1
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -16321,7 +16321,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/apimachinery/pkg
 
 * Name: k8s.io/apimachinery/pkg
-* Version: v0.36.3
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -16533,7 +16533,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/apimachinery/third_party/forked/golang
 
 * Name: k8s.io/apimachinery/third_party/forked/golang
-* Version: v0.36.3
+* Version: v0.37.1
 * License: BSD-3-Clause
 
 ```
@@ -16570,7 +16570,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/apiserver
 
 * Name: k8s.io/apiserver
-* Version: v0.36.1
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -16782,7 +16782,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/client-go
 
 * Name: k8s.io/client-go
-* Version: v0.36.3
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -16994,7 +16994,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/component-base
 
 * Name: k8s.io/component-base
-* Version: v0.36.1
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -17407,7 +17407,7 @@ third-party archives.
 ## k8s.io/kube-openapi/pkg
 
 * Name: k8s.io/kube-openapi/pkg
-* Version: v0.0.0-20260330154417-16be699c7b31
+* Version: v0.0.0-20260721132016-d427ff9ee9ad
 * License: Apache-2.0
 
 ```
@@ -17619,7 +17619,7 @@ third-party archives.
 ## k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json
 
 * Name: k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json
-* Version: v0.0.0-20260330154417-16be699c7b31
+* Version: v0.0.0-20260721132016-d427ff9ee9ad
 * License: BSD-3-Clause
 
 ```
@@ -17656,7 +17656,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## k8s.io/kube-openapi/pkg/internal/third_party/govalidator
 
 * Name: k8s.io/kube-openapi/pkg/internal/third_party/govalidator
-* Version: v0.0.0-20260330154417-16be699c7b31
+* Version: v0.0.0-20260721132016-d427ff9ee9ad
 * License: MIT
 
 ```
@@ -17686,7 +17686,7 @@ SOFTWARE.
 ## k8s.io/kube-openapi/pkg/validation/errors
 
 * Name: k8s.io/kube-openapi/pkg/validation/errors
-* Version: v0.0.0-20260330154417-16be699c7b31
+* Version: v0.0.0-20260721132016-d427ff9ee9ad
 * License: Apache-2.0
 
 ```
@@ -17898,7 +17898,7 @@ SOFTWARE.
 ## k8s.io/kube-openapi/pkg/validation/spec
 
 * Name: k8s.io/kube-openapi/pkg/validation/spec
-* Version: v0.0.0-20260330154417-16be699c7b31
+* Version: v0.0.0-20260721132016-d427ff9ee9ad
 * License: Apache-2.0
 
 ```
@@ -18110,7 +18110,7 @@ SOFTWARE.
 ## k8s.io/kube-openapi/pkg/validation/strfmt
 
 * Name: k8s.io/kube-openapi/pkg/validation/strfmt
-* Version: v0.0.0-20260330154417-16be699c7b31
+* Version: v0.0.0-20260721132016-d427ff9ee9ad
 * License: Apache-2.0
 
 ```
@@ -18322,7 +18322,7 @@ SOFTWARE.
 ## k8s.io/streaming/pkg
 
 * Name: k8s.io/streaming/pkg
-* Version: v0.36.3
+* Version: v0.37.1
 * License: Apache-2.0
 
 ```
@@ -18994,7 +18994,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## sigs.k8s.io/apiserver-network-proxy/konnectivity-client
 
 * Name: sigs.k8s.io/apiserver-network-proxy/konnectivity-client
-* Version: v0.34.0
+* Version: v0.36.0
 * License: Apache-2.0
 
 ```
@@ -19205,7 +19205,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## sigs.k8s.io/controller-runtime
 
 * Name: sigs.k8s.io/controller-runtime
-* Version: v0.24.1
+* Version: v0.25.2
 * License: Apache-2.0
 
 ```
@@ -20509,7 +20509,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## sigs.k8s.io/structured-merge-diff/v6
 
 * Name: sigs.k8s.io/structured-merge-diff/v6
-* Version: v6.3.3
+* Version: v6.4.2
 * License: Apache-2.0
 
 ```

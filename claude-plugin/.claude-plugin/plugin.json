@@ -1,0 +1,25 @@
+{
+  "name": "datum-networking",
+  "description": "Create and troubleshoot Datum Cloud load balancers, hostnames, domains and networks, using the same diagnosis Datum's own assistant runs",
+  "version": "0.1.1",
+  "dependencies": [
+    "datum-cloud"
+  ],
+  "author": {
+    "name": "Datum Cloud",
+    "url": "https://github.com/datum-cloud"
+  },
+  "homepage": "https://www.datum.net/docs/",
+  "repository": "https://github.com/datum-cloud/network-services-operator",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "datum",
+    "load-balancer",
+    "alb",
+    "networking",
+    "dns",
+    "tls",
+    "waf",
+    "troubleshooting"
+  ]
+}

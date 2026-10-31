@@ -56,7 +56,7 @@ named listeners. Route objects attach backends to those listeners.
         <td>
           NetworkLoadBalancerSpec defines the network, public addresses, and listeners.<br/>
           <br/>
-            <i>Validations</i>:<li>self.listeners.all(l, l.addressRefs.all(r, r in self.exposure.addresses.map(a, a.name))): each listener address reference must name an address request</li><li>self.listeners.all(l1, self.listeners.all(l2, l1.name == l2.name || l1.protocol != l2.protocol || l1.port != l2.port || !l1.addressRefs.exists(r, r in l2.addressRefs))): listeners sharing an address cannot use the same protocol and port</li><li>self.listeners.all(l, l.protocol == 'TLS' ? has(l.tls) : !has(l.tls)): TLS configuration is required only for TLS listeners</li>
+            <i>Validations</i>:<li>self.listeners.all(l, l.addressRefs.all(r, r in self.exposure.addresses.map(a, a.name))): each listener address reference must name an address request</li><li>self.listeners.all(a, self.listeners.all(b, a.name == b.name || (a.protocol == 'UDP') != (b.protocol == 'UDP') || !a.addressRefs.exists(r, r in b.addressRefs) || (has(a.portRange) ? a.portRange.end : a.port) < (has(b.portRange) ? b.portRange.start : b.port) || (has(b.portRange) ? b.portRange.end : b.port) < (has(a.portRange) ? a.portRange.start : a.port))): listeners sharing an address cannot have overlapping transport ports</li><li>self.listeners.all(l, l.protocol == 'TLS' ? has(l.tls) : !has(l.tls)): TLS configuration is required only for TLS listeners</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -256,17 +256,6 @@ address requests. TCP and UDP may use the same port.
         </td>
         <td>true</td>
       </tr><tr>
-        <td><b>port</b></td>
-        <td>integer</td>
-        <td>
-          <br/>
-          <br/>
-            <i>Format</i>: int32<br/>
-            <i>Minimum</i>: 1<br/>
-            <i>Maximum</i>: 65535<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
         <td><b>protocol</b></td>
         <td>enum</td>
         <td>
@@ -283,6 +272,26 @@ address requests. TCP and UDP may use the same port.
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancerspeclistenersindexportrange">portRange</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.start <= self.end: port range start must not exceed end</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b><a href="#networkloadbalancerspeclistenersindextls">tls</a></b></td>
         <td>object</td>
         <td>
@@ -291,6 +300,48 @@ address requests. TCP and UDP may use the same port.
             <i>Validations</i>:<li>self.mode == 'Terminate' ? has(self.certificateRef) : !has(self.certificateRef): Terminate requires a certificate; Passthrough omits it</li>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancer.spec.listeners[index].portRange
+<sup><sup>[↩ Parent](#networkloadbalancerspeclistenersindex)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>end</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>start</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 
@@ -600,6 +651,13 @@ location, even while individual address families are unavailable.
           <br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancerstatusendpointsindexlistenersindex">listeners</a></b></td>
+        <td>[]object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 
@@ -653,6 +711,13 @@ allocation for this request/location.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>coordinated</b></td>
+        <td>boolean</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>dnsPublished</b></td>
         <td>boolean</td>
         <td>
@@ -674,8 +739,22 @@ allocation for this request/location.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>retiring</b></td>
+        <td>boolean</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>value</b></td>
         <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>withdrawalPending</b></td>
+        <td>boolean</td>
         <td>
           <br/>
         </td>
@@ -734,6 +813,117 @@ NetworkLoadBalancerIPClaimRef identifies the claim holding an allocated IP.
 
 ### NetworkLoadBalancer.status.endpoints[index].addresses[index].conditions[index]
 <sup><sup>[↩ Parent](#networkloadbalancerstatusendpointsindexaddressesindex)</sup></sup>
+
+
+
+Condition contains details for one aspect of the current state of this API Resource.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>lastTransitionTime</b></td>
+        <td>string</td>
+        <td>
+          lastTransitionTime is the last time the condition transitioned from one status to another.
+This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.<br/>
+          <br/>
+            <i>Format</i>: date-time<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>message</b></td>
+        <td>string</td>
+        <td>
+          message is a human readable message indicating details about the transition.
+This may be an empty string.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>reason</b></td>
+        <td>string</td>
+        <td>
+          reason contains a programmatic identifier indicating the reason for the condition's last transition.
+Producers of specific condition types may define expected values and meanings for this field,
+and whether the values are considered a guaranteed API.
+The value should be a CamelCase string.
+This field may not be empty.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>status</b></td>
+        <td>enum</td>
+        <td>
+          status of the condition, one of True, False, Unknown.<br/>
+          <br/>
+            <i>Enum</i>: True, False, Unknown<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>type</b></td>
+        <td>string</td>
+        <td>
+          type of condition in CamelCase or in foo.example.com/CamelCase.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>observedGeneration</b></td>
+        <td>integer</td>
+        <td>
+          observedGeneration represents the .metadata.generation that the condition was set based upon.
+For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+with respect to the current state of the instance.<br/>
+          <br/>
+            <i>Format</i>: int64<br/>
+            <i>Minimum</i>: 0<br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancer.status.endpoints[index].listeners[index]
+<sup><sup>[↩ Parent](#networkloadbalancerstatusendpointsindex)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>name</b></td>
+        <td>string</td>
+        <td>
+          <br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b><a href="#networkloadbalancerstatusendpointsindexlistenersindexconditionsindex">conditions</a></b></td>
+        <td>[]object</td>
+        <td>
+          <br/>
+        </td>
+        <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkLoadBalancer.status.endpoints[index].listeners[index].conditions[index]
+<sup><sup>[↩ Parent](#networkloadbalancerstatusendpointsindexlistenersindex)</sup></sup>
 
 
 

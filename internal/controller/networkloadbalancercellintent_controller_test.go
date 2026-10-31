@@ -55,7 +55,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	reconciler := &NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
 	key := client.ObjectKeyFromObject(route)
 
-	_, err := reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err := reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	var first networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &first))
@@ -73,7 +73,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	require.NoError(t, project.Get(ctx, client.ObjectKeyFromObject(parent), parent))
 	parent.Status.Endpoints = []networkingv1alpha.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::2", parent.Generation)}
 	require.NoError(t, project.Status().Update(ctx, parent))
-	_, err = reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	var changed networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &changed))
@@ -90,7 +90,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 
 	require.NoError(t, project.Get(ctx, key, route))
 	require.NoError(t, project.Delete(ctx, route))
-	_, err = reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	var withdrawn networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &withdrawn))
@@ -101,7 +101,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 	}
 	// The route must remain until both withdrawal conditions acknowledge the current generation.
 	require.NoError(t, project.Get(ctx, key, route))
-	require.Contains(t, route.Finalizers, nlbIntentFinalizer)
+	require.Contains(t, route.Finalizers, parentRouteIntentFinalizer(parent.Name))
 	for i := range withdrawn.Items {
 		intent := &withdrawn.Items[i]
 		intent.Status.ObservedGeneration = intent.Generation
@@ -111,7 +111,7 @@ func TestCellIntentPublishesAndWithdrawsWithoutDeletingHold(t *testing.T) {
 		}
 		require.NoError(t, hub.Update(ctx, intent))
 	}
-	result, err := reconciler.reconcileIntent(ctx, "project", project, key)
+	result, err := reconciler.reconcileParentIntents(ctx, "project", project, client.ObjectKeyFromObject(parent))
 	require.NoError(t, err)
 	require.Zero(t, result.RequeueAfter)
 	require.True(t, apierrors.IsNotFound(project.Get(ctx, key, route)))
@@ -159,7 +159,7 @@ func TestCellIntentRequiresFreshPerLocationAllocation(t *testing.T) {
 	require.Empty(t, desired)
 }
 
-func TestCellIntentRejectsUnsupportedVIPFamily(t *testing.T) {
+func TestCellIntentPublishesIPv4VIP(t *testing.T) {
 	ctx := context.Background()
 	route := testLoadBalancerRoute("storefront", time.Unix(10, 0))
 	parent := testRouteLoadBalancer()
@@ -175,7 +175,40 @@ func TestCellIntentRejectsUnsupportedVIPFamily(t *testing.T) {
 
 	desired, err := buildNetworkLoadBalancerCellIntents(ctx, cl, "project", "hub", route)
 	require.NoError(t, err)
-	require.Empty(t, desired)
+	require.Len(t, desired, 1)
+	require.Equal(t, networkingv1alpha.IPv4Protocol, desired[0].Spec.VIPFamily)
+	require.Equal(t, "192.0.2.10", desired[0].Spec.VIP)
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, desired[0].Spec.State)
+	require.Equal(t, networkingv1alpha.IPv6Protocol, desired[0].Spec.Backends[0].Family)
+}
+
+func TestWithdrawConflictingCellIntentsKeepsOneVIPPerFamily(t *testing.T) {
+	backend := networkingv1alpha.NetworkLoadBalancerCellIntentBackend{Address: "fd00::1", Port: 8080}
+	intent := func(family networkingv1alpha.IPFamily, vip string) networkingv1alpha.NetworkLoadBalancerCellIntent {
+		return networkingv1alpha.NetworkLoadBalancerCellIntent{Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+			NetworkName: "default", Location: "dfw", VIPFamily: family, VIP: vip,
+			Protocol: networkingv1alpha.NetworkLoadBalancerProtocolTCP,
+			State:    networkingv1alpha.NetworkLoadBalancerCellIntentValidate,
+			Backends: []networkingv1alpha.NetworkLoadBalancerCellIntentBackend{backend},
+		}}
+	}
+	dualStack := []networkingv1alpha.NetworkLoadBalancerCellIntent{
+		intent(networkingv1alpha.IPv4Protocol, "192.0.2.10"),
+		intent(networkingv1alpha.IPv6Protocol, "2001:db8::10"),
+	}
+	withdrawConflictingCellIntents(dualStack)
+	for _, desired := range dualStack {
+		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, desired.Spec.State)
+	}
+
+	twoIPv4 := []networkingv1alpha.NetworkLoadBalancerCellIntent{
+		intent(networkingv1alpha.IPv4Protocol, "192.0.2.10"),
+		intent(networkingv1alpha.IPv4Protocol, "192.0.2.11"),
+	}
+	withdrawConflictingCellIntents(twoIPv4)
+	for _, desired := range twoIPv4 {
+		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, desired.Spec.State)
+	}
 }
 
 func TestCellIntentResolvesPortParentAndEquivalentNamespace(t *testing.T) {
@@ -425,20 +458,22 @@ func TestCellIntentOrphanCleanupWaitsForAcknowledgment(t *testing.T) {
 	intent.Spec.Source.ProjectCluster = "project"
 	intent.Spec.Source.Namespace = "test"
 	intent.Spec.Source.RouteName = "gone"
+	intent.Spec.Source.ParentName = "gone"
 	intent.Labels = map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-project", downstreamclient.UpstreamOwnerNamespaceLabel: "test"}
 	other := intent.DeepCopy()
 	other.Name = "other-route"
 	other.Spec.Source.RouteName = "other"
+	other.Spec.Source.ParentName = "other"
 	hub := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).WithObjects(&intent, other).Build()
 	r := NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
-	result, err := r.cleanupOrphanedIntents(ctx, "project", client.ObjectKey{Namespace: "test", Name: "gone"})
+	result, err := r.reconcileParentIntents(ctx, "project", hub, client.ObjectKey{Namespace: "test", Name: "gone"})
 	require.NoError(t, err)
 	require.Positive(t, result.RequeueAfter)
 	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(&intent), &intent))
 	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, intent.Spec.State)
 	reportIntent(&intent, metav1.ConditionFalse, metav1.ConditionFalse)
 	require.NoError(t, hub.Update(ctx, &intent))
-	result, err = r.cleanupOrphanedIntents(ctx, "project", client.ObjectKey{Namespace: "test", Name: "gone"})
+	result, err = r.reconcileParentIntents(ctx, "project", hub, client.ObjectKey{Namespace: "test", Name: "gone"})
 	require.NoError(t, err)
 	require.Zero(t, result.RequeueAfter)
 	require.True(t, apierrors.IsNotFound(hub.Get(ctx, client.ObjectKeyFromObject(&intent), &intent)))
@@ -468,9 +503,9 @@ func TestCellIntentPublishKeepsLabelsItDoesNotOwn(t *testing.T) {
 	hub, _ := startNetworkInterfaceEnv(t)
 	require.NoError(t, hub.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-project-ns"}}))
 	reconciler := &NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
-	key := client.ObjectKeyFromObject(route)
+	key := client.ObjectKeyFromObject(parent)
 
-	_, err := reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err := reconciler.reconcileParentIntents(ctx, "project", project, key)
 	require.NoError(t, err)
 	var published networkingv1alpha.NetworkLoadBalancerCellIntentList
 	require.NoError(t, hub.List(ctx, &published))
@@ -479,7 +514,7 @@ func TestCellIntentPublishKeepsLabelsItDoesNotOwn(t *testing.T) {
 	claimed.Labels[karmadaClaimLabel] = "nso-resources-id"
 	require.NoError(t, hub.Update(ctx, claimed))
 
-	_, err = reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, key)
 	require.NoError(t, err)
 
 	var after networkingv1alpha.NetworkLoadBalancerCellIntent
@@ -490,9 +525,35 @@ func TestCellIntentPublishKeepsLabelsItDoesNotOwn(t *testing.T) {
 
 	after.Labels["networking.datumapis.com/stale"] = "left-behind"
 	require.NoError(t, hub.Update(ctx, &after))
-	_, err = reconciler.reconcileIntent(ctx, "project", project, key)
+	_, err = reconciler.reconcileParentIntents(ctx, "project", project, key)
 	require.NoError(t, err)
 	require.NoError(t, hub.Get(ctx, client.ObjectKeyFromObject(claimed), &after))
 	require.NotContains(t, after.Labels, "networking.datumapis.com/stale", "a key NSO owns and no longer wants goes")
 	require.Equal(t, "nso-resources-id", after.Labels[karmadaClaimLabel])
+}
+
+func TestWithdrawConflictingCellIntentsScopesRangesByFamily(t *testing.T) {
+	shared := networkingv1alpha.NetworkLoadBalancerCellIntent{Spec: networkingv1alpha.NetworkLoadBalancerCellIntentSpec{
+		NetworkName: "default", Location: "dfw", VIPFamily: networkingv1alpha.IPv6Protocol,
+		Protocol:     networkingv1alpha.NetworkLoadBalancerProtocolUDP,
+		State:        networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation,
+		AddressGroup: &networkingv1alpha.NetworkLoadBalancerCellIntentAddressGroup{},
+		Backends: []networkingv1alpha.NetworkLoadBalancerCellIntentBackend{{
+			Address: "fd00::1", PortRange: &networkingv1alpha.PortRange{Start: 10000, End: 10127},
+		}},
+	}}
+	legacy := *shared.DeepCopy()
+	legacy.Spec.AddressGroup = nil
+	legacy.Spec.State = networkingv1alpha.NetworkLoadBalancerCellIntentValidate
+	legacy.Spec.VIPFamily = networkingv1alpha.IPv4Protocol
+	legacy.Spec.Backends[0].Port, legacy.Spec.Backends[0].PortRange = 10050, nil
+	intents := []networkingv1alpha.NetworkLoadBalancerCellIntent{shared, legacy}
+	withdrawConflictingCellIntents(intents)
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidateAllocation, intents[0].Spec.State)
+	require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentValidate, intents[1].Spec.State)
+	intents[1].Spec.VIPFamily = networkingv1alpha.IPv6Protocol
+	withdrawConflictingCellIntents(intents)
+	for _, intent := range intents {
+		require.Equal(t, networkingv1alpha.NetworkLoadBalancerCellIntentWithdrawn, intent.Spec.State)
+	}
 }

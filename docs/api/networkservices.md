@@ -124,7 +124,7 @@ disappearing, and moving between locations need no edit here.<br/>
           ports are the ports the service's members answer on. A backend referencing
 this service names one of them.<br/>
           <br/>
-            <i>Validations</i>:<li>self.all(p1, self.exists_one(p2, p2.name == p1.name)): Port name must be unique within the service</li><li>self.all(p1, self.exists_one(p2, p2.port == p1.port)): Port number must be unique within the service</li>
+            <i>Validations</i>:<li>self.all(p1, self.exists_one(p2, p2.name == p1.name)): Port name must be unique within the service</li><li>self.all(a, self.all(b, a.name == b.name || a.protocol != b.protocol || (has(a.portRange) ? a.portRange.end : a.port) < (has(b.portRange) ? b.portRange.start : b.port) || (has(b.portRange) ? b.portRange.end : b.port) < (has(a.portRange) ? a.portRange.start : a.port))): service ports cannot overlap on the same protocol</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -335,20 +335,6 @@ Must be a DNS label and unique within the service.<br/>
         </td>
         <td>true</td>
       </tr><tr>
-        <td><b>port</b></td>
-        <td>integer</td>
-        <td>
-          port is the port number every member answers on. It is the port on the
-member itself, not one the platform publishes.
-
-Unique within the service.<br/>
-          <br/>
-            <i>Format</i>: int32<br/>
-            <i>Minimum</i>: 1<br/>
-            <i>Maximum</i>: 65535<br/>
-        </td>
-        <td>true</td>
-      </tr><tr>
         <td><b>appProtocol</b></td>
         <td>enum</td>
         <td>
@@ -367,6 +353,29 @@ serve those on a different port.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>port</b></td>
+        <td>integer</td>
+        <td>
+          port is the port number every member answers on. It is the port on the
+member itself, not one the platform publishes.
+
+Intervals on the same protocol cannot overlap within the service.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkservicespecportsindexportrange">portRange</a></b></td>
+        <td>object</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Validations</i>:<li>self.start <= self.end: port range start must not exceed end</li>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>protocol</b></td>
         <td>enum</td>
         <td>
@@ -377,6 +386,48 @@ default and is required for backends served through an HTTPProxy.<br/>
             <i>Default</i>: TCP<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkService.spec.ports[index].portRange
+<sup><sup>[↩ Parent](#networkservicespecportsindex)</sup></sup>
+
+
+
+
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>end</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>start</b></td>
+        <td>integer</td>
+        <td>
+          <br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 65535<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

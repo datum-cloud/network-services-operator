@@ -75,7 +75,15 @@ type CellControllerManager struct {
 // +k8s:deepcopy-gen=true
 
 type NetworkLoadBalancerCellConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	MaxExposedPorts        int32 `json:"maxExposedPorts,omitempty"`
+	SharedAddressListeners bool  `json:"sharedAddressListeners,omitempty"`
+	UDPPortRanges          bool  `json:"udpPortRanges,omitempty"`
+	Enabled                bool  `json:"enabled,omitempty"`
+
+	// IPv4VIPs serves IPv4 load balancer addresses from this cell. Turn it on
+	// only once every gateway in the cell has Galactic's IPv4 VIPs enabled and
+	// the cell announces the range its IPv4 addresses come from.
+	IPv4VIPs bool `json:"ipv4VIPs,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -100,7 +108,20 @@ type GalacticCellConfig struct {
 	// reports that the location does not block it yet, rather than reporting
 	// a network as private when nothing is blocking.
 	TrafficPolicyEnforced bool `json:"trafficPolicyEnforced,omitempty"`
+
+	// HypervisorHostOnlyPorts lists up to four TCP ports that guests attached
+	// in Hypervisor mode serve only to their own node, such as a unikernel's
+	// exec agent. Galactic drops traffic to them unless it is addressed to the
+	// guest's link-local address.
+	//
+	// Set it only once every node in the cell runs a Galactic that supports
+	// host-only ports. An older tap plugin ignores the list and leaves the
+	// ports open, and a newer one whose datapath is not loaded refuses the
+	// attachment.
+	HypervisorHostOnlyPorts []uint16 `json:"hypervisorHostOnlyPorts,omitempty"`
 }
+
+const maxHostOnlyPorts = 4
 
 // Validate reports whether the cell configuration can serve a cell.
 func (c *CellControllerManager) Validate() error {
@@ -116,12 +137,35 @@ func (c *CellControllerManager) Validate() error {
 	if c.NetworkLoadBalancer.Enabled && !c.Galactic.Enabled {
 		return fmt.Errorf("networkLoadBalancer.enabled needs galactic.enabled")
 	}
+	if c.NetworkLoadBalancer.IPv4VIPs && !c.NetworkLoadBalancer.Enabled {
+		return fmt.Errorf("networkLoadBalancer.ipv4VIPs needs networkLoadBalancer.enabled")
+	}
 	if c.Galactic.Enabled {
 		switch c.Galactic.AttachmentMode {
 		case "Netns", "Hypervisor", "HypervisorDeclared":
 		default:
 			return fmt.Errorf("galactic.attachmentMode must be Netns, Hypervisor, or HypervisorDeclared")
 		}
+	}
+	if err := validateHostOnlyPorts(c.Galactic.HypervisorHostOnlyPorts); err != nil {
+		return fmt.Errorf("galactic.hypervisorHostOnlyPorts: %w", err)
+	}
+	return nil
+}
+
+func validateHostOnlyPorts(ports []uint16) error {
+	if len(ports) > maxHostOnlyPorts {
+		return fmt.Errorf("at most %d ports, got %d", maxHostOnlyPorts, len(ports))
+	}
+	seen := map[uint16]bool{}
+	for _, port := range ports {
+		if port == 0 {
+			return fmt.Errorf("port 0 is not a port")
+		}
+		if seen[port] {
+			return fmt.Errorf("port %d is listed twice", port)
+		}
+		seen[port] = true
 	}
 	return nil
 }

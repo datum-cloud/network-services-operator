@@ -7,8 +7,12 @@ import type {
   Network,
   NetworkInterface,
   NetworkInterfacePhase,
+  NetworkLoadBalancer,
+  NetworkLoadBalancerListener,
+  NetworkLoadBalancerRoute,
   NetworkReadyStatus,
   NetworkService,
+  NlbProtocol,
   Subnet,
 } from './schema';
 
@@ -403,4 +407,170 @@ export function toHTTPProxy(raw: RawHTTPProxy): HTTPProxy {
 
 export function toHTTPProxyList(items: RawHTTPProxy[]): HTTPProxy[] {
   return items.map(toHTTPProxy);
+}
+
+interface RawNetworkLoadBalancerListener {
+  name?: string;
+  protocol?: string;
+  port?: number;
+  addressRefs?: string[];
+}
+
+interface RawNetworkLoadBalancerSpec {
+  networkRef?: { name?: string };
+  exposure?: { addresses?: { name?: string }[] };
+  listeners?: RawNetworkLoadBalancerListener[];
+}
+
+interface RawNetworkLoadBalancerEndpointStatus {
+  requestName?: string;
+  location?: string;
+  canonicalHostname?: string;
+  addresses?: { family?: string; value?: string }[];
+}
+
+interface RawNetworkLoadBalancerStatus {
+  conditions?: RawCondition[];
+  endpoints?: RawNetworkLoadBalancerEndpointStatus[];
+}
+
+export interface RawNetworkLoadBalancer {
+  metadata?: RawObjectMeta;
+  spec?: RawNetworkLoadBalancerSpec;
+  status?: RawNetworkLoadBalancerStatus;
+}
+
+export interface RawNetworkLoadBalancerList {
+  items?: RawNetworkLoadBalancer[];
+}
+
+const NLB_PROTOCOLS: readonly NlbProtocol[] = ['TCP', 'UDP', 'TLS'];
+
+function toNetworkLoadBalancerListeners(
+  listeners: RawNetworkLoadBalancerListener[] | undefined
+): NetworkLoadBalancerListener[] {
+  return (listeners ?? []).flatMap((l, index) =>
+    l.protocol && (NLB_PROTOCOLS as readonly string[]).includes(l.protocol)
+      ? [
+          {
+            name: l.name ?? '',
+            protocol: l.protocol as NlbProtocol,
+            port: l.port ?? 0,
+            addressRef: l.addressRefs?.[0],
+            index,
+          },
+        ]
+      : []
+  );
+}
+
+export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadBalancer {
+  const ready = findReadyCondition(raw.status?.conditions ?? []);
+  const readyStatus: NetworkReadyStatus = ready?.status ?? 'Unknown';
+
+  return {
+    uid: raw.metadata?.uid ?? '',
+    name: raw.metadata?.name ?? '',
+    resourceVersion: raw.metadata?.resourceVersion,
+    createdAt: raw.metadata?.creationTimestamp ? new Date(raw.metadata.creationTimestamp) : new Date(),
+    networkName: raw.spec?.networkRef?.name,
+    listeners: toNetworkLoadBalancerListeners(raw.spec?.listeners),
+    addressNames: (raw.spec?.exposure?.addresses ?? []).map((a) => a.name ?? ''),
+    endpoints: (raw.status?.endpoints ?? []).map((e) => ({
+      requestName: e.requestName ?? '',
+      location: e.location ?? '',
+      hostname: e.canonicalHostname || undefined,
+      addresses: (e.addresses ?? []).flatMap((a) =>
+        a.value ? [{ family: a.family ?? '', value: a.value }] : []
+      ),
+    })),
+    readyStatus,
+    readyReason: ready?.reason,
+    readyMessage: ready?.message,
+  };
+}
+
+/** Same rule as toNetworkList: one being deleted is left out. */
+export function toNetworkLoadBalancerList(items: RawNetworkLoadBalancer[]): NetworkLoadBalancer[] {
+  return items.filter((item) => !item.metadata?.deletionTimestamp).map(toNetworkLoadBalancer);
+}
+
+interface RawNetworkLoadBalancerRouteParentRef {
+  name?: string;
+  listener?: string;
+  port?: number;
+}
+
+interface RawNetworkLoadBalancerRouteSpec {
+  parentRefs?: RawNetworkLoadBalancerRouteParentRef[];
+  backends?: {
+    networkService?: { name?: string; port?: string };
+    healthCheck?: { protocol?: string; port?: string };
+  }[];
+}
+
+interface RawNetworkLoadBalancerRouteParentStatus {
+  name?: string;
+  listener?: string;
+  effective?: boolean;
+  conditions?: RawCondition[];
+}
+
+export interface RawNetworkLoadBalancerRoute {
+  metadata?: RawObjectMeta;
+  spec?: RawNetworkLoadBalancerRouteSpec;
+  status?: { parents?: RawNetworkLoadBalancerRouteParentStatus[] };
+}
+
+const ROUTE_PARENT_CONDITIONS = ['Accepted', 'ResolvedRefs', 'Programmed'];
+
+function toRouteParentStatus(raw: RawNetworkLoadBalancerRouteParentStatus) {
+  const conditions = raw.conditions ?? [];
+  const failing = ROUTE_PARENT_CONDITIONS.map((type) => findCondition(conditions, type)).find(
+    (c) => c?.status !== 'True'
+  );
+  return {
+    name: raw.name ?? '',
+    listener: raw.listener ?? '',
+    effective: raw.effective ?? false,
+    status: failing ? (failing.status ?? 'Unknown') : ('True' as const),
+    reason: failing?.reason,
+    message: failing?.message,
+  };
+}
+
+export interface RawNetworkLoadBalancerRouteList {
+  items?: RawNetworkLoadBalancerRoute[];
+}
+
+export function toNetworkLoadBalancerRoute(raw: RawNetworkLoadBalancerRoute): NetworkLoadBalancerRoute {
+  const backendNames = (raw.spec?.backends ?? []).flatMap((b) =>
+    b.networkService?.name ? [b.networkService.name] : []
+  );
+  return {
+    uid: raw.metadata?.uid ?? '',
+    name: raw.metadata?.name ?? '',
+    resourceVersion: raw.metadata?.resourceVersion,
+    parents: (raw.spec?.parentRefs ?? []).map((p) => ({ name: p.name ?? '', listener: p.listener, port: p.port })),
+    backendNames: [...new Set(backendNames)],
+    backends: (raw.spec?.backends ?? []).flatMap((b) =>
+      b.networkService?.name
+        ? [
+            {
+              name: b.networkService.name,
+              port: b.networkService.port ?? '',
+              healthCheck: b.healthCheck?.protocol
+                ? { protocol: b.healthCheck.protocol, port: b.healthCheck.port }
+                : undefined,
+            },
+          ]
+        : []
+    ),
+    parentStatuses: (raw.status?.parents ?? []).map(toRouteParentStatus),
+  };
+}
+
+/** Same rule as toNetworkList: one being deleted is left out. */
+export function toNetworkLoadBalancerRouteList(items: RawNetworkLoadBalancerRoute[]): NetworkLoadBalancerRoute[] {
+  return items.filter((item) => !item.metadata?.deletionTimestamp).map(toNetworkLoadBalancerRoute);
 }

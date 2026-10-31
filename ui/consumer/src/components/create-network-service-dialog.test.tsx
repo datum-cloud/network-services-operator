@@ -63,8 +63,21 @@ async function openDialog() {
 }
 
 function selectWorkload(name: string) {
-  fireEvent.click(screen.getByRole('combobox'));
+  fireEvent.click(screen.getAllByRole('combobox')[0]);
   fireEvent.click(screen.getByRole('option', { name }));
+}
+
+function selectProtocol(portIndex: number, protocol: 'TCP' | 'UDP') {
+  fireEvent.click(screen.getAllByRole('combobox')[portIndex + 1]);
+  fireEvent.click(screen.getByRole('option', { name: protocol }));
+}
+
+function fillPort(portIndex: number, name: string, port: string) {
+  fireEvent.change(screen.getAllByPlaceholderText('e.g. http')[portIndex], { target: { value: name } });
+  const portInput = screen.getAllByPlaceholderText('e.g. 8080')[portIndex];
+  fireEvent.focus(portInput);
+  fireEvent.change(portInput, { target: { value: port } });
+  fireEvent.blur(portInput);
 }
 
 describe('CreateNetworkServiceDialog', () => {
@@ -80,7 +93,7 @@ describe('CreateNetworkServiceDialog', () => {
     renderDialog();
     await openDialog();
 
-    fireEvent.click(screen.getByRole('combobox'));
+    fireEvent.click(screen.getAllByRole('combobox')[0]);
     expect(screen.getByRole('option', { name: 'storefront' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'checkout' })).toBeInTheDocument();
 
@@ -116,6 +129,46 @@ describe('CreateNetworkServiceDialog', () => {
       'compute.datumapis.com/workload-name': 'storefront',
     });
     expect(body.spec.ports).toEqual([{ name: 'http', port: 8080, protocol: 'TCP' }]);
+  }, SELECT_TEST_TIMEOUT);
+
+  it('posts a UDP port alongside a TCP health port on the same number', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    renderDialog();
+    await openDialog();
+    fireEvent.change(screen.getByPlaceholderText('e.g. storefront'), { target: { value: 'dns' } });
+    selectWorkload('storefront');
+    fillPort(0, 'dns', '53');
+    selectProtocol(0, 'UDP');
+    fireEvent.click(screen.getByRole('button', { name: 'Add port' }));
+    fillPort(1, 'health', '53');
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.spec.ports).toEqual([
+      { name: 'dns', port: 53, protocol: 'UDP' },
+      { name: 'health', port: 53, protocol: 'TCP' },
+    ]);
+  }, SELECT_TEST_TIMEOUT);
+
+  it('rejects the same port number twice on one protocol', async () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    renderDialog();
+    await openDialog();
+    fireEvent.change(screen.getByPlaceholderText('e.g. storefront'), { target: { value: 'dns' } });
+    selectWorkload('storefront');
+    fillPort(0, 'dns', '53');
+    fireEvent.click(screen.getByRole('button', { name: 'Add port' }));
+    fillPort(1, 'health', '53');
+    fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
+
+    expect(await screen.findByText('TCP port 53 is already used.')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   }, SELECT_TEST_TIMEOUT);
 
   it('surfaces the server error message on failure', async () => {

@@ -3,15 +3,15 @@
 package controller
 
 import (
+	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
@@ -20,8 +20,10 @@ import (
 )
 
 // syncReconciler reads the hub through a client carrying the namespace index the
-// real one is set up with, seeded from the hub this scenario built.
-func (s *presenceScenario) syncReconciler(events chan event.GenericEvent) *NetworkPresenceSyncReconciler {
+// real one is set up with, seeded from the hub this scenario built, and reads the
+// project plane through the scenario's hub. It returns that hub client too, so a
+// test can read the signals written there.
+func (s *presenceScenario) syncReconciler() (*NetworkPresenceSyncReconciler, client.Client) {
 	s.t.Helper()
 
 	var namespaces corev1.NamespaceList
@@ -43,20 +45,35 @@ func (s *presenceScenario) syncReconciler(events chan event.GenericEvent) *Netwo
 		WithObjects(objects...).
 		Build()
 
-	return &NetworkPresenceSyncReconciler{Events: events, hub: hub}
+	return &NetworkPresenceSyncReconciler{
+		Projects: &staticProjectResolver{clients: map[string]client.Client{testProject: s.hub}},
+		hub:      hub,
+	}, hub
 }
 
-func drainPresenceEvents(t *testing.T, events chan event.GenericEvent) []client.ObjectKey {
-	t.Helper()
+// signals reads the observation each hub binding carries, by binding name.
+func (s *presenceScenario) signals(hub client.Client) map[string]string {
+	s.t.Helper()
 
-	keys := make([]client.ObjectKey, 0, len(events))
-	for {
-		select {
-		case ev := <-events:
-			keys = append(keys, client.ObjectKeyFromObject(ev.Object))
-		default:
-			return keys
+	var bindings networkingv1alpha.NetworkBindingList
+	require.NoError(s.t, hub.List(s.ctx, &bindings, client.InNamespace(s.hubNamespace)))
+
+	observed := map[string]string{}
+	for i := range bindings.Items {
+		if value, ok := bindings.Items[i].Annotations[NetworkPresenceObservedAnnotation]; ok {
+			observed[bindings.Items[i].Name] = value
 		}
+	}
+	return observed
+}
+
+func (s *presenceScenario) networkRequest() mcreconcile.Request {
+	return mcreconcile.Request{
+		ClusterName: testProject,
+		Request: ctrl.Request{NamespacedName: client.ObjectKey{
+			Namespace: s.projectNamespace,
+			Name:      s.networkName,
+		}},
 	}
 }
 
@@ -67,7 +84,7 @@ func drainPresenceEvents(t *testing.T, events chan event.GenericEvent) []client.
 // The context is ready first on purpose: a refused presence comes back on its
 // own retry, so a test that left it refused would pass whether or not anything
 // was enqueued.
-func TestNetworkPresenceSyncEnqueuesANetworkEditAgainstAReadyContext(t *testing.T) {
+func TestNetworkPresenceSyncSignalsANetworkEditAgainstAReadyContext(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{
 		families: []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
 		mtu:      1440,
@@ -79,30 +96,22 @@ func TestNetworkPresenceSyncEnqueuesANetworkEditAgainstAReadyContext(t *testing.
 	result, err := s.reconciler.Reconcile(s.ctx, s.request())
 	require.NoError(t, err)
 	require.Zero(t, result.RequeueAfter,
-		"a ready presence has nothing behind it, so only an event can bring it back")
+		"a ready presence has nothing behind it, so only a signal can bring it back")
 
 	s.network.Spec.MTU = 8856
 	require.NoError(t, s.hub.Update(s.ctx, s.network))
 
-	events := make(chan event.GenericEvent, 8)
-	sync := s.syncReconciler(events)
+	sync, hub := s.syncReconciler()
 
-	_, err = sync.reconcileNetwork(s.ctx, mcreconcile.Request{
-		ClusterName: testProject,
-		Request: ctrl.Request{NamespacedName: client.ObjectKey{
-			Namespace: s.projectNamespace,
-			Name:      s.networkName,
-		}},
-	})
+	_, err = sync.reconcileNetwork(s.ctx, s.networkRequest())
 	require.NoError(t, err)
 
-	require.Equal(t, []client.ObjectKey{{
-		Namespace: s.hubNamespace,
-		Name:      s.contextName(),
-	}}, drainPresenceEvents(t, events),
-		"the edited network's presence has to be enqueued on the hub, where the presence is keyed")
+	require.Equal(t, map[string]string{
+		"consumer-a": "Network/" + s.networkName + "/" + string(s.network.UID) + "/" + strconv.FormatInt(s.network.Generation, 10),
+	}, s.signals(hub),
+		"the edited network has to be recorded on the binding the presence controller watches")
 
-	// The key is enough to carry the edit through.
+	// The binding event maps to the presence, which carries the edit through.
 	_, err = s.reconciler.Reconcile(s.ctx, s.request())
 	require.NoError(t, err)
 
@@ -111,9 +120,9 @@ func TestNetworkPresenceSyncEnqueuesANetworkEditAgainstAReadyContext(t *testing.
 	require.Equal(t, int32(8856), networkContext.Spec.MTU)
 }
 
-// Every consumer of the network in this project is enqueued, once each, and
-// nothing declaring a different network is.
-func TestNetworkPresenceSyncEnqueuesEveryPresenceOfTheNetworkOnce(t *testing.T) {
+// Every binding declaring the network in this project is signalled, and nothing
+// declaring a different network is.
+func TestNetworkPresenceSyncSignalsEveryBindingOfTheNetwork(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 	s.createBinding("consumer-a")
 	s.createBinding("consumer-b")
@@ -125,23 +134,16 @@ func TestNetworkPresenceSyncEnqueuesEveryPresenceOfTheNetworkOnce(t *testing.T) 
 	other.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
 	require.NoError(t, s.hub.Create(s.ctx, other))
 
-	events := make(chan event.GenericEvent, 8)
-	sync := s.syncReconciler(events)
+	sync, hub := s.syncReconciler()
 
-	_, err := sync.reconcileNetwork(s.ctx, mcreconcile.Request{
-		ClusterName: testProject,
-		Request: ctrl.Request{NamespacedName: client.ObjectKey{
-			Namespace: s.projectNamespace,
-			Name:      s.networkName,
-		}},
-	})
+	_, err := sync.reconcileNetwork(s.ctx, s.networkRequest())
 	require.NoError(t, err)
 
-	require.Equal(t, []client.ObjectKey{{
-		Namespace: s.hubNamespace,
-		Name:      s.contextName(),
-	}}, drainPresenceEvents(t, events),
-		"two consumers of one pair are one presence, and another network's is not this network's")
+	observed := s.signals(hub)
+	require.Len(t, observed, 2, "another network's binding is not this network's")
+	require.Contains(t, observed, "consumer-a")
+	require.Contains(t, observed, "consumer-b")
+	require.Equal(t, observed["consumer-a"], observed["consumer-b"])
 }
 
 // A network in a project namespace no hub namespace stands for is nothing this
@@ -151,8 +153,7 @@ func TestNetworkPresenceSyncIgnoresANetworkNoHubNamespaceStandsFor(t *testing.T)
 	s := newPresenceScenario(t, presenceOptions{})
 	s.createBinding("consumer-a")
 
-	events := make(chan event.GenericEvent, 8)
-	sync := s.syncReconciler(events)
+	sync, hub := s.syncReconciler()
 
 	for _, req := range []mcreconcile.Request{
 		{
@@ -174,18 +175,17 @@ func TestNetworkPresenceSyncIgnoresANetworkNoHubNamespaceStandsFor(t *testing.T)
 		require.NoError(t, err)
 	}
 
-	require.Empty(t, drainPresenceEvents(t, events))
+	require.Empty(t, s.signals(hub))
 }
 
 // The context finishing being deleted is the event that unwedges a presence
 // whose context was terminating. There is nothing left to read by then, so the
 // mapping has to come from the request alone.
-func TestNetworkPresenceSyncEnqueuesADeletedContext(t *testing.T) {
+func TestNetworkPresenceSyncSignalsADeletedContext(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 	s.createBinding("consumer-a")
 
-	events := make(chan event.GenericEvent, 8)
-	sync := s.syncReconciler(events)
+	sync, hub := s.syncReconciler()
 
 	_, err := sync.reconcileNetworkContext(s.ctx, mcreconcile.Request{
 		ClusterName: testProject,
@@ -196,39 +196,54 @@ func TestNetworkPresenceSyncEnqueuesADeletedContext(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, []client.ObjectKey{{
-		Namespace: s.hubNamespace,
-		Name:      s.contextName(),
-	}}, drainPresenceEvents(t, events))
+	require.Equal(t, map[string]string{
+		"consumer-a": "NetworkContext/" + s.contextName() + "/gone",
+	}, s.signals(hub))
 }
 
-// Nothing drains the channel unless the presence controller is running in this
-// process. Blocking there would stall this controller behind a reader that may
-// never arrive, so a full channel drops.
-func TestNetworkPresenceSyncDropsRatherThanBlockingOnAFullChannel(t *testing.T) {
+// A resync of an object that has not changed must not write the binding again,
+// or every resync would wake the presence controller for every binding.
+func TestNetworkPresenceSyncLeavesAnUnchangedObservationAlone(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 	s.createBinding("consumer-a")
 
-	// Unbuffered and unread: every send finds no reader.
-	events := make(chan event.GenericEvent)
-	sync := s.syncReconciler(events)
+	sync, hub := s.syncReconciler()
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, err := sync.reconcileNetworkContext(s.ctx, mcreconcile.Request{
-			ClusterName: testProject,
-			Request: ctrl.Request{NamespacedName: client.ObjectKey{
-				Namespace: s.projectNamespace,
-				Name:      s.contextName(),
-			}},
-		})
-		require.NoError(t, err)
-	}()
+	_, err := sync.reconcileNetwork(s.ctx, s.networkRequest())
+	require.NoError(t, err)
 
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the sync controller blocked on a channel nothing is reading")
-	}
+	binding := &networkingv1alpha.NetworkBinding{}
+	require.NoError(t, hub.Get(s.ctx, client.ObjectKey{Namespace: s.hubNamespace, Name: "consumer-a"}, binding))
+	resourceVersion := binding.ResourceVersion
+
+	_, err = sync.reconcileNetwork(s.ctx, s.networkRequest())
+	require.NoError(t, err)
+
+	require.NoError(t, hub.Get(s.ctx, client.ObjectKey{Namespace: s.hubNamespace, Name: "consumer-a"}, binding))
+	require.Equal(t, resourceVersion, binding.ResourceVersion)
+}
+
+// Nothing in a network's status reaches its presences, so a status write by
+// another controller must not wake every presence of the network.
+func TestNetworkPresenceSyncIgnoresANetworkStatusWrite(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+
+	sync, hub := s.syncReconciler()
+
+	_, err := sync.reconcileNetwork(s.ctx, s.networkRequest())
+	require.NoError(t, err)
+	before := s.signals(hub)
+
+	s.network.Status.Conditions = append(s.network.Status.Conditions, metav1.Condition{
+		Type:               "Probe",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Probe",
+		LastTransitionTime: metav1.Now(),
+	})
+	require.NoError(t, s.hub.Status().Update(s.ctx, s.network))
+
+	_, err = sync.reconcileNetwork(s.ctx, s.networkRequest())
+	require.NoError(t, err)
+	require.Equal(t, before, s.signals(hub))
 }

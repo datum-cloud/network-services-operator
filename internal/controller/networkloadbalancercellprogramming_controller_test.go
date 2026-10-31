@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +28,7 @@ const nlbProgrammingTestNamespace = "ns-project"
 func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCellProgrammingReconciler, *networkingv1alpha.NetworkLoadBalancerCellIntent) {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
 	require.NoError(t, cloudv1alpha1.AddToScheme(scheme))
 	require.NoError(t, networkv1alpha1.AddToScheme(scheme))
@@ -81,10 +83,10 @@ func nlbProgrammingFixture(t *testing.T) (client.Client, *NetworkLoadBalancerCel
 			}},
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent).
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, attachment, intent, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "cell-uid"}}).
 		WithStatusSubresource(&networkingv1alpha.NetworkLoadBalancerCellIntent{}, &networkv1alpha1.NetworkService{}).Build()
 	r := &NetworkLoadBalancerCellProgrammingReconciler{
-		Client: cl, Scheme: scheme,
+		Client: cl, Scheme: scheme, HubCluster: &fakeCluster{cl: cl, reader: cl},
 		resolveLocation: func(context.Context) (string, error) { return "us-central-1", nil },
 	}
 	return cl, r, intent
@@ -384,4 +386,50 @@ func TestNLBCellProgrammingUDPUsesSeparateTCPHealthPort(t *testing.T) {
 	require.EqualValues(t, 8081, service.Spec.HealthCheck.Port)
 	require.EqualValues(t, 1, service.Spec.HealthCheck.UnhealthyThreshold)
 	require.EqualValues(t, 2, service.Spec.HealthCheck.HealthyThreshold)
+}
+
+func TestNLBCellProgrammingWithholdsIPv4WhenCellDoesNotServeIt(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	intent.Spec.VIPFamily = networkingv1alpha.IPv4Protocol
+	intent.Spec.VIP = "192.0.2.10"
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	var service networkv1alpha1.NetworkService
+	require.True(t, apierrors.IsNotFound(cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service)))
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	programmed := apimeta.FindStatusCondition(intent.Status.Conditions, networkingv1alpha.NetworkLoadBalancerCellIntentProgrammed)
+	require.NotNil(t, programmed)
+	require.Equal(t, metav1.ConditionFalse, programmed.Status)
+	require.Contains(t, programmed.Message, "IPv4 addresses are not served")
+}
+
+func TestNLBCellProgrammingServesIPv4AndReportsIPv4Served(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	r.IPv4VIPs = true
+	intent.Spec.VIPFamily = networkingv1alpha.IPv4Protocol
+	intent.Spec.VIP = "192.0.2.10"
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, []string{"192.0.2.10"}, service.Spec.VIPAddresses)
+
+	service.Generation = 3
+	require.NoError(t, cl.Update(context.Background(), &service))
+	service.Status.Conditions = []metav1.Condition{
+		{Type: "Ready", ObservedGeneration: service.Generation, Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()},
+		{Type: "Advertised", ObservedGeneration: service.Generation, Status: metav1.ConditionTrue, Reason: "Advertised", LastTransitionTime: metav1.Now()},
+		{Type: "IPv4Served", ObservedGeneration: service.Generation, Status: metav1.ConditionFalse, Reason: "BindingsNotBound",
+			Message: "IPv4 VIP served from 1 of 2 gateway nodes", LastTransitionTime: metav1.Now()},
+	}
+	require.NoError(t, cl.Status().Update(context.Background(), &service))
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	announced := apimeta.FindStatusCondition(intent.Status.Conditions, networkingv1alpha.NetworkLoadBalancerCellIntentAnnounced)
+	require.NotNil(t, announced)
+	require.Equal(t, metav1.ConditionFalse, announced.Status)
+	require.Equal(t, "BindingsNotBound", announced.Reason)
 }

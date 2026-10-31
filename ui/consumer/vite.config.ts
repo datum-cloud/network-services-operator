@@ -47,6 +47,8 @@ export default defineConfig({
         './NetworkDetail': './src/pages/network-detail.tsx',
         './NetworkHomeHero': './src/components/network-home-hero.tsx',
         './CreateNetworkDialog': './src/components/create-network-dialog.tsx',
+        './NlbList': './src/pages/nlb-list.tsx',
+        './NlbDetail': './src/pages/nlb-detail.tsx',
       },
       // Host-pinned singletons. requiredVersion tracks the host's majors
       // (react 19, react-router 8, react-query 5). singleton:true guarantees

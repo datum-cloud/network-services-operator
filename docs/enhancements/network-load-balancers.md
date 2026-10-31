@@ -155,11 +155,18 @@ still serve through another backend. Interface presence selects locations;
 health and programming determine announcement. With no attached route,
 placement is pending and no location IP is allocated.
 
-For a future address shared by several listeners, placement must be decided
-across all listeners using that address, and announcement requires every
-listener to be ready in the location. Sharing an address across listeners and
-selecting multiple address requests on one listener are capability-gated in
-the first release, while the API retains both shapes for later support.
+For an address shared by several listeners, placement is the union of backend
+locations across its attached listeners. Missing routes or backend services
+retain the address request's previously resolved locations until placement can
+be resolved again. A healthy listener can serve while another is unresolved or
+unhealthy. Each endpoint reports current-generation listener conditions;
+`Programmed` requires all desired listeners, while address announcement and
+`Ready` require at least one serving listener at every selected address.
+`Degraded=True` identifies a reachable load balancer with incomplete listener
+programming. Pending withdrawal is tracked independently from readiness and
+prevents allocation release until all serving obligations are acknowledged.
+Sharing remains disabled by default and requires the capabilities below.
+Selecting multiple address requests on one listener remains unsupported.
 
 A route without an allocated IPv6 VIP in a location owns no Galactic backend
 socket there. Once a VIP is allocated, an effective route with resolved
@@ -357,9 +364,9 @@ conditions remain on the load balancer and routes, not on every family address.
 A missing IPv4 allocation does not hide a
 working IPv6 address, but the request reports partial readiness until both
 are available. Galactic can serve IPv4 VIPs over IPv6 backends when its IPv4
-VIP feature is enabled. NSO may still begin with `families: [IPv6]`; a request
-containing IPv4 remains rejected until the serving cells have the required
-Galactic version, feature gate, bindings, and public IPv4 pool. The cell intent
+VIP feature is enabled. A request containing IPv4 is rejected until the
+platform names a public IPv4 address class, and a location serves IPv4 only
+once its cell turns IPv4 on. The cell intent
 carries the public VIP family and each backend address family separately. An
 allocation remains in status when a route or backend is unavailable; its
 announcement state changes instead.
@@ -411,12 +418,20 @@ and successful programming.
 Withdrawal completes before IPAM releases an address. A location reports
 IPv4 and IPv6 programming and announcement independently.
 
-NSO still needs a public IPv4 pool, family-aware cell intent, rollout of the
-Galactic IPv4 feature gate and backend bindings, and a capability signal from
-every serving gateway in a location. CI must exercise IPv4 TCP and UDP ingress
-to IPv6 backends and replies, backend health changes, and announcement
-withdrawal. Only then should admission accept `families` containing IPv4 and
-allow one address request to publish both families on a listener.
+In Datum's sites a backend's reply leaves its compute node directly toward
+the hosting provider, not back through an edge, so the provider must accept
+replies sourced from the site's announced prefixes on compute ports. This was
+confirmed for IPv4 and IPv6 in staging.
+
+IPv4 is enabled in two places. The platform names a public IPv4 address
+class, carved from each site's announced unicast IPv4 range; until it does,
+admission rejects `families` containing IPv4. Each cell then turns IPv4 on
+once every gateway in it has Galactic's IPv4 VIPs enabled; until it does, the
+location reports the IPv4 address as not served while the IPv6 address keeps
+serving. A location reports an IPv4 address announced only once every gateway
+that loaded the rule serves it. CI has no data-plane environment for this
+path yet, so IPv4 TCP and UDP ingress, health changes, and withdrawal are
+verified in staging before production.
 
 ### Backend Health
 
@@ -528,7 +543,7 @@ routing and termination remain with `HTTPProxy`.
 ### Initial Delivery and Capability Gates
 
 The API fields above describe the long-term consumer contract. Galactic's
-current one-protocol, one-VIP-port, one-backend-port `NetworkService` is
+per-listener `NetworkService` is
 an internal programming unit, not a limit on the public `NetworkService` or
 `NetworkLoadBalancerRoute` schema. NSO may create several Galactic resources
 for one NLB. It must not silently alter route selection or drop a backend to
@@ -546,8 +561,9 @@ the broader field shapes:
 | TLS listener, SNI match, or backend TLS transport | Reject with `UnsupportedCapability`; opaque TLS on a TCP listener remains valid. | Proxy-capable edge path, certificate lifecycle, and TLS route programming. |
 | More than one backend entry on a route, including entries with different resolved port numbers | Reject until the cell can program the complete set. Keep `backends` as a list of named-port references. | Galactic intent that represents every selected endpoint and its destination port, plus health and selection behavior. |
 | Reuse one backend address, port, and protocol in multiple forwarding rules of the same address family | Reject a conflicting attachment or report `BackendClaimConflict` if changing membership creates it later. | Galactic backend return-path support for multiple rules and VIPs on one socket. |
-| One address request shared by multiple listeners | Reject until announcements can be gated on every listener's readiness in the location. | Aggregate VIP readiness and coordinated advertisement. |
-| IPv4 in `families` | Reject where the public pool, backend bindings, or Galactic IPv4 feature gate is unavailable. | Capability reported by every serving cell in the location. |
+| One address request shared by multiple listeners | Disabled by default; listeners become ready independently when enabled. | Explicit manager/cell configuration and current `SharedAddressListeners` capability on every nonterminating gateway. |
+| UDP port range | Disabled by default; preserve destination ports when enabled. | Explicit manager/cell configuration and current `UDPPortRanges` and address coordination capabilities on every nonterminating gateway. |
+| IPv4 in `families` | Available for single-port listeners when the platform names a public IPv4 address class; a cell with IPv4 disabled reports the address as not served. Shared listeners and UDP ranges remain IPv6 only. | Public IPv4 address class and IPv4 serving enabled in the selected cell. |
 
 Validation returns the unsupported field and reason when a consumer submits
 an unsupported spec. A previously valid route that becomes unprogrammable
@@ -556,6 +572,141 @@ address, and withdraws affected announcements. An unsupported route is not
 partially programmed; health-driven exclusion of individual endpoints remains
 valid. Consistent per-flow selection and flow affinity across gateway nodes are
 required before any NLB listener serves traffic.
+
+### Shared addresses and UDP ranges
+
+Listeners and named `NetworkService` ports accept exactly one of `port` or
+`portRange: {start: 10000, end: 10127}`. Endpoints are inclusive and must be
+between 1 and 65535. Equal endpoints normalize to a singleton. True ranges
+require UDP. Intervals on the same address and wire protocol must not overlap;
+adjacent intervals and TCP/UDP using the same numbers are valid. Range-form
+listeners require name-based route parent references, including equal-endpoint
+ranges. Existing numeric parent selectors continue to select scalar listeners.
+
+A range route's named backend must declare a UDP range covering every exposed
+port. A packet to port `p` goes to backend port `p`; offset translation,
+range-to-singleton translation, and singleton-to-range translation are rejected.
+Existing singleton port remapping remains supported. The entire backend interval
+is reserved within the network, location, address and protocol return-path scope;
+dynamic overlaps report a backend claim conflict and cannot silently overwrite
+another listener's return mapping. Each range is one intent and one Galactic
+service, without expanding ports into Kubernetes resources.
+
+UDP ranges require an explicit health-check reference to a separate named
+singleton TCP port. The health of that probe applies to the whole range; it does
+not prove that each UDP port responds. HTTPProxy rejects true ranges with
+`UnsupportedBackendPortRange`. The scalar-only service CLI refuses to update a
+service containing a range; use a range-aware manifest update. Service listing
+and diagnosis display both range endpoints.
+
+```yaml
+listeners:
+  - name: control
+    protocol: TCP
+    port: 443
+    addressRefs: [public]
+  - name: media
+    protocol: UDP
+    portRange: {start: 10000, end: 10127}
+    addressRefs: [public]
+```
+
+The corresponding `NetworkService` can declare `control:443/TCP`, a `media`
+UDP range covering `10000..10127`, and `health:8080/TCP`. The media route names
+listener `media`, backend port `media`, and health-check port `health`.
+
+For coordinated addresses, NSO publishes a durable Galactic
+`NetworkServiceAddress` before publishing listener services. Its allocation UID
+includes the parent, request, location and claim UID; its generation and inventory
+revision cover every declared listener, including listeners without a service.
+Monotonic generation checks and equal-generation content checks reject stale
+writers. Each listener service identifies the same inventory and its own listener.
+The anchor survives transient health and resolution failures. Listener withdrawal
+removes its service and waits for Galactic's forwarding and advertisement
+finalizers. Before publishing coordinated listener intents, the parent creates a
+positive allocation authority in the hub using the immutable claim UID. Coordinated
+listener intents use `ValidateAllocation`; older cell adapters withdraw this
+unknown state, while upgraded adapters reject coordinated `Validate` intents.
+Legacy scalar intents retain `Validate`. Upgrade the replicated CRD before
+publishing the new wire state. Every serving cell must read that authority
+directly from the hub and register its
+stable `kube-system` namespace UID with an optimistic update before writing any
+local anchor or service. Missing, unreachable, or retired authority fails closed.
+
+Retirement atomically freezes the authority's append-only registered-cell roster.
+Each registered cell creates or closes its permanent Galactic address tombstone,
+drains services, and writes a receipt directly to the hub only after Galactic
+confirms current-generation `Retired=True`. The parent retains the IPAM claim
+until every frozen participant has a receipt for the authority's terminal
+generation. No registered cells means no serving write was authorized, so that
+terminal authority can release without waiting for unused cells. Neither ordinary
+readiness, an empty intent list, nor a Karmada status aggregate proves retirement.
+Removing a registered cell from propagation does not remove its obligation: an
+unreachable participant keeps the claim held until its teardown is confirmed.
+
+Allocation authorities and address tombstones have no owner reference and are
+retained indefinitely. Normal cleanup never deletes them: deleting a marker could
+authorize a delayed writer after IP reuse. Storage therefore grows by one hub
+authority and one tombstone per cell that processes a retired allocation. Future
+compaction must preserve the terminal denial for the old allocation UID. A new
+claim UID may reuse the same VIP; reselecting a retired allocation requires a
+replacement claim. Late publishers, stale ACTIVE replicas, and newly joined cells
+cannot bypass direct hub registration against the frozen authority.
+
+The cell federation credentials need read and update/patch permission for hub
+`networkloadbalancercellintents`, plus get/update/patch on their status subresource.
+Cells never create or delete hub authorities. The existing Karmada interpreter
+preserves the directly written `allocationRetirements` status field; retirement
+safety does not depend on its ordinary listener-condition aggregation.
+
+Configure `networkLoadBalancer.sharedAddressListeners` and
+`networkLoadBalancer.udpPortRanges` independently on the manager and serving cell.
+Both default to false. A range-only address still requires Galactic address
+coordination capability. `networkLoadBalancer.maxExposedPorts` defaults to 1024
+when unset on either process. Admission counts inclusive interval width for each
+address reference across the NLB, and the cell checks the complete address
+inventory against its own limit. There are at most 16 listener descriptors per
+NLB/address inventory. This conservative quota is an operational guard, not a
+measured throughput or map-capacity guarantee.
+
+Install both repositories' new CRDs before deploying producers: older schemas
+may prune range or inventory fields. Upgrade Galactic controllers, gateways and
+routers before enabling NSO flags. Every nonterminating gateway must report its
+current generation, fail-closed backend health filtering, and required
+capabilities, including `TerminalAddressRetirement` for every coordinated
+address; absent or stale evidence prevents materialization. Validate Linux
+forward/reverse packet translation, unsupported-packet handling, route withdrawal
+and capacity under load before enabling a production cell. Unchanged scalar-only
+listeners continue through the legacy path without new capabilities.
+
+To roll back, disable admission for new shared/range configurations, withdraw
+existing affected intents, and wait for service finalizers and terminal allocation
+retirement acknowledgments. Disabled gates still permit metadata and finalizer
+updates and strictly nonexpanding listener, range, and location reductions; they
+reject new or wider disabled-feature usage. Preserve retirement markers across
+controller or schema downgrade: dropping the terminal authority while delayed
+writers can still exist is unsafe. Only downgrade after the coordinated serving
+path is drained and its retirement authority remains enforced. Removing a range
+or reducing an inventory does not authorize stale
+siblings to restore an earlier revision. The allocation status keeps
+`coordinated=true` once sharing or a true range uses it. Removing listeners or
+replacing a range with a singleton updates that same inventory; the final listener remains coordinated until the allocation is
+released. A fresh singleton allocation can then use the legacy path.
+
+For development across both repositories, create a temporary workspace outside
+either checkout (with the Go version required by NSO):
+
+```sh
+mkdir -p /tmp/nlb-validation
+cd /tmp/nlb-validation
+GOTOOLCHAIN=go1.26.4 go work init /absolute/path/to/network-services-operator /absolute/path/to/galactic
+cd /absolute/path/to/network-services-operator
+GOWORK=/tmp/nlb-validation/go.work go test ./internal/controller ./internal/webhook/v1alpha ./internal/networkagent ./internal/cmd/network ./internal/cmd/alb/util ./internal/config
+```
+
+Release Galactic first, then pin NSO's `go.mod` to the published Galactic
+revision and run the normal standalone checks. Do not commit a local filesystem
+`replace` or an unpublished synthetic version.
 
 ### Gateway API L4 Compatibility
 
@@ -663,9 +814,8 @@ listener and backend port protocols to match; `HTTPProxy` must continue to
 reject UDP backends. Selected cells need a health probe runner, Galactic
 gateways, backend VIP bindings, consistent per-flow selection that survives
 gateway failover, and a way to report programming and announcement state.
-IPv4 VIPs additionally need a public IPv4 pool, family-aware cell intent,
-Galactic's existing IPv4 feature enabled with backend bindings, and a serving
-capability gate before API admission is enabled.
+IPv4 VIPs additionally need a public IPv4 address class and Galactic's IPv4
+feature enabled on every gateway in a serving cell.
 NSO needs a managed DNS zone and per-location A/AAAA record lifecycle tied to
 VIP allocation and announcement; hostname assignment must remain stable across
 IP replacement and temporary health loss.
@@ -722,6 +872,34 @@ withdrawal across the cells serving its location.
 - **Expose Gateway API directly.** It adds concepts consumers do not need for
   this use case and does not express Datum's location and address policies.
   Offer an adapter for portability while retaining the Datum API.
+
+## Publication and allocation retirement
+
+Coordinated allocations persist `withdrawalPending: true` before publishing a
+current-generation `Allocated` condition. This is a publication hold, independent
+of readiness and announcement. It remains armed while the allocation is selected,
+including when no route can publish. A grouped intent requires this hold and an
+allocation that is not `retiring`.
+
+The allocator marks deletion, deselection, and confirmed identity replacement as
+`retiring` with an optimistic status update, retaining the old claim identity.
+The parent-keyed intent controller is the sole publisher for that parent and the
+sole controller allowed to clear its coordinated publication hold. Its serialized
+reconcile withdraws previous publications, reads withdrawal acknowledgments from
+the authoritative hub API, and clears the hold using the parent's resource
+version. A conflict retries against the new parent state. Empty inventory is a
+valid retirement proof only in this actor, after all its earlier writes finish.
+The asynchronous dataplane status controller never clears this hold.
+
+This protocol requires one active controller owner for a project, as provided by
+the manager's leader election or exclusive shard assignment; independent active
+managers must not own the same project. The parent work queue serializes that
+owner's publications, while durable allocation fences and optimistic updates
+preserve retirement across restart. Every route receives a parent-specific
+finalizer and parent-name annotation before publication. Each parent removes only
+its own finalizer after withdrawal, including after reparenting or parent deletion.
+The annotation and hub source identity recover orphan cleanup on restart. Legacy
+route finalizers remain until all parent publications have drained.
 
 ## Infrastructure Needed
 

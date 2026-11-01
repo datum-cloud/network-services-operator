@@ -36,6 +36,7 @@ import (
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/galactic/galactic"
+	"go.datum.net/network-services-operator/internal/galactic/identifier"
 )
 
 func TestReconcileNADPreservesAttachmentIdentifier(t *testing.T) {
@@ -207,6 +208,119 @@ func TestReconcileClearsConsumerLabelsOfAReleasedInterface(t *testing.T) {
 	want := map[string]string{"networking.datumapis.com/internal-dns-vpc-uid": "vpc-uid"}
 	if !maps.Equal(got.Labels, want) {
 		t.Fatalf("labels = %v, want %v", got.Labels, want)
+	}
+}
+
+func nadTestReconciler(t *testing.T, objects ...client.Object) (*NetworkInterfaceReconciler, client.Client) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := nadv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	return &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme}, cl
+}
+
+func reconcileTestNAD(t *testing.T, r *NetworkInterfaceReconciler, uid types.UID) *nadv1.NetworkAttachmentDefinition {
+	t.Helper()
+	attachment := &cloudv1alpha1.VPCAttachment{ObjectMeta: metav1.ObjectMeta{Name: "nic", Namespace: "tenant", UID: uid}}
+	attachment.Spec.Interface.Mode = cloudv1alpha1.VPCAttachmentInterfaceModeNetns
+	vpc := &cloudv1alpha1.VPC{}
+	vpc.Status.VPC = "1"
+	iface := &networkingv1alpha.NetworkInterface{}
+	iface.Spec.MTU = 1500
+	nad, err := r.reconcileNAD(context.Background(), attachment, vpc, iface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nad
+}
+
+func TestRecreatedInterfaceReturnsToItsAttachmentIdentifier(t *testing.T) {
+	r, cl := nadTestReconciler(t)
+	first := reconcileTestNAD(t, r, "first")
+	identity := first.Labels[LabelVPCAttachment]
+	if identity == "" {
+		t.Fatal("no attachment identifier allocated")
+	}
+
+	if err := cl.Delete(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	replacement := reconcileTestNAD(t, r, "replacement")
+	if got := replacement.Labels[LabelVPCAttachment]; got != identity {
+		t.Fatalf("recreated interface got identifier %q, want %q the workload is attached under", got, identity)
+	}
+}
+
+func TestAllocateAttachmentIdentifierProbesPastAnotherInterface(t *testing.T) {
+	key := types.NamespacedName{Namespace: "tenant", Name: "nic"}
+	preferred, err := identifier.VPCAttachmentBase62For(key.String(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{LabelVPC: "1", LabelVPCAttachment: preferred}
+
+	own := &nadv1.NetworkAttachmentDefinition{ObjectMeta: metav1.ObjectMeta{
+		Name: key.Name, Namespace: key.Namespace, Labels: maps.Clone(labels),
+	}}
+	r, _ := nadTestReconciler(t, own)
+	got, err := r.allocateAttachmentIdentifier(context.Background(), "1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != preferred {
+		t.Fatalf("own previous NAD counted as a collision: got %q, want %q", got, preferred)
+	}
+
+	other := &nadv1.NetworkAttachmentDefinition{ObjectMeta: metav1.ObjectMeta{
+		Name: "other", Namespace: key.Namespace, Labels: maps.Clone(labels),
+	}}
+	r, _ = nadTestReconciler(t, other)
+	got, err = r.allocateAttachmentIdentifier(context.Background(), "1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := identifier.VPCAttachmentBase62For(key.String(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != next {
+		t.Fatalf("collision with another interface: got %q, want the next candidate %q", got, next)
+	}
+}
+
+func TestMarkPreparedLeavesATerminatingClaimAlone(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{Name: "nic", Namespace: "tenant"}}
+	iface.Spec.ClaimRef = &networkingv1alpha.NetworkInterfaceClaimRef{Name: "nic"}
+	now := metav1.Now()
+	claim := &networkingv1alpha.NetworkInterfaceClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: "nic", Namespace: "tenant", DeletionTimestamp: &now, Finalizers: []string{"test.datumapis.com/hold"},
+	}}
+	claim.Status.Conditions = []metav1.Condition{{
+		Type: networkingv1alpha.NetworkInterfaceClaimPrepared, Status: metav1.ConditionFalse,
+		Reason: networkingv1alpha.NetworkInterfaceClaimReasonReleasing, LastTransitionTime: now,
+	}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(iface, claim).WithObjects(iface, claim).Build()
+	r := &NetworkInterfaceReconciler{Client: cl}
+	if err := r.markPrepared(context.Background(), iface, metav1.ConditionTrue, "AttachmentReady", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	var got networkingv1alpha.NetworkInterfaceClaim
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(claim), &got); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(got.Status.Conditions, networkingv1alpha.NetworkInterfaceClaimPrepared)
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != networkingv1alpha.NetworkInterfaceClaimReasonReleasing {
+		t.Fatalf("terminating claim Prepared = %#v, want it left False/Releasing", condition)
 	}
 }
 

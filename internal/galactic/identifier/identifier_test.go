@@ -27,15 +27,49 @@ func TestHexRejectsReservedValues(t *testing.T) {
 	}
 }
 
-func TestRandomIdentifiersFitTheirInterfaceNameSegment(t *testing.T) {
-	for range 200 {
-		attachment, err := RandomVPCAttachmentBase62()
+func TestDerivedAttachmentIdentifiersFitTheirInterfaceNameSegment(t *testing.T) {
+	for attempt := range 200 {
+		attachment, err := VPCAttachmentBase62For("tenant/nic", attempt)
 		if err != nil {
-			t.Fatalf("RandomVPCAttachmentBase62: %v", err)
+			t.Fatalf("VPCAttachmentBase62For: %v", err)
 		}
 		if len(attachment) > 3 {
 			t.Errorf("attachment identifier %q exceeds three base62 characters", attachment)
 		}
+	}
+}
+
+func TestDerivedAttachmentIdentifiersAreStablePerSeed(t *testing.T) {
+	first, err := VPCAttachmentBase62For("tenant/nic", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := VPCAttachmentBase62For("tenant/nic", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != again {
+		t.Errorf("same seed and attempt: got %q then %q", first, again)
+	}
+
+	distinct := map[string]struct{}{}
+	for attempt := range 8 {
+		candidate, err := VPCAttachmentBase62For("tenant/nic", attempt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		distinct[candidate] = struct{}{}
+	}
+	if len(distinct) < 7 {
+		t.Errorf("attempts collapse onto %d identifiers, want independent candidates", len(distinct))
+	}
+
+	other, err := VPCAttachmentBase62For("tenant/other", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other == first {
+		t.Errorf("different seeds share identifier %q", first)
 	}
 }
 

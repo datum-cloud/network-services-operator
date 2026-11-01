@@ -22,6 +22,8 @@ package identifier
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -60,11 +62,6 @@ func Random(max uint64) (string, error) {
 	return Hex(n.Uint64()+1, max)
 }
 
-// RandomVPCAttachment returns a random 16-bit attachment identifier in hex.
-func RandomVPCAttachment() (string, error) {
-	return Random(MaxVPCAttachment)
-}
-
 // HexToBase62 converts a hex identifier to the base62 form the CNI chain reads.
 func HexToBase62(value string) (string, error) {
 	return baseconv.Convert(strings.ToLower(value), baseconv.DigitsHex, baseconv.Digits62)
@@ -85,9 +82,13 @@ func VPCBase62(value uint64) (string, error) {
 	return HexToBase62(hex)
 }
 
-// RandomVPCAttachmentBase62 returns a random attachment identifier in base62.
-func RandomVPCAttachmentBase62() (string, error) {
-	hex, err := RandomVPCAttachment()
+// VPCAttachmentBase62For derives an attachment identifier in base62 from seed.
+// The same seed and attempt always yield the same identifier, and each attempt
+// yields an independent candidate for probing past a collision.
+func VPCAttachmentBase62For(seed string, attempt int) (string, error) {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d", seed, attempt))
+	value := binary.BigEndian.Uint64(sum[:8])%(MaxVPCAttachment-1) + 1
+	hex, err := Hex(value, MaxVPCAttachment)
 	if err != nil {
 		return "", err
 	}

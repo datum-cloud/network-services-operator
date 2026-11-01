@@ -955,6 +955,53 @@ func TestNetworkInterfaceDeleteReleasesAddresses(t *testing.T) {
 		"an address claimed under Delete goes back to its pool")
 }
 
+// A replacement workload must not be admitted on an interface its predecessor's
+// claim is about to delete, so a claim being released withdraws Prepared first.
+func TestReleasingClaimWithdrawsPrepared(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+
+	claim := s.createClaim("slot-0-eth0", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	prepared := s.getClaim("slot-0-eth0")
+	apimeta.SetStatusCondition(&prepared.Status.Conditions, metav1.Condition{
+		Type:   networkingv1alpha.NetworkInterfaceClaimPrepared,
+		Status: metav1.ConditionTrue,
+		Reason: "AttachmentReady",
+	})
+	require.NoError(t, s.client.Status().Update(s.ctx, prepared))
+
+	const hold = "test.datumapis.com/hold"
+	held := s.getClaim("slot-0-eth0")
+	controllerutil.AddFinalizer(held, hold)
+	require.NoError(t, s.client.Update(s.ctx, held))
+	t.Cleanup(func() {
+		if leftover := s.getClaim("slot-0-eth0"); controllerutil.RemoveFinalizer(leftover, hold) {
+			_ = s.client.Update(s.ctx, leftover)
+		}
+	})
+
+	s.deleteClaim(held)
+
+	_, err := s.getInterface("slot-0-eth0")
+	require.True(t, apierrors.IsNotFound(err), "Delete removes the interface")
+
+	releasing := s.getClaim("slot-0-eth0")
+	for _, conditionType := range []string{
+		networkingv1alpha.NetworkInterfaceClaimPrepared,
+		networkingv1alpha.NetworkInterfaceClaimReady,
+	} {
+		condition := conditionOf(releasing, conditionType)
+		require.NotNil(t, condition, conditionType)
+		require.Equal(t, metav1.ConditionFalse, condition.Status, conditionType)
+		require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonReleasing, condition.Reason, conditionType)
+	}
+}
+
 // IPAM reports a duplicate name as a 500. Treating that as a hard failure
 // rejects the claim forever, because every retry asks for the same name.
 func TestAllocationResumesAfterTheInterfaceFailsToLand(t *testing.T) {

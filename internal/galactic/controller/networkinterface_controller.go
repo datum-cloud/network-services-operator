@@ -69,7 +69,7 @@ const (
 	consumerLabelPrefix = "compute.datumapis.com/"
 )
 
-// maxIdentifierAttempts bounds the retry loop that draws an unused identifier.
+// maxIdentifierAttempts bounds the probe for an unused identifier.
 const maxIdentifierAttempts = 100
 
 // NetworkInterfaceReconciler realizes a fulfilled NetworkInterface claim on the
@@ -287,7 +287,7 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 		return nil, fmt.Errorf("get NetworkAttachmentDefinition %s: %w", nad.Name, err)
 	}
 	if attachmentID == "" {
-		allocated, err := r.allocateAttachmentIdentifier(ctx, vpc.Status.VPC)
+		allocated, err := r.allocateAttachmentIdentifier(ctx, vpc.Status.VPC, client.ObjectKeyFromObject(nad))
 		if err != nil {
 			return nil, err
 		}
@@ -382,23 +382,31 @@ func interfaceAddresses(networkInterface *networkingv1alpha.NetworkInterface) []
 	return addresses
 }
 
-// allocateAttachmentIdentifier draws a random identifier unused within the VPC.
-// Random rather than lowest-free, so a freed identifier is not immediately
-// reissued while its BGPAdvertisement is still being garbage collected.
-func (r *NetworkInterfaceReconciler) allocateAttachmentIdentifier(ctx context.Context, vpc string) (string, error) {
+// allocateAttachmentIdentifier derives an identifier unused within the VPC from
+// the NAD's namespace and name. A recreated interface normally derives the
+// identifier it held before, which a running workload may still be attached
+// under, so its own previous NAD awaiting garbage collection is not a collision. Other interfaces
+// land on unrelated identifiers, so a freed one is not handed to a different
+// workload while its BGPAdvertisement is still being garbage collected.
+func (r *NetworkInterfaceReconciler) allocateAttachmentIdentifier(
+	ctx context.Context, vpc string, key types.NamespacedName,
+) (string, error) {
 	used := make(map[string]struct{})
 	var nads nadv1.NetworkAttachmentDefinitionList
 	if err := r.APIReader.List(ctx, &nads, client.MatchingLabels{LabelVPC: vpc}); err != nil {
 		return "", fmt.Errorf("list NetworkAttachmentDefinitions for VPC %s: %w", vpc, err)
 	}
 	for _, nad := range nads.Items {
+		if nad.Namespace == key.Namespace && nad.Name == key.Name {
+			continue
+		}
 		if id := nad.Labels[LabelVPCAttachment]; id != "" {
 			used[id] = struct{}{}
 		}
 	}
 
-	for range maxIdentifierAttempts {
-		candidate, err := identifier.RandomVPCAttachmentBase62()
+	for attempt := range maxIdentifierAttempts {
+		candidate, err := identifier.VPCAttachmentBase62For(key.String(), attempt)
 		if err != nil {
 			return "", err
 		}
@@ -493,6 +501,9 @@ func (r *NetworkInterfaceReconciler) markPrepared(
 	key := types.NamespacedName{Namespace: networkInterface.Namespace, Name: networkInterface.Spec.ClaimRef.Name}
 	if err := r.Get(ctx, key, &claim); err != nil {
 		return client.IgnoreNotFound(err)
+	}
+	if !claim.DeletionTimestamp.IsZero() {
+		return nil
 	}
 	claimCondition := condition
 	claimCondition.ObservedGeneration = claim.Generation

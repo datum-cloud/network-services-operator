@@ -1442,6 +1442,10 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		return nil
 	}
 
+	if err := markReleasing(ctx, cl, claim); err != nil {
+		return err
+	}
+
 	var iface networkingv1alpha.NetworkInterface
 	interfaceKey := client.ObjectKey{Namespace: claim.Namespace, Name: interfaceNameForClaim(claim)}
 	err := cl.Get(ctx, interfaceKey, &iface)
@@ -1503,6 +1507,32 @@ func (r *NetworkInterfaceClaimReconciler) release(
 	controllerutil.RemoveFinalizer(claim, networkInterfaceClaimFinalizer)
 	if err := cl.Update(ctx, claim); err != nil {
 		return fmt.Errorf("failed removing finalizer: %w", err)
+	}
+	return nil
+}
+
+// markReleasing withdraws Prepared and Ready from a claim being deleted, before
+// its interface is unbound or deleted, so no consumer gates a workload on an
+// interface that is about to change underneath it.
+func markReleasing(ctx context.Context, cl client.Client, claim *networkingv1alpha.NetworkInterfaceClaim) error {
+	changed := false
+	for _, conditionType := range []string{
+		networkingv1alpha.NetworkInterfaceClaimPrepared,
+		networkingv1alpha.NetworkInterfaceClaimReady,
+	} {
+		changed = apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			Reason:             networkingv1alpha.NetworkInterfaceClaimReasonReleasing,
+			ObservedGeneration: claim.Generation,
+			Message:            "The claim is being deleted and its interface released",
+		}) || changed
+	}
+	if !changed {
+		return nil
+	}
+	if err := cl.Status().Update(ctx, claim); err != nil {
+		return fmt.Errorf("failed marking claim as releasing: %w", err)
 	}
 	return nil
 }

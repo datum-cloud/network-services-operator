@@ -68,6 +68,10 @@ const (
 	// location is addressed from is being deleted, for the same reason.
 	NetworkInterfaceClaimReasonSubnetTerminating = "SubnetTerminating"
 
+	// NetworkInterfaceClaimReasonReleasing means the claim is being deleted and
+	// its interface released, so it no longer offers one to a workload.
+	NetworkInterfaceClaimReasonReleasing = "Releasing"
+
 	// NetworkInterfaceClaimReasonProjectNamespaceNotFound means the namespace
 	// addresses are allocated in does not exist in the project's control plane.
 	// The platform provisions it with the project, so its absence says the

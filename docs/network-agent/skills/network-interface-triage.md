@@ -43,4 +43,5 @@ Quote the reason and the message, and say it is Datum's.
 
 `NetworkNotAvailableInLocation` (the network has not reached the location yet —
 see `network-location-triage`), `NetworkContextTerminating`,
-`SubnetTerminating`, and `Pending` on any step. Normal unless stalled.
+`SubnetTerminating`, `Releasing` (the instance is being replaced or removed),
+and `Pending` on any step. Normal unless stalled.

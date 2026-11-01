@@ -437,6 +437,13 @@ func claimRefusals() []ReasonInfo {
 			Skill:            SkillNetworkInLocation,
 			ExpectedDuration: windowRemoval,
 		}},
+		{networkingv1alpha.NetworkInterfaceClaimReasonReleasing, ReasonInfo{
+			Actionability: ActionabilityTransient, Scope: ScopeInstance,
+			Explanation:      "This instance's network interface is being released because the instance is being replaced or removed. Its replacement gets the interface once the release finishes.",
+			Remediation:      remediationWait,
+			Skill:            SkillInterfaceTriage,
+			ExpectedDuration: windowControlPlane,
+		}},
 		{networkingv1alpha.NetworkInterfaceClaimReasonProjectNamespaceNotFound, ReasonInfo{
 			Actionability: ActionabilityPlatform, Scope: ScopeNetwork,
 			Explanation: "Your project is missing something Datum sets up when the project is created, so no instance can be given an address.",

@@ -5,6 +5,7 @@ import { StatTile, StatTileGrid } from './stat-tiles';
 import { ServicesSkeleton } from './skeletons';
 import { ErrorOrRestrictedState, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
+import { TableSearch } from './table-search';
 import { useDeleteNetworkService, useNetworkServices } from '../lib/api';
 import {
   networkServiceMembersResolvedStatusToLabel,
@@ -162,7 +163,7 @@ function ServiceTable({
         searchFn={matchesSearch}
         className="space-y-4">
         <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <DataTable.Search placeholder="Search services" className="w-full sm:max-w-xs" />
+          <TableSearch placeholder="Search services" />
           <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
         </div>
         <p className="text-muted-foreground text-xs">

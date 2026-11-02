@@ -2,6 +2,7 @@ import { ConfirmDeleteDialog } from './confirm-delete-dialog';
 import { EnableIPv6Dialog } from './enable-ipv6-dialog';
 import { SortableHeader } from './sortable-header';
 import { StatusBadge } from './status-badge';
+import { TableSearch } from './table-search';
 import { useDeleteNetwork } from '../lib/api';
 import { readyStatusToBadgeType, readyStatusToLabel, type Network } from '../schema';
 import {
@@ -13,7 +14,7 @@ import { DateTime } from '@datum-cloud/datum-ui/date-time';
 import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import type { ColumnDef } from '@tanstack/react-table';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 
 type NetworkColumn = ColumnDef<DataTableFeatures, Network, unknown>;
@@ -55,9 +56,11 @@ function Muted({ children, mono }: { children: React.ReactNode; mono?: boolean }
 export function NetworkTable({
   networks,
   projectId,
+  actions,
 }: {
   networks: Network[];
   projectId?: string;
+  actions?: ReactNode;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -175,8 +178,15 @@ export function NetworkTable({
         defaultSort={[{ id: 'name', desc: false }]}
         searchFn={matchesSearch}
         className="space-y-6">
-        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <DataTable.Search placeholder="Search networks" className="w-full sm:max-w-xs" />
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="flex w-full min-w-0 flex-1 items-center gap-3 sm:w-auto">
+            <TableSearch placeholder="Search networks" />
+          </div>
+          {actions && (
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
+              {actions}
+            </div>
+          )}
         </div>
         <div
           className="overflow-hidden rounded-lg border"

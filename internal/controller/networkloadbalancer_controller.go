@@ -11,8 +11,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -20,10 +20,16 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -36,8 +42,9 @@ import (
 const (
 	networkLoadBalancerFinalizer  = "networking.datumapis.com/networkloadbalancer-release"
 	networkLoadBalancerOwnerLabel = "networking.datumapis.com/network-load-balancer-uid"
-	networkLoadBalancerRetry      = time.Minute
 )
+
+var errAwaitingIPAM = errors.New("waiting for IPAM")
 
 type NetworkLoadBalancerReconciler struct {
 	IPAM            IPAMClientFactory
@@ -128,6 +135,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 	wanted := make(map[string]bool, len(requests))
 	status := make([]networkingv1alpha.NetworkLoadBalancerEndpointStatus, 0, len(requests)+len(lb.Status.Endpoints))
 	allAllocated := len(requests) > 0
+	awaitingIPAM := false
 	var firstFailure string
 	for _, request := range requests {
 		claimName := loadBalancerClaimName(&lb, request)
@@ -188,6 +196,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		entry.ClaimRef = claimRef
 		if claimErr != nil {
 			allAllocated = false
+			awaitingIPAM = true
 			reason := string(classifyAllocationFailure(claimErr))
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, reason, claimErr.Error())
@@ -196,6 +205,7 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 			}
 		} else if address == "" {
 			allAllocated = false
+			awaitingIPAM = true
 			setLoadBalancerCondition(&entry.Conditions, lb.Generation, networkingv1alpha.NetworkLoadBalancerAllocated,
 				metav1.ConditionFalse, "AllocationPending", "IPAM has not assigned an address yet")
 		} else {
@@ -247,13 +257,28 @@ func (r *NetworkLoadBalancerReconciler) reconcile(ctx context.Context, cl client
 		}
 	}
 
-	if !allAllocated {
-		if firstFailure == "" {
-			firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
-		}
-		return r.report(ctx, cl, &lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+	return r.reportAllocation(ctx, cl, &lb, status, requests, allAllocated, awaitingIPAM, firstFailure)
+}
+
+// reportAllocation records the allocation outcome. IPAM has no watchable
+// event for a refused or unanswered claim, so only that case returns an error
+// for the work queue to retry with backoff.
+func (r *NetworkLoadBalancerReconciler) reportAllocation(
+	ctx context.Context, cl client.Client, lb *networkingv1alpha.NetworkLoadBalancer,
+	status []networkingv1alpha.NetworkLoadBalancerEndpointStatus, requests []loadBalancerAddressRequest,
+	allAllocated, awaitingIPAM bool, firstFailure string,
+) (ctrl.Result, error) {
+	if allAllocated {
+		return r.report(ctx, cl, lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
 	}
-	return r.report(ctx, cl, &lb, status, requests, metav1.ConditionTrue, "Allocated", "All requested public addresses are held")
+	if firstFailure == "" {
+		firstFailure = "One or more requested addresses are pending or awaiting withdrawal"
+	}
+	result, err := r.report(ctx, cl, lb, status, requests, metav1.ConditionFalse, "AllocationPending", firstFailure)
+	if err == nil && awaitingIPAM {
+		err = fmt.Errorf("%w: %s", errAwaitingIPAM, firstFailure)
+	}
+	return result, err
 }
 
 func countAddressEndpoints(requests []loadBalancerAddressRequest, prior []networkingv1alpha.NetworkLoadBalancerEndpointStatus) int {
@@ -653,12 +678,12 @@ func (r *NetworkLoadBalancerReconciler) release(
 		}
 	}
 	if !equality.Semantic.DeepEqual(before.Status, lb.Status) {
-		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		return ctrl.Result{}, cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	}
 	for _, endpoint := range lb.Status.Endpoints {
 		for _, address := range endpoint.Addresses {
 			if addressPendingWithdrawal(address) {
-				return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+				return ctrl.Result{}, nil
 			}
 		}
 	}
@@ -720,7 +745,7 @@ func (r *NetworkLoadBalancerReconciler) report(
 		}
 	}
 	if equality.Semantic.DeepEqual(before.Status, lb.Status) {
-		return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+		return ctrl.Result{}, nil
 	}
 	// Location controllers also write nested address conditions. A version
 	// precondition prevents this allocation pass from overwriting their newer
@@ -728,9 +753,7 @@ func (r *NetworkLoadBalancerReconciler) report(
 	if err := cl.Status().Patch(ctx, lb, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update load balancer status: %w", err)
 	}
-	// Periodic reconciliation notices IPAM completion and changes to the
-	// dynamically selected "All" location set without a cross-cluster watch.
-	return ctrl.Result{RequeueAfter: networkLoadBalancerRetry}, nil
+	return ctrl.Result{}, nil
 }
 
 func addressIdentityChanged(before, after []networkingv1alpha.NetworkLoadBalancerEndpointStatus) bool {
@@ -763,10 +786,115 @@ func setLoadBalancerCondition(
 
 func (r *NetworkLoadBalancerReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	watch := func(mapper func(context.Context, client.Client, client.Object) []reconcile.Request) func(multicluster.ClusterName, cluster.Cluster) mchandler.EventHandler {
+		return func(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+			return mchandler.ForCluster(handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				return mapper(ctx, cl.GetClient(), obj)
+			}), clusterName)
+		}
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkLoadBalancer{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		Watches(&networkingv1alpha.NetworkLoadBalancerRoute{}, watch(loadBalancersForRouteEvent)).
+		Watches(&networkingv1alpha.NetworkService{}, watch(loadBalancersForNetworkServiceEvent)).
+		Watches(&networkingv1alpha.NetworkInterface{}, watch(loadBalancersForInterfaceEvent)).
+		Watches(&networkingv1alpha.Network{}, watch(loadBalancersForNetworkEvent)).
+		Watches(&corev1.Namespace{}, watch(loadBalancersForNamespaceEvent)).
+		Watches(&locationsv1alpha1.Location{}, watch(loadBalancersForLocationEvent)).
 		Named("networkloadbalancer").
 		Complete(r)
+}
+
+func loadBalancersForRouteEvent(_ context.Context, _ client.Client, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*networkingv1alpha.NetworkLoadBalancerRoute)
+	if !ok {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(route.Spec.ParentRefs))
+	for _, ref := range route.Spec.ParentRefs {
+		namespace := ref.Namespace
+		if namespace == "" {
+			namespace = route.Namespace
+		}
+		request := reconcile.Request{NamespacedName: client.ObjectKey{Namespace: namespace, Name: ref.Name}}
+		if !slices.Contains(requests, request) {
+			requests = append(requests, request)
+		}
+	}
+	return requests
+}
+
+func loadBalancersForNetworkServiceEvent(ctx context.Context, cl client.Client, obj client.Object) []reconcile.Request {
+	var routes networkingv1alpha.NetworkLoadBalancerRouteList
+	if err := cl.List(ctx, &routes); err != nil {
+		log.FromContext(ctx).Error(err, "list routes for network service event")
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range routes.Items {
+		route := &routes.Items[i]
+		if !slices.ContainsFunc(route.Spec.Backends, func(backend networkingv1alpha.NetworkLoadBalancerRouteBackend) bool {
+			namespace := backend.NetworkService.Namespace
+			if namespace == "" {
+				namespace = route.Namespace
+			}
+			return backend.NetworkService.Name == obj.GetName() && namespace == obj.GetNamespace()
+		}) {
+			continue
+		}
+		for _, request := range loadBalancersForRouteEvent(ctx, cl, route) {
+			if !slices.Contains(requests, request) {
+				requests = append(requests, request)
+			}
+		}
+	}
+	return requests
+}
+
+func loadBalancersForInterfaceEvent(ctx context.Context, cl client.Client, obj client.Object) []reconcile.Request {
+	iface, ok := obj.(*networkingv1alpha.NetworkInterface)
+	if !ok {
+		return nil
+	}
+	return loadBalancersMatching(ctx, cl, []client.ListOption{client.InNamespace(iface.Namespace)},
+		func(lb *networkingv1alpha.NetworkLoadBalancer) bool {
+			return lb.Spec.NetworkRef.Name == iface.Spec.Network.Name
+		})
+}
+
+func loadBalancersForNetworkEvent(ctx context.Context, cl client.Client, obj client.Object) []reconcile.Request {
+	return loadBalancersMatching(ctx, cl, []client.ListOption{client.InNamespace(obj.GetNamespace())},
+		func(lb *networkingv1alpha.NetworkLoadBalancer) bool { return lb.Spec.NetworkRef.Name == obj.GetName() })
+}
+
+func loadBalancersForNamespaceEvent(ctx context.Context, cl client.Client, obj client.Object) []reconcile.Request {
+	return loadBalancersMatching(ctx, cl, []client.ListOption{client.InNamespace(obj.GetName())},
+		func(*networkingv1alpha.NetworkLoadBalancer) bool { return true })
+}
+
+func loadBalancersForLocationEvent(ctx context.Context, cl client.Client, _ client.Object) []reconcile.Request {
+	return loadBalancersMatching(ctx, cl, nil, func(lb *networkingv1alpha.NetworkLoadBalancer) bool {
+		return slices.ContainsFunc(lb.Spec.Exposure.Addresses, func(request networkingv1alpha.NetworkLoadBalancerAddressRequest) bool {
+			return request.Locations != nil && request.Locations.From == networkingv1alpha.NetworkLoadBalancerLocationSourceAll
+		})
+	})
+}
+
+func loadBalancersMatching(
+	ctx context.Context, cl client.Client, opts []client.ListOption, include func(*networkingv1alpha.NetworkLoadBalancer) bool,
+) []reconcile.Request {
+	var lbs networkingv1alpha.NetworkLoadBalancerList
+	if err := cl.List(ctx, &lbs, opts...); err != nil {
+		log.FromContext(ctx).Error(err, "list load balancers for dependency event")
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range lbs.Items {
+		if include(&lbs.Items[i]) {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&lbs.Items[i])})
+		}
+	}
+	return requests
 }
 
 func addressRequestUsesCoordination(lb *networkingv1alpha.NetworkLoadBalancer, request string) bool {

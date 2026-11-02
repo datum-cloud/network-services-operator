@@ -118,7 +118,7 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 				require.NoError(t, s.client.Update(ctx, &lb))
 			}
 			_, err := s.control.reconcile(ctx, s.client, key)
-			require.NoError(t, err)
+			require.NoError(t, ignoreAwaitingIPAM(err))
 			require.NoError(t, s.ipam.Get(ctx, client.ObjectKey{Namespace: old.ClaimRef.Namespace, Name: old.ClaimRef.Name}, &ipamv1alpha1.IPClaim{}))
 			require.NoError(t, s.client.Get(ctx, key, &lb))
 			for _, endpoint := range lb.Status.Endpoints {
@@ -177,7 +177,7 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 			require.NoError(t, cell.Update(ctx, copy))
 			reconcileNLBProgramming(t, adapter, copy)
 			_, err = s.control.reconcile(ctx, s.client, key)
-			require.NoError(t, err)
+			require.NoError(t, ignoreAwaitingIPAM(err))
 			require.NoError(t, s.ipam.Get(ctx, client.ObjectKey{Namespace: old.ClaimRef.Namespace, Name: old.ClaimRef.Name}, &ipamv1alpha1.IPClaim{}))
 			require.NoError(t, cell.Get(ctx, anchorKey, &anchor))
 			require.False(t, anchor.DeletionTimestamp.IsZero())
@@ -192,7 +192,7 @@ func TestNLBPublicationHoldClosesFirstStatusRace(t *testing.T) {
 			_, err = publisher.reconcileParentIntents(ctx, testProject, s.client, key)
 			require.NoError(t, err)
 			_, err = s.control.reconcile(ctx, s.client, key)
-			require.NoError(t, err)
+			require.NoError(t, ignoreAwaitingIPAM(err))
 			require.True(t, apierrors.IsNotFound(s.ipam.Get(ctx, client.ObjectKey{Namespace: old.ClaimRef.Namespace, Name: old.ClaimRef.Name}, &ipamv1alpha1.IPClaim{})))
 		})
 	}

@@ -721,8 +721,9 @@ A day is a retention policy rather than a race window. A location keeps the addr
 was given until the period expires, so a project that redeploys neither loses the network in
 that location nor is addressed from a different prefix afterwards — rebuilding the presence
 would draw a new one. The cost is that a location a project has genuinely finished with holds
-its prefix for a day. Deleting the Network itself does not wait out the period: its contexts
-are marked at once, and each goes once its location is empty.
+its prefix for a day. Deleting the Network itself does not wait out the period. Its contexts
+are marked at once where a hub binding declares them, and at the presence's next resync where
+none does. Each goes once its location is empty.
 
 **The location's interfaces decide when the presence ends.** Each location publishes its
 interfaces to the hub (the copies a consumer is shown), labelled with the location. The

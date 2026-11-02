@@ -13,7 +13,11 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	"go.miloapis.com/locations/pkg/locationidentity"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/config"
 )
 
 func (s *scenario) keepInterface(name string) {
@@ -37,6 +41,106 @@ func (s *scenario) markNetworkDeleting() {
 	require.NoError(s.t, err)
 	networkContext.Spec.NetworkDeleting = true
 	require.NoError(s.t, s.client.Update(s.ctx, networkContext))
+}
+
+// servedByDelivery leaves the cell's location unconfigured and delivers it, as
+// every staging and production cell learns its own.
+func (s *scenario) servedByDelivery() *locationsv1alpha1.ServingLocation {
+	s.t.Helper()
+	s.reconciler.Location = config.LocationConfig{}
+	served := &locationsv1alpha1.ServingLocation{}
+	served.Name = testLocationName
+	served.Spec.Topology = map[string]string{"topology.datum.net/city-code": "DFW"}
+	require.NoError(s.t, s.client.Create(s.ctx, served))
+	return served
+}
+
+func TestACellThatLearnsItsLocationGivesUpAKeptInterface(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	s.servedByDelivery()
+	s.keepInterface("kept")
+	s.markNetworkDeleting()
+
+	s.reconcileInterface("kept")
+	s.reconcileInterface("kept")
+
+	_, err := s.getInterface("kept")
+	require.True(t, apierrors.IsNotFound(err), "the kept interface goes with its network: %v", err)
+	require.Equal(t, []string{"kept-f-ipv6"}, s.ipam.deleted()[testProject])
+}
+
+// A cell that has lost its location cannot name the context it would read. It
+// returns the error, whose retry is what picks the interface up again once the
+// location is delivered.
+func TestAKeptInterfaceWaitsUntilItsLocationResolves(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	served := s.servedByDelivery()
+	s.keepInterface("kept")
+	s.markNetworkDeleting()
+	require.NoError(t, s.client.Delete(s.ctx, served))
+
+	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}
+	err := interfaces.reconcileInterface(s.ctx, s.client, client.ObjectKey{Namespace: s.namespace, Name: "kept"})
+
+	var unresolved *locationidentity.LocationUnresolved
+	require.ErrorAs(t, err, &unresolved)
+	kept, err := s.getInterface("kept")
+	require.NoError(t, err)
+	require.True(t, kept.DeletionTimestamp.IsZero(), "nothing goes on a location the cell cannot name")
+
+	s.servedByDelivery()
+	s.reconcileInterface("kept")
+	s.reconcileInterface("kept")
+	_, err = s.getInterface("kept")
+	require.True(t, apierrors.IsNotFound(err), "the retry finds the mark once the location resolves: %v", err)
+}
+
+func TestAKeptInterfaceWhoseContextIsGoneStays(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	s.servedByDelivery()
+	s.keepInterface("kept")
+	networkContext, err := s.getNetworkContext()
+	require.NoError(t, err)
+	networkContext.Finalizers = nil
+	require.NoError(t, s.client.Update(s.ctx, networkContext))
+	require.NoError(t, s.client.Delete(s.ctx, networkContext))
+
+	s.reconcileInterface("kept")
+
+	kept, err := s.getInterface("kept")
+	require.NoError(t, err)
+	require.True(t, kept.DeletionTimestamp.IsZero(), "no context, no mark")
+}
+
+func TestAnInterfaceReachesItsHoldAtTheCellsLocation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	require.NoError(t, locationsv1alpha1.AddToScheme(scheme))
+	iface := &networkingv1alpha.NetworkInterface{}
+	iface.Namespace, iface.Spec.Network.Name = "project", "net"
+	served := &locationsv1alpha1.ServingLocation{}
+	served.Name = "delivered"
+
+	for _, tc := range []struct {
+		name       string
+		configured string
+		delivered  []client.Object
+		want       []reconcile.Request
+	}{
+		{name: "delivered", delivered: []client.Object{served},
+			want: []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: "project", Name: "net-delivered"}}}},
+		{name: "configured", configured: "configured",
+			want: []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: "project", Name: "net-configured"}}}},
+		{name: "neither"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := &NetworkContextHoldReconciler{
+				Location:    config.LocationConfig{Name: tc.configured},
+				localReader: fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(tc.delivered...).Build(),
+			}
+			require.Equal(t, tc.want, hold.contextOfInterface(context.Background(), iface))
+		})
+	}
 }
 
 func TestANetworksDeletionGivesUpItsKeptInterfaces(t *testing.T) {

@@ -826,6 +826,27 @@ func (s *presenceScenario) keepContext() {
 	require.NoError(s.t, s.hub.Update(s.ctx, networkContext))
 }
 
+// A context made for an earlier network of the same name is not marked when the
+// network that now holds the name is deleted. Its kept interfaces belong to the
+// earlier network, and the mark cannot be taken back.
+func TestNetworkPresenceMarksOnlyTheContextOfTheNetworkBeingDeleted(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.createBinding("consumer-a")
+	s.reconcile()
+	s.keepContext()
+	networkContext, ok := s.networkContext()
+	require.True(t, ok)
+	networkContext.Labels[networkingv1alpha.NetworkUIDLabel] = "uid-of-an-earlier-network"
+	require.NoError(t, s.hub.Update(s.ctx, networkContext))
+
+	s.deleteNetwork()
+	s.reconcile()
+
+	networkContext, ok = s.networkContext()
+	require.True(t, ok)
+	require.False(t, networkContext.Spec.NetworkDeleting, "only the deleting network's own contexts are marked")
+}
+
 // A network being deleted takes its presences with it whatever still binds
 // them, and each location reads that from the context it already has.
 func TestNetworkPresenceMarksTheContextOfADeletingNetwork(t *testing.T) {

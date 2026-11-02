@@ -1,0 +1,7 @@
+apiVersion: locations.miloapis.com/v1alpha1
+kind: ServingLocation
+metadata:
+  name: us-central-1
+spec:
+  topology:
+    topology.datum.net/city-code: DFW

@@ -21,8 +21,6 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
-
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 )
@@ -114,10 +112,15 @@ func (r *NetworkInterfaceReconciler) releaseWithItsNetwork(
 		return nil
 	}
 
+	location, err := r.claims.location(ctx)
+	if err != nil {
+		return err
+	}
+
 	var networkContext networkingv1alpha.NetworkContext
 	key := client.ObjectKey{
 		Namespace: iface.Namespace,
-		Name:      networkContextName(iface.Spec.Network.Name, locationsv1alpha1.LocationReference{Name: r.Location.Name}),
+		Name:      networkContextName(iface.Spec.Network.Name, location),
 	}
 	if err := cl.Get(ctx, key, &networkContext); err != nil {
 		return client.IgnoreNotFound(err)

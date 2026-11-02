@@ -7,12 +7,11 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
-
-	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -29,7 +28,8 @@ import (
 type NetworkContextHoldReconciler struct {
 	Location config.LocationConfig
 
-	mgr mcmanager.Manager
+	mgr         mcmanager.Manager
+	localReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;update;patch
@@ -47,26 +47,32 @@ func (r *NetworkContextHoldReconciler) Reconcile(ctx context.Context, req mcreco
 
 func (r *NetworkContextHoldReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
-
-	location := locationsv1alpha1.LocationReference{
-		Name: r.Location.Name,
-	}
+	r.localReader = mgr.GetLocalManager().GetClient()
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		// An interface going away is what can release the hold, and the context
 		// itself gets no event for it.
-		Watches(&networkingv1alpha.NetworkInterface{}, mchandler.EnqueueRequestsFromMapFunc(
-			func(_ context.Context, obj client.Object) []ctrl.Request {
-				iface, ok := obj.(*networkingv1alpha.NetworkInterface)
-				if !ok || iface.Spec.Network.Name == "" {
-					return nil
-				}
-				return []ctrl.Request{{NamespacedName: client.ObjectKey{
-					Namespace: iface.Namespace,
-					Name:      networkContextName(iface.Spec.Network.Name, location),
-				}}}
-			})).
+		Watches(&networkingv1alpha.NetworkInterface{}, mchandler.EnqueueRequestsFromMapFunc(r.contextOfInterface)).
 		Named("networkcontexthold").
 		Complete(r)
+}
+
+// contextOfInterface maps an interface onto its network's context at the
+// location this cell serves. An event that arrives while the cell cannot name
+// its location is dropped; the context's own events still reach the hold.
+func (r *NetworkContextHoldReconciler) contextOfInterface(ctx context.Context, obj client.Object) []ctrl.Request {
+	iface, ok := obj.(*networkingv1alpha.NetworkInterface)
+	if !ok || iface.Spec.Network.Name == "" {
+		return nil
+	}
+	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed naming the context of an interface", "interface", iface.Name)
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: client.ObjectKey{
+		Namespace: iface.Namespace,
+		Name:      networkContextName(iface.Spec.Network.Name, identity.Reference),
+	}}}
 }

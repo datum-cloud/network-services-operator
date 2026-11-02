@@ -20,8 +20,10 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
-func (s *scenario) keepInterface(name string) {
+// keepInterface leaves an interface named kept with no claim, holding its addresses.
+func (s *scenario) keepInterface() {
 	s.t.Helper()
+	const name = "kept"
 	claim := s.createClaim(name, networkingv1alpha.NetworkInterfaceClaimSpec{
 		InterfaceName: "eth0",
 		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
@@ -58,7 +60,7 @@ func (s *scenario) servedByDelivery() *locationsv1alpha1.ServingLocation {
 func TestACellThatLearnsItsLocationGivesUpAKeptInterface(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 	s.servedByDelivery()
-	s.keepInterface("kept")
+	s.keepInterface()
 	s.markNetworkDeleting()
 
 	s.reconcileInterface("kept")
@@ -75,7 +77,7 @@ func TestACellThatLearnsItsLocationGivesUpAKeptInterface(t *testing.T) {
 func TestAKeptInterfaceWaitsUntilItsLocationResolves(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 	served := s.servedByDelivery()
-	s.keepInterface("kept")
+	s.keepInterface()
 	s.markNetworkDeleting()
 	require.NoError(t, s.client.Delete(s.ctx, served))
 
@@ -98,7 +100,7 @@ func TestAKeptInterfaceWaitsUntilItsLocationResolves(t *testing.T) {
 func TestAKeptInterfaceWhoseContextIsGoneStays(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
 	s.servedByDelivery()
-	s.keepInterface("kept")
+	s.keepInterface()
 	networkContext, err := s.getNetworkContext()
 	require.NoError(t, err)
 	networkContext.Finalizers = nil
@@ -145,7 +147,7 @@ func TestAnInterfaceReachesItsHoldAtTheCellsLocation(t *testing.T) {
 
 func TestANetworksDeletionGivesUpItsKeptInterfaces(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
-	s.keepInterface("kept")
+	s.keepInterface()
 	s.markNetworkDeleting()
 
 	s.reconcileInterface("kept")
@@ -159,7 +161,7 @@ func TestANetworksDeletionGivesUpItsKeptInterfaces(t *testing.T) {
 
 func TestALocationTheNetworkLeavesKeepsItsKeptInterfaces(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
-	s.keepInterface("kept")
+	s.keepInterface()
 	networkContext, err := s.getNetworkContext()
 	require.NoError(t, err)
 	require.NoError(t, s.client.Delete(s.ctx, networkContext))
@@ -213,7 +215,7 @@ func (c *bindingClient) Delete(ctx context.Context, obj client.Object, opts ...c
 
 func TestAClaimThatBindsTheKeptInterfaceFirstKeepsIt(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
-	s.keepInterface("kept")
+	s.keepInterface()
 	s.markNetworkDeleting()
 
 	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}

@@ -1924,11 +1924,11 @@ func TestRegistration_NameserverLookupError_KeepsLastKnownNameservers(t *testing
 	fakeReg := &fakeRegistryClient{
 		lookupDomain: func(ctx context.Context, domain string, opts registrydata.LookupOptions) (*registrydata.DomainResult, error) {
 			return &registrydata.DomainResult{
-					Registration: &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"},
-				}, &registrydata.NameserverLookupError{
-					Name: domain,
-					Err:  &net.DNSError{Err: "server misbehaving", IsTemporary: true},
-				}
+				Registration: &networkingv1alpha.Registration{Domain: "example.com", Source: "rdap"},
+			}, &registrydata.NameserverLookupError{
+				Name: domain,
+				Err:  &net.DNSError{Err: "server misbehaving", IsTemporary: true},
+			}
 		},
 	}
 

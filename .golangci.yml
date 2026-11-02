@@ -42,6 +42,13 @@ linters:
       - linters:
           - prealloc
         path: internal/validation
+      - linters:
+          - staticcheck
+        text: 'SA1019: \(sigs\.k8s\.io/controller-runtime\.Result\)\.Requeue is deprecated'
+      - linters:
+          - staticcheck
+        path: _test\.go
+        text: 'SA1019: \(github\.com/envoyproxy/gateway/api/v1alpha1\.'
     paths:
       - third_party$
       - builtin$

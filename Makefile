@@ -263,10 +263,10 @@ GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
-CONTROLLER_TOOLS_VERSION ?= v0.16.4
+CONTROLLER_TOOLS_VERSION ?= v0.17.3
 DEFAULTER_GEN_VERSION ?= v0.32.3
 ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # renovate: datasource=go depName=github.com/cert-manager/cert-manager
 CERTMANAGER_VERSION ?= 1.17.1

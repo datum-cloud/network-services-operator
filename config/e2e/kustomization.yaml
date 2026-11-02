@@ -42,8 +42,6 @@ patches:
             kubeconfigPath: /etc/ipam-cluster/kubeconfig
           federation:
             kubeconfigPath: /etc/karmada-hub/kubeconfig
-          location:
-            name: us-central-1
   - target:
       kind: Deployment
       name: cell-controller-manager

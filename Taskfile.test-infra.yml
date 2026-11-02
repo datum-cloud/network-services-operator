@@ -426,6 +426,9 @@ tasks:
       - echo "📜 installing locations CRDs (upstream + downstream)"
       - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.UPSTREAM_CTX}} apply -f -'
       - '{{.KUSTOMIZE}} build config/tools/locations-crds | kubectl --context {{.DOWNSTREAM_CTX}} apply -f -'
+      # The cell learns its location from this, as every staging and production cell does.
+      - kubectl --context {{.UPSTREAM_CTX}} wait --for condition=established --timeout=60s crd/servinglocations.locations.miloapis.com
+      - kubectl --context {{.UPSTREAM_CTX}} apply -f config/e2e/serving-location.yaml
 
   external-dns:
     desc: "Install external-dns CRDs (DNSEndpoint) on the downstream cluster."

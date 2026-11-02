@@ -230,7 +230,7 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 		// The copies are watched, so the last one going brings this back.
 		log.FromContext(ctx).Info("network presence ends once its location gives up the network's interfaces",
 			"hub namespace", req.Namespace, "name", networkContext.Name, "interfaces", held)
-		return ctrl.Result{}, nil
+		return r.waiting(0), nil
 	}
 
 	log.FromContext(ctx).Info("network presence ends, removing it",
@@ -355,14 +355,28 @@ func (r *NetworkPresenceReconciler) ends(
 		return ctrl.Result{}, false, err
 	}
 	if declared {
-		return ctrl.Result{}, false, r.reclaim(ctx, projectClient, networkContext)
+		return r.waiting(0), false, r.reclaim(ctx, projectClient, networkContext)
 	}
 
 	remaining, err := r.grace(ctx, projectClient, networkContext)
 	if err != nil {
 		return ctrl.Result{}, false, err
 	}
-	return ctrl.Result{RequeueAfter: remaining}, remaining == 0, nil
+	if remaining > 0 {
+		return r.waiting(remaining), false, nil
+	}
+	return ctrl.Result{}, true, nil
+}
+
+// waiting brings a presence that waits to end back after at most the resync.
+// The sync signals a change on the hub bindings declaring a presence, and one
+// that waits to end may have none, so the resync is how the network's deletion
+// reaches it. A zero wait has no end of its own.
+func (r *NetworkPresenceReconciler) waiting(wait time.Duration) ctrl.Result {
+	if r.ResyncPeriod > 0 && (wait == 0 || wait > r.ResyncPeriod) {
+		wait = r.ResyncPeriod
+	}
+	return ctrl.Result{RequeueAfter: wait}
 }
 
 // networkDeleting reports whether the network a context names is being deleted.

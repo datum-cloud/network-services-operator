@@ -151,7 +151,9 @@ func applyProjection(
 
 // writeProjection converges a copy onto what the source says. The copy is
 // overwritten in full on every pass, so an edit to it never survives and never
-// reaches the source: no controller reads a copy to decide anything.
+// reaches the source: no controller reads a copy to decide anything about its
+// interface. The presence controller reads only whether a location still
+// publishes any for a network.
 //
 // One controller writes each copy's labels, spec and status, so it saves them
 // without the copy's version: a merge patch from the stored copy, then one from

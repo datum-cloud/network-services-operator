@@ -21,7 +21,7 @@ func interfaceCommand() *cobra.Command {
 
 Datum creates an interface for each instance. A workload can ask to keep an
 instance's addresses when the instance goes away; the kept interface holds them
-until an instance of the same name comes back.`,
+until an instance of the same name comes back, or until its network is deleted.`,
 	}
 	cmd.AddCommand(interfaceListCommand(), interfaceReleaseCommand())
 	return cmd
@@ -122,5 +122,6 @@ func interfaceReleaseCommand() *cobra.Command {
 
 func runInterfaceRelease(_ *cobra.Command, args []string) error {
 	return util.NewCLIError(util.ExitUnavailable, fmt.Sprintf("network interface %q cannot be released", args[0])).
-		WithFix("a kept interface holds its addresses until an instance of the same name comes back")
+		WithFix("a kept interface holds its addresses until an instance of the same name comes back, " +
+			"or until its network is deleted")
 }

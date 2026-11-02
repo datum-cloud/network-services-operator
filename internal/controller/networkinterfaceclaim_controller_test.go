@@ -2257,6 +2257,27 @@ func TestClaimRefusesATerminatingNetworkContext(t *testing.T) {
 	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonNetworkContextTerminating, condition.Reason)
 }
 
+// A marked context stays live until its location gives up what it holds, so an
+// address allocated against it would hold the network's deletion open.
+func TestClaimRefusesAMarkedNetworkContext(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	s.markNetworkDeleting()
+
+	claim := s.createClaim("marked-context", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName: "eth0",
+		IPFamilies:    []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol},
+		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+
+	require.Zero(t, s.ipam.createdAnywhere(),
+		"nothing is allocated in a network that is being deleted")
+
+	condition := conditionOf(s.getClaim("marked-context"), networkingv1alpha.NetworkInterfaceClaimReady)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonNetworkContextTerminating, condition.Reason)
+}
+
 // The subnet is the range itself, and it can be going while the context it
 // belongs to is not.
 func TestClaimRefusesATerminatingSubnet(t *testing.T) {

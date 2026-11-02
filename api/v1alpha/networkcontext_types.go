@@ -56,6 +56,14 @@ type NetworkContextSpec struct {
 	//
 	// +kubebuilder:validation:Optional
 	Egress *NetworkContextEgress `json:"egress,omitempty"`
+
+	// NetworkDeleting says the Network itself is being deleted, so this location
+	// gives up what it keeps for the network, such as an interface kept after its
+	// instance went. A context removed because the network left this location
+	// does not carry it, and the location keeps those interfaces.
+	//
+	// +kubebuilder:validation:Optional
+	NetworkDeleting bool `json:"networkDeleting,omitempty"`
 }
 
 // NetworkContextEgress is the outbound intent projected onto one location.

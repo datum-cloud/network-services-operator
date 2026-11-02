@@ -167,32 +167,8 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		return ctrl.Result{}, fmt.Errorf("failed fetching network context: %w", err)
 	}
 
-	// A presence being deleted is not a presence. An address allocated against
-	// it lands in a range that is being given back, and the range cannot be given
-	// back while the address is held, so the two pin each other.
-	if !networkContext.DeletionTimestamp.IsZero() {
-		return r.reject(ctx, cl, claim,
-			networkingv1alpha.NetworkInterfaceClaimReasonNetworkContextTerminating,
-			fmt.Sprintf("Network %q is being removed from location %q, so no address can be allocated in it",
-				claim.Spec.Network.Name, location.Name))
-	}
-
-	// A context that states no families is one written before they were carried.
-	// Defaulting here would attach the interface to rules nobody declared.
-	if len(networkContext.Spec.IPFamilies) == 0 {
-		return r.reject(ctx, cl, claim,
-			networkingv1alpha.NetworkInterfaceClaimReasonAddressFamiliesUnknown,
-			fmt.Sprintf("Network context %q states no address families, so what network %q carries in location %q is unknown here",
-				contextKey.Name, claim.Spec.Network.Name, location.Name))
-	}
-
-	for _, family := range claim.Spec.IPFamilies {
-		if !slices.Contains(networkContext.Spec.IPFamilies, family) {
-			return r.reject(ctx, cl, claim,
-				networkingv1alpha.NetworkInterfaceClaimReasonAddressFamilyNotCarried,
-				fmt.Sprintf("Network %q in location %q does not carry address family %s",
-					claim.Spec.Network.Name, location.Name, family))
-		}
+	if reason, message := networkContextRefusal(claim, &networkContext, location); reason != "" {
+		return r.reject(ctx, cl, claim, reason, message)
 	}
 
 	if terminating, err := r.terminatingSubnet(ctx, cl, claim, &networkContext); err != nil {
@@ -244,6 +220,41 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 	}
 
 	return ctrl.Result{}, r.publishClaimStatus(ctx, cl, claim, iface, allocations)
+}
+
+// networkContextRefusal names why the claim cannot be fulfilled against the
+// context, or returns an empty reason when it can.
+func networkContextRefusal(
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	networkContext *networkingv1alpha.NetworkContext,
+	location locationsv1alpha1.LocationReference,
+) (reason, message string) {
+	// A presence being deleted is not a presence. An address allocated against
+	// it lands in a range that is being given back, and the range cannot be given
+	// back while the address is held, so the two pin each other. A marked context
+	// is one too: it stays live only until its location gives up what it holds.
+	if !networkContext.DeletionTimestamp.IsZero() || networkContext.Spec.NetworkDeleting {
+		return networkingv1alpha.NetworkInterfaceClaimReasonNetworkContextTerminating,
+			fmt.Sprintf("Network %q is being removed from location %q, so no address can be allocated in it",
+				claim.Spec.Network.Name, location.Name)
+	}
+
+	// A context that states no families is one written before they were carried.
+	// Defaulting here would attach the interface to rules nobody declared.
+	if len(networkContext.Spec.IPFamilies) == 0 {
+		return networkingv1alpha.NetworkInterfaceClaimReasonAddressFamiliesUnknown,
+			fmt.Sprintf("Network context %q states no address families, so what network %q carries in location %q is unknown here",
+				networkContext.Name, claim.Spec.Network.Name, location.Name)
+	}
+
+	for _, family := range claim.Spec.IPFamilies {
+		if !slices.Contains(networkContext.Spec.IPFamilies, family) {
+			return networkingv1alpha.NetworkInterfaceClaimReasonAddressFamilyNotCarried,
+				fmt.Sprintf("Network %q in location %q does not carry address family %s",
+					claim.Spec.Network.Name, location.Name, family)
+		}
+	}
+	return "", ""
 }
 
 type projectRouting struct {

@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -114,6 +115,7 @@ type NetworkPresenceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -150,6 +152,9 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	defer logger.V(1).Info("reconcile complete")
 
 	refused, err := r.ensure(ctx, req, holders)
+	if errors.Is(err, errNetworkDeleting) {
+		return r.teardown(ctx, req)
+	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -164,6 +169,10 @@ func (r *NetworkPresenceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 const refusedPresenceRetryInterval = time.Minute
+
+// errNetworkDeleting says the network a presence projects is being deleted, so
+// the presence ends rather than being written, whatever still declares it.
+var errNetworkDeleting = errors.New("the network is being deleted")
 
 // holders lists the bindings declaring the presence this request names. The
 // count is a list rather than a stored number, so it cannot drift.
@@ -190,39 +199,123 @@ func (r *NetworkPresenceReconciler) holders(ctx context.Context, req ctrl.Reques
 // replicated copy under the same name and the same labels, and reaping that copy
 // would take the network's rules away from every cell reading them.
 //
-// At the location a local finalizer holds the propagated copy while addresses
-// are still held, so this is prompt in the ordinary case and blocks where it
-// must.
-//
 // Nothing declaring the presence is not on its own enough to remove it. A
 // workload being replaced stops declaring it for a few seconds, and the removal
 // waits out that gap before it commits.
+//
+// A network being deleted ends every presence of it, declared or not. Its
+// contexts are marked first, so each location gives up what it keeps for the
+// network.
+//
+// Either way the context goes only once its location holds no interface of the
+// network. Until then the location still reads it: an interface kept there stays
+// addressed from its range, and a deleting network's mark still has a context to
+// arrive on. The location's own hold on its copy stays as its guard.
 func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	projectClient, networkContext, err := r.ownContext(ctx, req)
+	if err != nil || networkContext == nil {
+		return ctrl.Result{}, err
+	}
+
+	result, ends, err := r.ends(ctx, projectClient, networkContext)
+	if err != nil || !ends {
+		return result, err
+	}
+
+	held, err := r.heldAtLocation(ctx, req.Namespace, networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(held) > 0 {
+		// The copies are watched, so the last one going brings this back.
+		log.FromContext(ctx).Info("network presence ends once its location gives up the network's interfaces",
+			"hub namespace", req.Namespace, "name", networkContext.Name, "interfaces", held)
+		return r.waiting(0), nil
+	}
+
+	log.FromContext(ctx).Info("network presence ends, removing it",
+		"hub namespace", req.Namespace, "namespace", networkContext.Namespace, "name", networkContext.Name)
+	if err := projectClient.Delete(ctx, networkContext, client.Preconditions{UID: &networkContext.UID}); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// heldAtLocation names the interfaces of the network that the presence's
+// location still holds, read from the copies its cell publishes to the hub. A
+// copy being deleted is going with its interface, so it holds nothing.
+func (r *NetworkPresenceReconciler) heldAtLocation(
+	ctx context.Context,
+	hubNamespace string,
+	networkContext *networkingv1alpha.NetworkContext,
+) ([]string, error) {
+	var copies networkingv1alpha.NetworkInterfaceList
+	if err := r.hub.List(ctx, &copies, client.InNamespace(hubNamespace), client.MatchingLabels{
+		networkingv1alpha.NetworkInterfaceProjectionLabel: "true",
+		networkingv1alpha.NetworkInterfaceLocationLabel:   networkContext.Spec.Location.Name,
+	}); err != nil {
+		return nil, fmt.Errorf("failed listing the interfaces location %q publishes: %w",
+			networkContext.Spec.Location.Name, err)
+	}
+
+	var held []string
+	for i := range copies.Items {
+		copied := &copies.Items[i]
+		if copied.Spec.Network.Name == networkContext.Spec.Network.Name && copied.DeletionTimestamp.IsZero() {
+			held = append(held, copied.Name)
+		}
+	}
+	return held, nil
+}
+
+// presenceOfInterfaceCopy maps an interface a cell published to the hub onto
+// the presence of its network in that cell's location.
+func presenceOfInterfaceCopy(_ context.Context, obj client.Object) []reconcile.Request {
+	copied, ok := obj.(*networkingv1alpha.NetworkInterface)
+	if !ok || !isProjection(copied) {
+		return nil
+	}
+	location := copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel]
+	if location == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Namespace: copied.Namespace,
+		Name:      networkContextName(copied.Spec.Network.Name, locationsv1alpha1.LocationReference{Name: location}),
+	}}}
+}
+
+// ownContext reads the context a presence left in its project when it is this
+// controller's to end. A nil context means there is nothing to end.
+func (r *NetworkPresenceReconciler) ownContext(
+	ctx context.Context,
+	req ctrl.Request,
+) (client.Client, *networkingv1alpha.NetworkContext, error) {
 	routing, err := resolveProjectRouting(ctx, r.hub, req.Namespace)
 	if err != nil {
 		var unresolvable *projectUnresolvable
 		if errors.As(err, &unresolvable) {
-			return ctrl.Result{}, nil
+			return nil, nil, nil
 		}
-		return ctrl.Result{}, err
+		return nil, nil, err
 	}
 
 	projectCluster, err := r.Projects.ClusterForProject(ctx, routing.project)
 	if err != nil {
 		if errors.Is(err, multicluster.ErrClusterNotFound) {
-			return ctrl.Result{}, nil
+			return nil, nil, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
+		return nil, nil, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
 	}
 	projectClient := projectCluster.GetClient()
 
 	var networkContext networkingv1alpha.NetworkContext
 	key := client.ObjectKey{Namespace: routing.projectNamespace, Name: req.Name}
 	if err := projectClient.Get(ctx, key, &networkContext); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return nil, nil, client.IgnoreNotFound(err)
 	}
 	if !networkContext.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, nil
+		return nil, nil, nil
 	}
 
 	// Only a presence this controller wrote is this controller's to remove. It
@@ -231,7 +324,24 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 	// one, or a context an operator wrote by hand — and deleting it would take
 	// away the object a location reads.
 	if networkContext.Labels[networkingv1alpha.NetworkUIDLabel] == "" {
-		return ctrl.Result{}, nil
+		return nil, nil, nil
+	}
+	return projectClient, &networkContext, nil
+}
+
+// ends reports whether a presence the hub no longer declares ends now. When it
+// does not, the result says when to look at it again.
+func (r *NetworkPresenceReconciler) ends(
+	ctx context.Context,
+	projectClient client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (ctrl.Result, bool, error) {
+	deleting, err := networkDeleting(ctx, projectClient, networkContext)
+	if err != nil {
+		return ctrl.Result{}, false, err
+	}
+	if deleting {
+		return ctrl.Result{}, true, markNetworkDeleting(ctx, projectClient, networkContext)
 	}
 
 	// The hub is not the only place a presence is declared. A binding written
@@ -240,28 +350,69 @@ func (r *NetworkPresenceReconciler) teardown(ctx context.Context, req ctrl.Reque
 	// cannot tell the two apart. Removing a context such a binding still uses
 	// leaves it pointed at an object that cannot finish deleting while its
 	// workloads hold addresses in it.
-	declared, err := declaredInProject(ctx, projectClient, &networkContext)
+	declared, err := declaredInProject(ctx, projectClient, networkContext)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, false, err
 	}
 	if declared {
-		return ctrl.Result{}, r.reclaim(ctx, projectClient, &networkContext)
+		return r.waiting(0), false, r.reclaim(ctx, projectClient, networkContext)
 	}
 
-	remaining, err := r.grace(ctx, projectClient, &networkContext)
+	remaining, err := r.grace(ctx, projectClient, networkContext)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, false, err
 	}
 	if remaining > 0 {
-		return ctrl.Result{RequeueAfter: remaining}, nil
+		return r.waiting(remaining), false, nil
+	}
+	return ctrl.Result{}, true, nil
+}
+
+// waiting brings a presence that waits to end back after at most the resync.
+// The sync signals a change on the hub bindings declaring a presence, and one
+// that waits to end may have none, so the resync is how the network's deletion
+// reaches it. A zero wait has no end of its own.
+func (r *NetworkPresenceReconciler) waiting(wait time.Duration) ctrl.Result {
+	if r.ResyncPeriod > 0 && (wait == 0 || wait > r.ResyncPeriod) {
+		wait = r.ResyncPeriod
+	}
+	return ctrl.Result{RequeueAfter: wait}
+}
+
+// networkDeleting reports whether the network a context names is being deleted.
+// Only the network itself says so: a network that cannot be read is not
+// evidence, and what the mark sets in motion at the location cannot be taken
+// back.
+func networkDeleting(
+	ctx context.Context,
+	projectClient client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) (bool, error) {
+	var network networkingv1alpha.Network
+	key := client.ObjectKey{Namespace: networkContext.Namespace, Name: networkContext.Spec.Network.Name}
+	if err := projectClient.Get(ctx, key, &network); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return !network.DeletionTimestamp.IsZero(), nil
+}
+
+// markNetworkDeleting tells the location that the network is being deleted, so
+// it gives up what it keeps for the network there.
+func markNetworkDeleting(
+	ctx context.Context,
+	projectClient client.Client,
+	networkContext *networkingv1alpha.NetworkContext,
+) error {
+	if networkContext.Spec.NetworkDeleting {
+		return nil
 	}
 
-	log.FromContext(ctx).Info("no binding declares this network presence, removing it",
-		"project", routing.project, "namespace", key.Namespace, "name", key.Name)
-	if err := projectClient.Delete(ctx, &networkContext); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	patch := client.MergeFrom(networkContext.DeepCopy())
+	networkContext.Spec.NetworkDeleting = true
+	if err := projectClient.Patch(ctx, networkContext, patch); err != nil {
+		return fmt.Errorf("failed marking network presence %q: %w", networkContext.Name, err)
 	}
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // declaredInProject reports whether a binding in the project control plane
@@ -365,59 +516,29 @@ func (r *NetworkPresenceReconciler) ensure(
 ) (bool, error) {
 	pair := holders[0].Spec
 
-	routing, err := resolveProjectRouting(ctx, r.hub, req.Namespace)
+	target, refused, err := r.resolve(ctx, req, &pair)
 	if err != nil {
-		var unresolvable *projectUnresolvable
-		if errors.As(err, &unresolvable) {
-			return true, r.report(ctx, holders, nil, refusal(
-				networkingv1alpha.NetworkBindingReasonProjectUnresolved, unresolvable.Error()))
+		return false, err
+	}
+	if refused != nil {
+		return true, r.report(ctx, holders, nil, *refused)
+	}
+
+	if !target.network.DeletionTimestamp.IsZero() {
+		if err := r.report(ctx, holders, nil, refusal(
+			networkingv1alpha.NetworkBindingReasonNetworkContextTerminating,
+			fmt.Sprintf("Network %q is being deleted, so it is being removed from location %q",
+				target.network.Name, pair.Location.Name))); err != nil {
+			return false, err
 		}
+		return false, errNetworkDeleting
+	}
+
+	if err := r.stamp(ctx, holders, target.network); err != nil {
 		return false, err
 	}
 
-	projectCluster, err := r.Projects.ClusterForProject(ctx, routing.project)
-	if err != nil {
-		if errors.Is(err, multicluster.ErrClusterNotFound) {
-			return true, r.report(ctx, holders, nil, refusal(
-				networkingv1alpha.NetworkBindingReasonProjectUnresolved,
-				fmt.Sprintf("Project %q is not engaged by this operator", routing.project)))
-		}
-		return false, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
-	}
-	projectClient := projectCluster.GetClient()
-
-	var location locationsv1alpha1.Location
-	if err := projectClient.Get(ctx, client.ObjectKey{Name: pair.Location.Name}, &location); err != nil {
-		if locationsNotServed(err) {
-			return true, r.report(ctx, holders, nil, refusal(
-				networkingv1alpha.NetworkBindingReasonLocationNotAvailable,
-				fmt.Sprintf("Project %q has not been offered location %q",
-					routing.project, pair.Location.Name)))
-		}
-		return false, fmt.Errorf("failed reading location %q: %w", pair.Location.Name, err)
-	}
-
-	networkKey := client.ObjectKey{Namespace: routing.projectNamespace, Name: pair.Network.Name}
-	if pair.Network.Namespace != "" {
-		networkKey.Namespace = pair.Network.Namespace
-	}
-
-	var network networkingv1alpha.Network
-	if err := projectClient.Get(ctx, networkKey, &network); err != nil {
-		if apierrors.IsNotFound(err) {
-			return true, r.report(ctx, holders, nil, refusal(
-				networkingv1alpha.NetworkBindingReasonNetworkNotFound,
-				fmt.Sprintf("Network %q was not found in namespace %q of project %q",
-					networkKey.Name, networkKey.Namespace, routing.project)))
-		}
-		return false, fmt.Errorf("failed reading network %q: %w", networkKey.Name, err)
-	}
-
-	if err := r.stamp(ctx, holders, &network); err != nil {
-		return false, err
-	}
-
-	networkContext, err := r.project(ctx, req, projectClient, routing, &pair, &network)
+	networkContext, err := r.project(ctx, req, target.projectClient, target.routing, &pair, target.network)
 	if err != nil {
 		// A context being deleted is not a context. Adopting it would hand every
 		// consumer a reference to an object that is about to go, and the
@@ -451,6 +572,82 @@ func (r *NetworkPresenceReconciler) ensure(
 		Reason:  networkingv1alpha.NetworkBindingReasonNetworkContextReady,
 		Message: "Network context is ready.",
 	})
+}
+
+// presenceTarget is what a presence is written from: the project control plane
+// it lives in and the network it projects.
+type presenceTarget struct {
+	routing       projectRouting
+	projectClient client.Client
+	network       *networkingv1alpha.Network
+}
+
+// resolve reads what a presence is declared for. A refusal names what is
+// missing, for the bindings to report; it is not an error.
+func (r *NetworkPresenceReconciler) resolve(
+	ctx context.Context,
+	req ctrl.Request,
+	pair *networkingv1alpha.NetworkBindingSpec,
+) (*presenceTarget, *metav1.Condition, error) {
+	routing, err := resolveProjectRouting(ctx, r.hub, req.Namespace)
+	if err != nil {
+		var unresolvable *projectUnresolvable
+		if errors.As(err, &unresolvable) {
+			return nil, ptr.To(refusal(networkingv1alpha.NetworkBindingReasonProjectUnresolved, unresolvable.Error())), nil
+		}
+		return nil, nil, err
+	}
+
+	projectCluster, err := r.Projects.ClusterForProject(ctx, routing.project)
+	if err != nil {
+		if errors.Is(err, multicluster.ErrClusterNotFound) {
+			return nil, ptr.To(refusal(networkingv1alpha.NetworkBindingReasonProjectUnresolved,
+				fmt.Sprintf("Project %q is not engaged by this operator", routing.project))), nil
+		}
+		return nil, nil, fmt.Errorf("failed reaching project %q: %w", routing.project, err)
+	}
+
+	target := &presenceTarget{routing: routing, projectClient: projectCluster.GetClient()}
+	network, refusedFor, err := declaredNetwork(ctx, target, pair)
+	if network == nil {
+		return nil, refusedFor, err
+	}
+	target.network = network
+	return target, nil, nil
+}
+
+// declaredNetwork reads the network a presence is declared for, in a location
+// the project may use.
+func declaredNetwork(
+	ctx context.Context,
+	target *presenceTarget,
+	pair *networkingv1alpha.NetworkBindingSpec,
+) (*networkingv1alpha.Network, *metav1.Condition, error) {
+	var location locationsv1alpha1.Location
+	if err := target.projectClient.Get(ctx, client.ObjectKey{Name: pair.Location.Name}, &location); err != nil {
+		if locationsNotServed(err) {
+			return nil, ptr.To(refusal(networkingv1alpha.NetworkBindingReasonLocationNotAvailable,
+				fmt.Sprintf("Project %q has not been offered location %q",
+					target.routing.project, pair.Location.Name))), nil
+		}
+		return nil, nil, fmt.Errorf("failed reading location %q: %w", pair.Location.Name, err)
+	}
+
+	networkKey := client.ObjectKey{Namespace: target.routing.projectNamespace, Name: pair.Network.Name}
+	if pair.Network.Namespace != "" {
+		networkKey.Namespace = pair.Network.Namespace
+	}
+
+	var network networkingv1alpha.Network
+	if err := target.projectClient.Get(ctx, networkKey, &network); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, ptr.To(refusal(networkingv1alpha.NetworkBindingReasonNetworkNotFound,
+				fmt.Sprintf("Network %q was not found in namespace %q of project %q",
+					networkKey.Name, networkKey.Namespace, target.routing.project))), nil
+		}
+		return nil, nil, fmt.Errorf("failed reading network %q: %w", networkKey.Name, err)
+	}
+	return &network, nil, nil
 }
 
 // stamp records the network's UID on every binding declaring the presence, which
@@ -506,7 +703,11 @@ func (r *NetworkPresenceReconciler) project(
 		// not depend on the order anything else happens in: CreateOrUpdate reads
 		// the object immediately before this runs, which is the last moment the
 		// answer can still be current.
-		if !networkContext.DeletionTimestamp.IsZero() {
+		//
+		// A marked context is ending too. This runs only for a network that is not
+		// being deleted, so the mark is an earlier network's of the same name, and
+		// the owner reference cannot say so: it is matched by name, not UID.
+		if !networkContext.DeletionTimestamp.IsZero() || networkContext.Spec.NetworkDeleting {
 			return &networkContextTerminating{name: networkContext.Name}
 		}
 
@@ -658,6 +859,9 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 					Name:      networkContextNameForBinding(binding),
 				}}}
 			})).
+		// A presence ends only once its location holds no interface of the
+		// network, and the copies each cell publishes here are how the hub sees it.
+		Watches(&networkingv1alpha.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(presenceOfInterfaceCopy)).
 		Named("networkpresence")
 
 	return builder.Complete(r)

@@ -1,0 +1,182 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Deleting a network gives up the interfaces its locations keep for it. A kept
+# interface holds addresses with no instance behind it, and before this change
+# it held the network's deletion open for good: the location's subnet could not
+# be given back while the interface held an address in it.
+#
+# The presence controller marks the location's context, and the location deletes
+# the kept interface, which frees its addresses. Then the context, its subnet and
+# the network go.
+#
+# In this env the cell publishes interfaces to Karmada while the presence
+# controller reads the upstream cluster, so the presence does not wait on the
+# published copy here. The cell's own hold keeps the marked context until the
+# cell has acted, which is what lets this run the whole path end to end.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: network-delete-gives-up-kept-interfaces
+spec:
+  cluster: nso-standard
+  steps:
+    - name: Seed the project, the hub namespace, the location and the network
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: kept-delete-project
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: kept-delete-hub
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-single
+                  meta.datumapis.com/upstream-namespace: kept-delete-project
+        - apply:
+            resource:
+              apiVersion: locations.miloapis.com/v1alpha1
+              kind: Location
+              metadata:
+                name: us-central-1
+              spec:
+                locationClassRef:
+                  name: datum-managed
+                topology:
+                  topology.datum.net/city-code: DFW
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              metadata:
+                name: kept-delete-net
+                namespace: kept-delete-project
+              spec:
+                ipam:
+                  mode: Auto
+                ipFamilies:
+                  - IPv6
+
+    - name: The network is needed in the cell's location
+      try:
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkBinding
+              metadata:
+                name: kept-delete-consumer
+                namespace: kept-delete-hub
+                labels:
+                  networking.datumapis.com/network: kept-delete-net
+                  networking.datumapis.com/location: us-central-1
+              spec:
+                network:
+                  name: kept-delete-net
+                location:
+                  name: us-central-1
+                consumer:
+                  apiGroup: networking.datumapis.com
+                  kind: LoadBalancer
+                  name: kept-delete-consumer
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkContext
+              metadata:
+                name: kept-delete-net-us-central-1
+                namespace: kept-delete-project
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+
+    - name: A retained claim binds, then goes, and its interface is kept
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: kept-delete
+                namespace: kept-delete-project
+              spec:
+                network:
+                  name: kept-delete-net
+                ipFamilies:
+                  - IPv6
+                reclaimPolicy: Retain
+        - assert:
+            timeout: 120s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              metadata:
+                name: kept-delete
+                namespace: kept-delete-project
+              status:
+                (conditions[?type == 'Allocated'] | [0].status): "True"
+        - delete:
+            timeout: 120s
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterfaceClaim
+              name: kept-delete
+              namespace: kept-delete-project
+        - assert:
+            timeout: 60s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: NetworkInterface
+              metadata:
+                name: kept-delete
+                namespace: kept-delete-project
+              spec:
+                reclaimPolicy: Retain
+                (claimRef == null): true
+              status:
+                phase: Available
+      catch:
+        - script:
+            content: |
+              kubectl -n kept-delete-project get networkinterfaceclaim,networkinterface,networkcontext -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+      cleanup:
+        - description: >
+            Safety net. Should the network's deletion not give the kept
+            interface up, its IPClaim outlives the test and blocks the next run.
+          script:
+            content: |
+              set -u
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              kubectl -n kept-delete-project delete networkinterfaceclaim kept-delete --ignore-not-found --timeout=60s
+              kubectl -n kept-delete-project delete networkinterface kept-delete --ignore-not-found --timeout=60s
+              "$IPAM" project-alpha -n default delete ipclaim kept-delete-f-ipv6 --ignore-not-found --timeout=60s
+
+    - name: Deleting the network gives the kept interface up, and the network goes
+      try:
+        - delete:
+            timeout: 3m
+            ref:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: Network
+              name: kept-delete-net
+              namespace: kept-delete-project
+        - script:
+            content: |
+              set -eu
+              IPAM=$(git rev-parse --show-toplevel)/hack/ipam-project-kubectl.sh
+              left=$(kubectl -n kept-delete-project get networkinterface kept-delete --ignore-not-found -o name)
+              [ -z "$left" ] || { echo "the kept interface outlived its network"; exit 1; }
+              left=$("$IPAM" project-alpha -n default get ipclaim kept-delete-f-ipv6 --ignore-not-found -o name)
+              [ -z "$left" ] || { echo "the kept interface's address was not given back"; exit 1; }
+      catch:
+        - script:
+            content: |
+              kubectl -n kept-delete-project get network,networkcontext,networkinterface -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=150

@@ -2,6 +2,8 @@ module go.datum.net/network-services-operator
 
 go 1.26.4
 
+toolchain go1.27.3
+
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/cert-manager/cert-manager v1.17.2

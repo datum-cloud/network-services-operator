@@ -1101,6 +1101,93 @@ func TestNetworkPresenceResyncsASettledPresence(t *testing.T) {
 		networkingv1alpha.NetworkBindingReasonNetworkContextReady)
 }
 
+// The sync signals a network's deletion on the hub bindings declaring a
+// presence. A presence in its grace has none, so the resync is what brings the
+// deletion to it before the grace runs out.
+func TestNetworkPresenceInItsGraceComesBackAtTheResync(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Hour})
+	s.reconciler.ResyncPeriod = 30 * time.Second
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, result.RequeueAfter, "a network deleted in the grace must not wait it out")
+}
+
+// A grace shorter than the resync still ends on time.
+func TestNetworkPresenceInAShortGraceComesBackAtItsEnd(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: 10 * time.Second})
+	s.reconciler.ResyncPeriod = 30 * time.Second
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter)
+	require.LessOrEqual(t, result.RequeueAfter, 10*time.Second, "the grace ends before the resync")
+}
+
+// Past its grace, a presence waits on its location's kept interfaces with no
+// binding left to signal, and the network's deletion is what ends that wait.
+func TestNetworkPresenceWaitingOnItsLocationComesBackAtTheResync(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	s.reconciler.ResyncPeriod = 30 * time.Second
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	s.publishInterface("kept-eth0", s.networkName, s.locationName)
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconcile()
+	s.expireGrace()
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, result.RequeueAfter, "nothing on the hub signals this presence")
+
+	s.deleteNetwork()
+	s.reconcile()
+	networkContext := s.requireContextLive("the location still keeps an interface of the network")
+	require.True(t, networkContext.Spec.NetworkDeleting, "the resync carries the deletion to the location")
+}
+
+// A presence declared only in the project plane has no hub binding to signal
+// either, and the network waits on its context.
+func TestNetworkPresenceDeclaredInItsProjectComesBackAtTheResync(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Minute})
+	s.reconciler.ResyncPeriod = 30 * time.Second
+	hubBinding := s.createBinding("consumer-a")
+	s.reconcile()
+
+	projectBinding := &networkingv1alpha.NetworkBinding{}
+	projectBinding.Namespace = s.projectNamespace
+	projectBinding.Name = "project-plane-binding"
+	projectBinding.Spec.Network = networkingv1alpha.NetworkRef{Name: s.networkName}
+	projectBinding.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
+	require.NoError(t, s.hub.Create(s.ctx, projectBinding))
+	require.NoError(t, s.hub.Delete(s.ctx, hubBinding))
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, result.RequeueAfter, "nothing on the hub signals this presence")
+}
+
+// A presence that has ended has nothing to come back for.
+func TestNetworkPresenceThatEndedDoesNotComeBack(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	s.reconciler.ResyncPeriod = 30 * time.Second
+	binding := s.createBinding("consumer-a")
+	s.reconcile()
+	require.NoError(t, s.hub.Delete(s.ctx, binding))
+	s.reconcile()
+	s.requireContextGone("nothing declares the presence and its location holds nothing")
+
+	result, err := s.reconciler.Reconcile(s.ctx, s.request())
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+}
+
 // A context marked for an earlier network of the same name is that network's,
 // ending. Adopting it would carry the mark to the new network, and its location
 // would give up the new network's kept interfaces. The owner reference alone

@@ -2,6 +2,7 @@ import { ConfirmDeleteDialog } from './confirm-delete-dialog';
 import { ProtocolBadge } from './nlb-empty-state';
 import { SortableHeader } from './sortable-header';
 import { StatusBadge } from './status-badge';
+import { TableSearch } from './table-search';
 import { planNlbDelete, useDeleteNetworkLoadBalancer } from '../lib/api';
 import {
   nlbReadyStatusToLabel,
@@ -18,7 +19,7 @@ import { DateTime } from '@datum-cloud/datum-ui/date-time';
 import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import type { ColumnDef } from '@tanstack/react-table';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 
 export interface NlbRow {
@@ -95,11 +96,13 @@ export function NlbTable({
   routes,
   projectId,
   nlbHref,
+  actions,
 }: {
   nlbs: NetworkLoadBalancer[];
   routes: NetworkLoadBalancerRoute[] | undefined;
   projectId?: string;
   nlbHref: (name: string) => string;
+  actions?: ReactNode;
 }) {
   const navigate = useNavigate();
   const [deleteTarget, setDeleteTarget] = useState<NlbRow>();
@@ -217,8 +220,15 @@ export function NlbTable({
         defaultSort={[{ id: 'name', desc: false }]}
         searchFn={matchesSearch}
         className="space-y-6">
-        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <DataTable.Search placeholder="Search load balancers" className="w-full sm:max-w-xs" />
+        <div className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="flex w-full min-w-0 flex-1 items-center gap-3 sm:w-auto">
+            <TableSearch placeholder="Search load balancers" />
+          </div>
+          {actions && (
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
+              {actions}
+            </div>
+          )}
         </div>
         <div
           className="overflow-hidden rounded-lg border"

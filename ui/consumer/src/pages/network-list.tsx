@@ -48,14 +48,6 @@ export default function NetworkList() {
       <PageTitle
         title="VPC Networks"
         description="The networks your workloads and load balancers run on"
-        actions={
-          <CreateNetworkDialog
-            projectId={projectId}
-            open={createOpen}
-            onOpenChange={setCreateOpen}
-            showTrigger={!isEmpty}
-          />
-        }
       />
 
       {isLoading && <NetworkListSkeleton />}
@@ -70,6 +62,12 @@ export default function NetworkList() {
 
       {isEmpty && (
         <div className="flex flex-col gap-6" data-testid="networking-plugin-network-empty">
+          <CreateNetworkDialog
+            projectId={projectId}
+            open={createOpen}
+            onOpenChange={setCreateOpen}
+            showTrigger={false}
+          />
           <EmptyContent
             title="let's create a network to get you started"
             subtitle="Networks give your workloads and load balancers private IPv6 addressing across every region they run in."
@@ -89,7 +87,17 @@ export default function NetworkList() {
       )}
 
       {!isLoading && !error && networks && networks.length > 0 && (
-        <NetworkTable networks={networks} projectId={projectId} />
+        <NetworkTable
+          networks={networks}
+          projectId={projectId}
+          actions={
+            <CreateNetworkDialog
+              projectId={projectId}
+              open={createOpen}
+              onOpenChange={setCreateOpen}
+            />
+          }
+        />
       )}
     </div>
   );

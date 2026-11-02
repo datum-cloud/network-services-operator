@@ -133,6 +133,17 @@ describe('NlbTable', () => {
     expect(screen.getByRole('link', { name: 'game' })).toHaveAttribute('href', '/nlb/game');
   });
 
+  it('filters by search and clears it from the clear button', async () => {
+    renderTable([makeNlb({ name: 'game' }), makeNlb({ name: 'db' })], []);
+    fireEvent.change(screen.getByPlaceholderText('Search load balancers'), {
+      target: { value: 'game' },
+    });
+    await waitFor(() => expect(screen.queryByText('db')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    await waitFor(() => expect(screen.getByText('db')).toBeInTheDocument());
+    expect(screen.getByPlaceholderText('Search load balancers')).toHaveValue('');
+  });
+
   it('shows backends as unknown and hides delete until routes load', () => {
     renderTable([makeNlb({ name: 'game' })], undefined);
     const row = within(rowFor('game'));

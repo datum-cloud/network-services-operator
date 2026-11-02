@@ -64,19 +64,8 @@ export default function NlbList() {
 
       <PageTitle
         title="Network Load Balancers"
-        actions={
-          !isEmpty && (
-            <Button
-              type="primary"
-              theme="solid"
-              size="small"
-              className="w-full sm:w-auto"
-              onClick={() => openCreate()}>
-              <Icon icon={PlusIcon} className="size-4" />
-              Create load balancer
-            </Button>
-          )
-        }
+        description="Forward TCP and UDP traffic from a public address straight to your workloads."
+        descriptionClassName="max-w-none"
       />
 
       <CreateNlbDialog
@@ -100,7 +89,23 @@ export default function NlbList() {
       {isEmpty && <NlbEmptyState projectId={projectId} onCreate={openCreate} />}
 
       {!isLoading && !error && nlbs && nlbs.length > 0 && (
-        <NlbTable nlbs={nlbs} routes={routes} projectId={projectId} nlbHref={nlbHref} />
+        <NlbTable
+          nlbs={nlbs}
+          routes={routes}
+          projectId={projectId}
+          nlbHref={nlbHref}
+          actions={
+            <Button
+              type="primary"
+              theme="solid"
+              size="small"
+              className="w-full sm:w-auto"
+              onClick={() => openCreate()}>
+              <Icon icon={PlusIcon} className="size-4" />
+              Create load balancer
+            </Button>
+          }
+        />
       )}
     </div>
   );

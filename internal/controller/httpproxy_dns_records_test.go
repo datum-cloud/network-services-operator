@@ -71,6 +71,17 @@ func dnsRecordsTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
+// cloneDNSRecordTestObjects keeps fake-client tracker setup isolated between
+// parallel table cases. The fake client assigns metadata to initial objects,
+// so sharing a fixture pointer across cases races on ObjectMeta.
+func cloneDNSRecordTestObjects(objects []client.Object) []client.Object {
+	cloned := make([]client.Object, len(objects))
+	for i, object := range objects {
+		cloned[i] = object.DeepCopyObject().(client.Object)
+	}
+	return cloned
+}
+
 func dnsRecordsGateway(hostnames ...string) *gatewayv1.Gateway {
 	gw := &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Namespace: "test-ns", Name: "s3"}}
 	for i, h := range hostnames {
@@ -376,7 +387,7 @@ func TestBuildDNSRecordStatuses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cl := fake.NewClientBuilder().WithScheme(dnsRecordsTestScheme(t)).WithObjects(tt.objects...).Build()
+			cl := fake.NewClientBuilder().WithScheme(dnsRecordsTestScheme(t)).WithObjects(cloneDNSRecordTestObjects(tt.objects)...).Build()
 			r := &HTTPProxyReconciler{
 				Config: config.NetworkServicesOperator{Gateway: config.GatewayConfig{
 					TargetDomain:         "datumproxy.net",

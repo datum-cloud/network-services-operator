@@ -830,6 +830,9 @@ func TestInternalDNSContextNamesItsNetwork(t *testing.T) {
 	if got := created.GetLabels(); !maps.Equal(got, want) {
 		t.Fatalf("new context labels = %v, want %v", got, want)
 	}
+	if got := created.GetAnnotations()[internalDNSManagedLabelsAnnotation]; got != internalDNSManagedLabels {
+		t.Fatalf("new context managed labels annotation = %q", got)
+	}
 
 	// A context created before the labels existed gets them on the next pass.
 	existing := newInternalDNSObject(internalDNSContextGVK, "tenant", internalDNSResourceName("blue", network.UID))
@@ -850,6 +853,9 @@ func TestInternalDNSContextNamesItsNetwork(t *testing.T) {
 	want["other"] = "kept"
 	if got := stored.GetLabels(); !maps.Equal(got, want) {
 		t.Fatalf("existing context labels = %v, want %v", got, want)
+	}
+	if got := stored.GetAnnotations()[internalDNSManagedLabelsAnnotation]; got != internalDNSManagedLabels {
+		t.Fatalf("existing context managed labels annotation = %q", got)
 	}
 
 	// A name too long for a label value still gets the UID label.

@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -689,5 +690,123 @@ func TestInternalDNSReadinessExplainsUnreadyContexts(t *testing.T) {
 		if condition == nil || condition.Status != tc.status || condition.Reason != tc.reason {
 			t.Errorf("%s DNSReady = %#v, want %s/%s", tc.networkContext.Name, condition, tc.status, tc.reason)
 		}
+	}
+}
+
+// A context of a network with DNS turned off must settle. In a location with an
+// internal-DNS region the reconciler once stamped the region and then cleared it
+// with the rest of the intent, and each write was an event on the context itself.
+func TestInternalDNSProjectSettlesWhenDNSIsOff(t *testing.T) {
+	t.Parallel()
+	wasOn := testNetworkContext("was-on", "context-1")
+	wasOn.Annotations = testDNSIntent(time.Time{})
+	wasOn.Finalizers = []string{internalDNSFinalizer}
+	cases := map[string]struct {
+		networkContext *networkingv1alpha.NetworkContext
+		region         string
+	}{
+		"in a location with a region":    {networkContext: testNetworkContext("clean", "context-1"), region: "us-central"},
+		"in a location without a region": {networkContext: testNetworkContext("clean", "context-1")},
+		"after DNS was on":               {networkContext: wasOn, region: "us-central"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			f := newDNSOffFixture(t, tc.networkContext, tc.region)
+			key := client.ObjectKeyFromObject(tc.networkContext)
+
+			f.reconcile(t, ctx, key)
+			f.writes = 0
+			f.reconcile(t, ctx, key)
+			if f.writes != 0 {
+				t.Fatalf("the second reconcile wrote the context %d times, want none", f.writes)
+			}
+			f.assertDNSOff(t, ctx, key, len(tc.networkContext.Annotations) > 0)
+		})
+	}
+}
+
+// dnsOffFixture holds a network with DNS turned off, its location, one context
+// and the regional access that context used, and counts the context's writes.
+type dnsOffFixture struct {
+	cl     client.Client
+	access *unstructured.Unstructured
+	writes int
+}
+
+func newDNSOffFixture(t *testing.T, networkContext *networkingv1alpha.NetworkContext, region string) *dnsOffFixture {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := locationsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	scheme.AddKnownTypeWithName(internalDNSContextGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(internalDNSAccessGVK, &unstructured.Unstructured{})
+	network := &networkingv1alpha.Network{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "blue", UID: "network-uid"},
+		Spec: networkingv1alpha.NetworkSpec{DNS: networkingv1alpha.NetworkDNSPolicy{
+			Mode: networkingv1alpha.NetworkDNSModeDisabled,
+		}},
+	}
+	location := &locationsv1alpha1.Location{ObjectMeta: metav1.ObjectMeta{Name: "ord-1"}}
+	if region != "" {
+		location.Spec.Topology = map[string]string{internalDNSRegionTopologyKey: region}
+	}
+	f := &dnsOffFixture{access: newInternalDNSObject(internalDNSAccessGVK, "tenant", internalDNSRegionalName("resolver", "us-central"))}
+	f.access.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: "network-uid"})
+	f.cl = interceptor.NewClient(fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(network, location, networkContext.DeepCopy(), f.access.DeepCopy()).Build(), interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			f.count(obj)
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			f.count(obj)
+			return c.Update(ctx, obj, opts...)
+		},
+	})
+	return f
+}
+
+func (f *dnsOffFixture) count(obj client.Object) {
+	if _, ok := obj.(*networkingv1alpha.NetworkContext); ok {
+		f.writes++
+	}
+}
+
+func (f *dnsOffFixture) reconcile(t *testing.T, ctx context.Context, key client.ObjectKey) {
+	t.Helper()
+	r := &InternalDNSProjectReconciler{
+		Config:   config.InternalDNSConfig{Frontend: "fd53::53", ServicePrefix: "fd70:100::/64"},
+		Projects: fixedProjectIdentity("project-uid"),
+	}
+	if _, err := r.reconcile(ctx, f.cl, "project", key); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertDNSOff fails unless the context carries no DNS intent and no internal
+// DNS finalizer, and, when it had used one, its regional access is gone.
+func (f *dnsOffFixture) assertDNSOff(t *testing.T, ctx context.Context, key client.ObjectKey, usedAccess bool) {
+	t.Helper()
+	current := &networkingv1alpha.NetworkContext{}
+	if err := f.cl.Get(ctx, key, current); err != nil {
+		t.Fatal(err)
+	}
+	for _, annotation := range internalDNSIntentAnnotations() {
+		if _, ok := current.Annotations[annotation]; ok {
+			t.Errorf("annotation %s stayed on a context whose DNS is off", annotation)
+		}
+	}
+	if slices.Contains(current.Finalizers, internalDNSFinalizer) {
+		t.Error("the internal DNS finalizer stayed on a context whose DNS is off")
+	}
+	err := f.cl.Get(ctx, client.ObjectKeyFromObject(f.access), f.access.DeepCopy())
+	if usedAccess && !apierrors.IsNotFound(err) {
+		t.Errorf("the regional access the context used survived DNS turning off: %v", err)
 	}
 }

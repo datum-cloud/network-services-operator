@@ -144,6 +144,17 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{}, nil
 	}
 
+	// Decided before the region is stamped: disable clears the region with the
+	// rest of the intent, and a stamp it then clears is two writes whose events
+	// run this reconcile again.
+	network := &networkingv1alpha.Network{}
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: networkContext.Spec.Network.Name}, network); err != nil {
+		return ctrl.Result{}, err
+	}
+	if network.Spec.DNS.Mode == networkingv1alpha.NetworkDNSModeDisabled {
+		return ctrl.Result{}, r.disable(ctx, cl, networkContext, network)
+	}
+
 	region, err := r.region(ctx, cl, networkContext)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -169,13 +180,6 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		}
 	}
 
-	network := &networkingv1alpha.Network{}
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: networkContext.Spec.Network.Name}, network); err != nil {
-		return ctrl.Result{}, err
-	}
-	if network.Spec.DNS.Mode == networkingv1alpha.NetworkDNSModeDisabled {
-		return ctrl.Result{}, r.disable(ctx, cl, networkContext, network)
-	}
 	if region == "" {
 		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
 	}

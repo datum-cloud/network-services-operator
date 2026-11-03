@@ -15,12 +15,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -116,6 +119,7 @@ type NetworkPresenceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=locations,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
@@ -285,6 +289,38 @@ func presenceOfInterfaceCopy(_ context.Context, obj client.Object) []reconcile.R
 	}}}
 }
 
+// presencesOfNetworkMirror maps the hub's mirror of a network onto the
+// network's presences: the hub's copies of the network's contexts in the
+// mirror's namespace.
+func (r *NetworkPresenceReconciler) presencesOfNetworkMirror(ctx context.Context, obj client.Object) []reconcile.Request {
+	var copies networkingv1alpha.NetworkContextList
+	if err := r.hub.List(ctx, &copies, client.InNamespace(obj.GetNamespace()), client.MatchingLabels{
+		networkingv1alpha.NetworkLabel: obj.GetName(),
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "failed listing the presences of a network being deleted; each comes back at its resync",
+			"namespace", obj.GetNamespace(), "network", obj.GetName())
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(copies.Items))
+	for i := range copies.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&copies.Items[i])})
+	}
+	return requests
+}
+
+// networkMirrorGoing passes the events that say a network is being deleted.
+// The replicator deletes the hub's mirror as soon as the network is deleted;
+// a mirror that something holds with a finalizer says so with its first
+// update. The rest of a mirror's life says nothing a presence reads here.
+func networkMirrorGoing() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return !e.ObjectNew.GetDeletionTimestamp().IsZero() },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
 // ownContext reads the context a presence left in its project when it is this
 // controller's to end. A nil context means there is nothing to end.
 func (r *NetworkPresenceReconciler) ownContext(
@@ -369,9 +405,9 @@ func (r *NetworkPresenceReconciler) ends(
 }
 
 // waiting brings a presence that waits to end back after at most the resync.
-// The sync signals a change on the hub bindings declaring a presence, and one
-// that waits to end may have none, so the resync is how the network's deletion
-// reaches it. A zero wait has no end of its own.
+// The network's deletion reaches such a presence through the hub's mirror of
+// the network, and the resync covers an event that never arrives. A zero wait
+// has no end of its own.
 func (r *NetworkPresenceReconciler) waiting(wait time.Duration) ctrl.Result {
 	if r.ResyncPeriod > 0 && (wait == 0 || wait > r.ResyncPeriod) {
 		wait = r.ResyncPeriod
@@ -849,7 +885,7 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 	}
 	r.hub = mgr.GetClient()
 
-	builder := ctrl.NewControllerManagedBy(mgr).
+	return ctrl.NewControllerManagedBy(mgr).
 		// A presence is keyed as the hub's copy of its context is: the same
 		// namespace and name. The copy lasts as long as the presence does, so the
 		// list of copies on start brings back every presence, the ones nothing
@@ -870,7 +906,10 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 		// A presence ends only once its location holds no interface of the
 		// network, and the copies each cell publishes here are how the hub sees it.
 		Watches(&networkingv1alpha.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(presenceOfInterfaceCopy)).
-		Named("networkpresence")
-
-	return builder.Complete(r)
+		// A presence nothing declares hears its network's deletion from nothing
+		// else: the replicator deletes the hub's mirror of the network at once.
+		Watches(&networkingv1alpha.Network{}, handler.EnqueueRequestsFromMapFunc(r.presencesOfNetworkMirror),
+			builder.WithPredicates(networkMirrorGoing())).
+		Named("networkpresence").
+		Complete(r)
 }

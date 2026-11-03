@@ -329,16 +329,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	// A listener the user asked for that never reaches the downstream gateway
-	// makes the gateway dishonest about being programmed, whatever held it back.
-	// Derived from the listener set actually built, so a new reason to withhold
-	// one is covered without being enumerated here.
-	droppedListeners := summarizeDroppedListeners(
-		upstreamGateway,
-		desiredDownstreamGateway,
-		listenerCertHealth,
-	)
-
 	if err := writeDownstreamGateway(ctx, downstreamStrategy, upstreamGateway, downstreamGateway,
 		desiredDownstreamGateway.Spec, awaitsHostnameClaim(hostnameRefusals)); err != nil {
 		result.Err = err
@@ -387,6 +377,17 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	} else {
 		clearCertificateServiceFailing(upstreamClusterName, upstreamGateway)
 	}
+
+	// A listener the user asked for that never reaches the downstream gateway
+	// makes the gateway dishonest about being programmed, whatever held it back.
+	// Derived from the listener set actually built, so a new reason to withhold
+	// one is covered without being enumerated here. Summarized after the
+	// certificate service so an entitlement block is known.
+	droppedListeners := summarizeDroppedListeners(
+		upstreamGateway,
+		desiredDownstreamGateway,
+		listenerCertHealth,
+	)
 
 	certResult := r.ensureListenerCertificates(
 		ctx,
@@ -1030,8 +1031,6 @@ func summarizeDroppedListeners(
 
 		report.names = append(report.names, l.Name)
 
-		// A wildcard the project is not entitled to never gets a certificate,
-		// so it does not clear on its own like a certificate still being issued.
 		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy ||
 			status.issuanceReason == certificateServiceReasonWildcardNotEntitled {
 			report.allCertWithheld = false

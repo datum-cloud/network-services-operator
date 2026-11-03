@@ -483,11 +483,15 @@ func TestHTTPProxyReconcileInternalErrorGetsStableFixedMessage(t *testing.T) {
 		},
 	}
 
+	// The programming tracker is the process's own, and other tests program
+	// this proxy on test-cluster. Whether their entry is still there depends
+	// on the order the tests run in, so this test reads a key of its own.
+	const cluster = "internal-error-cluster"
 	before := testutil.ToFloat64(httpProxyReconcileErrorsTotal.WithLabelValues("httproute", "forbidden"))
 
 	_, err := reconciler.Reconcile(context.Background(), mcreconcile.Request{
 		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(httpProxy)},
-		ClusterName: "test-cluster",
+		ClusterName: cluster,
 	})
 	require.Error(t, err)
 
@@ -506,7 +510,7 @@ func TestHTTPProxyReconcileInternalErrorGetsStableFixedMessage(t *testing.T) {
 
 	_, err = reconciler.Reconcile(context.Background(), mcreconcile.Request{
 		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(httpProxy)},
-		ClusterName: "test-cluster",
+		ClusterName: cluster,
 	})
 	require.Error(t, err)
 	var retried networkingv1alpha.HTTPProxy
@@ -514,7 +518,7 @@ func TestHTTPProxyReconcileInternalErrorGetsStableFixedMessage(t *testing.T) {
 	assert.Equal(t, updated.ResourceVersion, retried.ResourceVersion, "a retry with the same failure must not rewrite status")
 
 	httpProxyProgramming.mu.Lock()
-	_, pending := httpProxyProgramming.pending[httpProxyKey{cluster: "test-cluster", NamespacedName: client.ObjectKeyFromObject(httpProxy)}]
+	_, pending := httpProxyProgramming.pending[httpProxyKey{cluster: cluster, NamespacedName: client.ObjectKeyFromObject(httpProxy)}]
 	httpProxyProgramming.mu.Unlock()
 	assert.True(t, pending, "an unprogrammed generation is tracked for latency")
 }

@@ -14,8 +14,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -168,6 +171,75 @@ func TestANetworkDeletedAfterARestartReachesAPresenceNothingDeclares(t *testing.
 				stop()
 				s.runPresence(resync)
 			}
+
+			s.deleteNetwork()
+
+			s.eventually("the network's deletion ends the presence, and the network can go", s.networkFinishes)
+		})
+	}
+}
+
+// declareInProject writes a binding in the project control plane for the
+// presence's pair, which no hub binding mirrors.
+func (s *presenceScenario) declareInProject() {
+	s.t.Helper()
+	binding := &networkingv1alpha.NetworkBinding{}
+	binding.Namespace = s.projectNamespace
+	binding.Name = "project-plane-binding"
+	binding.Spec.Network = networkingv1alpha.NetworkRef{Name: s.networkName}
+	binding.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
+	require.NoError(s.t, s.hub.Create(s.ctx, binding))
+}
+
+// writeContextAsTheBindingController writes the context that the binding
+// controller writes for a project-plane binding with internal DNS on: the
+// network's UID, network and location labels, and the network as controller.
+func (s *presenceScenario) writeContextAsTheBindingController() {
+	s.t.Helper()
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Namespace = s.projectNamespace
+	networkContext.Name = s.contextName()
+	networkContext.Labels = map[string]string{
+		networkingv1alpha.NetworkUIDLabel: string(s.network.UID),
+		networkingv1alpha.NetworkLabel:    s.networkName,
+		networkingv1alpha.LocationLabel:   s.locationName,
+	}
+	networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: s.networkName}
+	networkContext.Spec.Location = locationsv1alpha1.LocationReference{Name: s.locationName}
+	networkContext.Spec.IPFamilies = s.network.Spec.IPFamilies
+	networkContext.Spec.MTU = s.network.Spec.MTU
+	require.NoError(s.t, controllerutil.SetControllerReference(s.network, networkContext, s.hub.Scheme()))
+	require.NoError(s.t, s.hub.Create(s.ctx, networkContext))
+}
+
+// A presence declared only in its project has no hub binding either, so it too
+// waits on a wait its process set. It may also never have had a hub binding:
+// the binding controller writes the context for a project-plane binding, and
+// the replicator copies it to the hub like any other. Either way the network's
+// deletion must reach it after a restart.
+func TestANetworkDeletedAfterARestartReachesAPresenceDeclaredInItsProject(t *testing.T) {
+	for _, writer := range []string{"the presence controller", "the binding controller"} {
+		t.Run("written by "+writer, func(t *testing.T) {
+			s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Hour})
+			const resync = 2 * time.Second // [s] one process's own wait runs out well inside heardWithin
+			if writer == "the binding controller" {
+				s.declareInProject()
+				s.writeContextAsTheBindingController()
+				s.replicateContext()
+			} else {
+				stop := s.runPresence(resync)
+				hubBinding := s.createBinding("consumer-a")
+				s.eventually("the presence is written", func() bool {
+					_, err := s.readContext()
+					return err == nil
+				})
+				s.replicateContext()
+				s.declareInProject()
+				require.NoError(t, s.hub.Delete(s.ctx, hubBinding))
+				time.Sleep(quietWindow) // the presence takes up its wait on the project's binding
+				stop()
+			}
+			s.runPresence(resync)
 
 			s.deleteNetwork()
 

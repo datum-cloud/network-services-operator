@@ -4,7 +4,9 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -808,5 +810,65 @@ func (f *dnsOffFixture) assertDNSOff(t *testing.T, ctx context.Context, key clie
 	err := f.cl.Get(ctx, client.ObjectKeyFromObject(f.access), f.access.DeepCopy())
 	if usedAccess && !apierrors.IsNotFound(err) {
 		t.Errorf("the regional access the context used survived DNS turning off: %v", err)
+	}
+}
+
+func TestInternalDNSContextNamesItsNetwork(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(internalDNSContextGVK, &unstructured.Unstructured{})
+	network := &networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{Namespace: "tenant", Name: "blue", UID: "network-uid"}}
+	want := map[string]string{networkingv1alpha.NetworkLabel: "blue", networkingv1alpha.NetworkUIDLabel: "network-uid"}
+	r := &InternalDNSProjectReconciler{}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	created, err := r.ensureContext(ctx, cl, network, "project-uid", "project-uid/network-uid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := created.GetLabels(); !maps.Equal(got, want) {
+		t.Fatalf("new context labels = %v, want %v", got, want)
+	}
+	if got := created.GetAnnotations()[internalDNSManagedLabelsAnnotation]; got != internalDNSManagedLabels {
+		t.Fatalf("new context managed labels annotation = %q", got)
+	}
+
+	// A context created before the labels existed gets them on the next pass.
+	existing := newInternalDNSObject(internalDNSContextGVK, "tenant", internalDNSResourceName("blue", network.UID))
+	existing.SetLabels(map[string]string{"other": "kept"})
+	existing.SetAnnotations(map[string]string{internalDNSOwnerNetworkUIDAnnotation: "network-uid"})
+	existing.Object["spec"] = map[string]any{
+		"consumerID":       "project-uid/network-uid",
+		"managedNamespace": map[string]any{"enabled": true, "domainSuffix": internalDNSDefaultDomain},
+	}
+	cl = fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	if _, err := r.ensureContext(ctx, cl, network, "project-uid", "project-uid/network-uid"); err != nil {
+		t.Fatal(err)
+	}
+	stored := newInternalDNSObject(internalDNSContextGVK, "tenant", existing.GetName())
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(stored), stored); err != nil {
+		t.Fatal(err)
+	}
+	want["other"] = "kept"
+	if got := stored.GetLabels(); !maps.Equal(got, want) {
+		t.Fatalf("existing context labels = %v, want %v", got, want)
+	}
+	if got := stored.GetAnnotations()[internalDNSManagedLabelsAnnotation]; got != internalDNSManagedLabels {
+		t.Fatalf("existing context managed labels annotation = %q", got)
+	}
+	if got := stored.GetAnnotations()[internalDNSDescriptionAnnotation]; got != "Private DNS for the blue VPC" {
+		t.Fatalf("existing context description = %q", got)
+	}
+	network.Annotations = map[string]string{internalDNSDisplayNameAnnotation: "Blue network"}
+	if got := internalDNSContextAnnotations(network)[internalDNSDescriptionAnnotation]; got != "Private DNS for the Blue network VPC" {
+		t.Fatalf("display name description = %q", got)
+	}
+
+	// A name too long for a label value still gets the UID label.
+	long := network.DeepCopy()
+	long.Name = strings.Repeat("a", 64)
+	if got := internalDNSNetworkLabels(long); got[networkingv1alpha.NetworkLabel] != "" || got[networkingv1alpha.NetworkUIDLabel] != "network-uid" {
+		t.Fatalf("long name labels = %v", got)
 	}
 }

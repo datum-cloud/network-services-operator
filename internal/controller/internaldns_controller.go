@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -52,6 +53,11 @@ const (
 
 	internalDNSOwnerNetworkUIDAnnotation = "networking.datumapis.com/internal-dns-network-uid"
 	internalDNSOwnerProjectUIDAnnotation = "networking.datumapis.com/internal-dns-project-uid"
+	// internalDNSManagedLabelsAnnotation names the context labels DNS copies to
+	// the context's managed zone.
+	internalDNSManagedLabelsAnnotation = "dns.networking.miloapis.com/managed-object-labels"
+	internalDNSDescriptionAnnotation   = "kubernetes.io/description"
+	internalDNSDisplayNameAnnotation   = "kubernetes.io/display-name"
 
 	internalDNSRegionTopologyKey = "topology.datum.net/region"
 	internalDNSRetryInterval     = 10 * time.Second
@@ -63,6 +69,8 @@ const (
 )
 
 var (
+	internalDNSManagedLabels = networkingv1alpha.NetworkLabel + "," + networkingv1alpha.NetworkUIDLabel
+
 	internalDNSContextGVK = schema.GroupVersionKind{
 		Group: "dns.networking.miloapis.com", Version: "v1alpha1", Kind: "DNSResolverContext",
 	}
@@ -296,14 +304,20 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 		if domain != internalDNSDefaultDomain || !enabled {
 			return nil, fmt.Errorf("DNSResolverContext %s/%s does not request the network default domain", network.Namespace, name)
 		}
+		// The labels only tell people which network a zone is for, so a failed
+		// write never holds up DNS access.
+		if err := labelInternalDNSContext(ctx, cl, current, network); err != nil {
+			log.FromContext(ctx).Error(err, "label DNSResolverContext with its network", "name", name)
+		}
 		return current, nil
 	}
 
 	desired := newInternalDNSObject(internalDNSContextGVK, network.Namespace, name)
-	desired.SetAnnotations(map[string]string{
-		internalDNSOwnerNetworkUIDAnnotation: string(network.UID),
-		internalDNSOwnerProjectUIDAnnotation: string(projectUID),
-	})
+	desired.SetLabels(internalDNSNetworkLabels(network))
+	annotations := internalDNSContextAnnotations(network)
+	annotations[internalDNSOwnerNetworkUIDAnnotation] = string(network.UID)
+	annotations[internalDNSOwnerProjectUIDAnnotation] = string(projectUID)
+	desired.SetAnnotations(annotations)
 	desired.SetOwnerReferences([]metav1.OwnerReference{{
 		APIVersion: networkingv1alpha.GroupVersion.String(), Kind: "Network", Name: network.Name,
 		UID: network.UID, Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),
@@ -316,6 +330,64 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 		return nil, err
 	}
 	return desired, nil
+}
+
+// internalDNSNetworkLabels names the network a resolver context serves. DNS
+// copies a context's labels to its managed zone, so the zone says which
+// network it is for.
+func internalDNSNetworkLabels(network *networkingv1alpha.Network) map[string]string {
+	labels := map[string]string{networkingv1alpha.NetworkUIDLabel: string(network.UID)}
+	if len(validation.IsValidLabelValue(network.Name)) == 0 {
+		labels[networkingv1alpha.NetworkLabel] = network.Name
+	}
+	return labels
+}
+
+// internalDNSContextAnnotations ask DNS to copy the network labels to the
+// managed zone, and describe the zone by the network it serves, which DNS also
+// copies to the zone.
+func internalDNSContextAnnotations(network *networkingv1alpha.Network) map[string]string {
+	name := network.Name
+	if display := network.Annotations[internalDNSDisplayNameAnnotation]; display != "" {
+		name = display
+	}
+	return map[string]string{
+		internalDNSManagedLabelsAnnotation: internalDNSManagedLabels,
+		internalDNSDescriptionAnnotation:   "Private DNS for the " + name + " VPC",
+	}
+}
+
+// labelInternalDNSContext adds the network labels and annotations to a context
+// created before it carried them, and keeps the description current.
+func labelInternalDNSContext(ctx context.Context, cl client.Client, current *unstructured.Unstructured, network *networkingv1alpha.Network) error {
+	base := current.DeepCopy()
+	labels := current.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	changed := false
+	for key, value := range internalDNSNetworkLabels(network) {
+		if labels[key] != value {
+			labels[key] = value
+			changed = true
+		}
+	}
+	annotations := current.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	for key, value := range internalDNSContextAnnotations(network) {
+		if annotations[key] != value {
+			annotations[key] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	current.SetLabels(labels)
+	current.SetAnnotations(annotations)
+	return cl.Patch(ctx, current, client.MergeFrom(base))
 }
 
 func resolverContextReady(obj *unstructured.Unstructured) bool {

@@ -56,6 +56,8 @@ const (
 	// internalDNSManagedLabelsAnnotation names the context labels DNS copies to
 	// the context's managed zone.
 	internalDNSManagedLabelsAnnotation = "dns.networking.miloapis.com/managed-object-labels"
+	internalDNSDescriptionAnnotation   = "kubernetes.io/description"
+	internalDNSDisplayNameAnnotation   = "kubernetes.io/display-name"
 
 	internalDNSRegionTopologyKey = "topology.datum.net/region"
 	internalDNSRetryInterval     = 10 * time.Second
@@ -312,11 +314,10 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 
 	desired := newInternalDNSObject(internalDNSContextGVK, network.Namespace, name)
 	desired.SetLabels(internalDNSNetworkLabels(network))
-	desired.SetAnnotations(map[string]string{
-		internalDNSOwnerNetworkUIDAnnotation: string(network.UID),
-		internalDNSOwnerProjectUIDAnnotation: string(projectUID),
-		internalDNSManagedLabelsAnnotation:   internalDNSManagedLabels,
-	})
+	annotations := internalDNSContextAnnotations(network)
+	annotations[internalDNSOwnerNetworkUIDAnnotation] = string(network.UID)
+	annotations[internalDNSOwnerProjectUIDAnnotation] = string(projectUID)
+	desired.SetAnnotations(annotations)
 	desired.SetOwnerReferences([]metav1.OwnerReference{{
 		APIVersion: networkingv1alpha.GroupVersion.String(), Kind: "Network", Name: network.Name,
 		UID: network.UID, Controller: boolPtr(true), BlockOwnerDeletion: boolPtr(true),
@@ -342,9 +343,22 @@ func internalDNSNetworkLabels(network *networkingv1alpha.Network) map[string]str
 	return labels
 }
 
-// labelInternalDNSContext adds the network labels, and the annotation asking
-// DNS to copy them to the managed zone, to a context created before it carried
-// them.
+// internalDNSContextAnnotations ask DNS to copy the network labels to the
+// managed zone, and describe the zone by the network it serves, which DNS also
+// copies to the zone.
+func internalDNSContextAnnotations(network *networkingv1alpha.Network) map[string]string {
+	name := network.Name
+	if display := network.Annotations[internalDNSDisplayNameAnnotation]; display != "" {
+		name = display
+	}
+	return map[string]string{
+		internalDNSManagedLabelsAnnotation: internalDNSManagedLabels,
+		internalDNSDescriptionAnnotation:   "Private DNS for the " + name + " VPC",
+	}
+}
+
+// labelInternalDNSContext adds the network labels and annotations to a context
+// created before it carried them, and keeps the description current.
 func labelInternalDNSContext(ctx context.Context, cl client.Client, current *unstructured.Unstructured, network *networkingv1alpha.Network) error {
 	base := current.DeepCopy()
 	labels := current.GetLabels()
@@ -362,9 +376,11 @@ func labelInternalDNSContext(ctx context.Context, cl client.Client, current *uns
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	if annotations[internalDNSManagedLabelsAnnotation] != internalDNSManagedLabels {
-		annotations[internalDNSManagedLabelsAnnotation] = internalDNSManagedLabels
-		changed = true
+	for key, value := range internalDNSContextAnnotations(network) {
+		if annotations[key] != value {
+			annotations[key] = value
+			changed = true
+		}
 	}
 	if !changed {
 		return nil

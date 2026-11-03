@@ -857,6 +857,13 @@ func TestInternalDNSContextNamesItsNetwork(t *testing.T) {
 	if got := stored.GetAnnotations()[internalDNSManagedLabelsAnnotation]; got != internalDNSManagedLabels {
 		t.Fatalf("existing context managed labels annotation = %q", got)
 	}
+	if got := stored.GetAnnotations()[internalDNSDescriptionAnnotation]; got != "Private DNS for the blue VPC" {
+		t.Fatalf("existing context description = %q", got)
+	}
+	network.Annotations = map[string]string{internalDNSDisplayNameAnnotation: "Blue network"}
+	if got := internalDNSContextAnnotations(network)[internalDNSDescriptionAnnotation]; got != "Private DNS for the Blue network VPC" {
+		t.Fatalf("display name description = %q", got)
+	}
 
 	// A name too long for a label value still gets the UID label.
 	long := network.DeepCopy()

@@ -26,6 +26,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/dnsaccess"
+	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
 const (
@@ -42,9 +43,11 @@ var internalDNSServiceProtocols = []networkv1alpha1.NetworkServiceProtocol{
 }
 
 type InternalDNSCellReconciler struct {
-	Config     config.InternalDNSConfig
-	HubCluster cluster.Cluster
-	Now        func() time.Time
+	Location    config.LocationConfig
+	localReader client.Reader
+	Config      config.InternalDNSConfig
+	HubCluster  cluster.Cluster
+	Now         func() time.Time
 
 	mgr mcmanager.Manager
 }
@@ -73,6 +76,19 @@ func (r *InternalDNSCellReconciler) reconcile(
 	cl client.Client,
 	networkContext *networkingv1alpha.NetworkContext,
 ) (ctrl.Result, error) {
+	// Legacy broad policies can deliver another location's context. Do not
+	// program it or overwrite the owning cell's readiness with NoAttachments.
+	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
+	if err != nil {
+		var unresolved *locationidentity.LocationUnresolved
+		if errors.As(err, &unresolved) {
+			return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	if identity.Reference.Name != networkContext.Spec.Location.Name {
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+	}
 	settings, err := internalDNSSettingsFromAnnotations(networkContext.Annotations, r.Config.Nameservers())
 	serviceDestination := networkContext.Annotations[InternalDNSServiceDestinationAnnotation]
 	region := networkContext.Annotations[InternalDNSRegionAnnotation]
@@ -498,6 +514,7 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 		return errors.New("a federation hub cluster is required")
 	}
 	r.mgr = mgr
+	r.localReader = mgr.GetLocalManager().GetClient()
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false)).
 		Named("internaldns-cell").

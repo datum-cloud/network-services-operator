@@ -15,6 +15,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -51,6 +52,7 @@ type presenceScenario struct {
 	ctx context.Context
 
 	hub        client.Client
+	restConfig *rest.Config
 	reconciler *NetworkPresenceReconciler
 
 	hubNamespace     string
@@ -79,7 +81,7 @@ type presenceOptions struct {
 
 func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 	t.Helper()
-	cl, _ := startNetworkInterfaceEnv(t)
+	cl, cfg := startNetworkInterfaceEnv(t)
 	ctx := context.Background()
 
 	suffix := sanitizeName(strings.ToLower(t.Name()))
@@ -90,6 +92,7 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 		t:                t,
 		ctx:              ctx,
 		hub:              cl,
+		restConfig:       cfg,
 		hubNamespace:     "hub-" + suffix,
 		projectNamespace: "proj-" + suffix,
 		locationName:     "loc-" + suffix,

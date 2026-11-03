@@ -168,7 +168,8 @@ Operator deployment config is composed from Kustomize bases and overlays under
 
 ### CI
 GitHub Actions enforce the same commands locally available:
-`make test` (test.yml), the `test-infra` e2e env (test-e2e.yml, via
+the unit and envtest suite (ci.yaml; `make test` locally), the `test-infra`
+e2e env (test-e2e.yml, via
 `task test-infra:up` + `task test-infra:test-e2e`), `golangci-lint`
 (lint.yml), and kustomize validation (validate-kustomize.yaml). Run them
 locally before pushing.

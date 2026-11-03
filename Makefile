@@ -65,10 +65,9 @@ locations-crds: kustomize ## Render the locations service CRDs envtest installs.
 	mkdir -p $(LOCALBIN)/crds/locations
 	$(KUSTOMIZE) build config/tools/locations-crds -o $(LOCALBIN)/crds/locations
 
-# The test timeout matches ci.yaml's, which says why.
 .PHONY: test
 test: manifests generate fmt vet envtest locations-crds ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -timeout 25m -coverprofile cover.out
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # The e2e suite runs against the two-cluster prod-fidelity env; bring it up and
 # run it with `task test-infra:up` then `task test-infra:test-e2e`

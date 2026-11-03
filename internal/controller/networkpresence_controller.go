@@ -850,6 +850,12 @@ func (r *NetworkPresenceReconciler) SetupWithManager(mgr manager.Manager) error 
 	r.hub = mgr.GetClient()
 
 	builder := ctrl.NewControllerManagedBy(mgr).
+		// A presence is keyed as the hub's copy of its context is: the same
+		// namespace and name. The copy lasts as long as the presence does, so the
+		// list of copies on start brings back every presence, the ones nothing
+		// declares included, whose waits went with the process that set them.
+		For(&networkingv1alpha.NetworkContext{}).
+		// A binding declares a presence, also before its context has a copy.
 		Watches(&networkingv1alpha.NetworkBinding{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, obj client.Object) []reconcile.Request {
 				binding, ok := obj.(*networkingv1alpha.NetworkBinding)

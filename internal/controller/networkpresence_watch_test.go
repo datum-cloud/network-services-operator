@@ -358,3 +358,29 @@ func TestAPresenceNothingDeclaresEndsAtItsGraceAfterARestart(t *testing.T) {
 		return apierrors.IsNotFound(err)
 	})
 }
+
+// mirrorNetwork stands in for the replicator, which mirrors every network onto
+// the hub and deletes the mirror as soon as the network is deleted.
+func (s *presenceScenario) mirrorNetwork() *networkingv1alpha.Network {
+	s.t.Helper()
+	mirror := &networkingv1alpha.Network{}
+	mirror.Namespace = s.hubNamespace
+	mirror.Name = s.networkName
+	mirror.Spec = s.network.Spec
+	require.NoError(s.t, s.hub.Create(s.ctx, mirror))
+	return mirror
+}
+
+// The hub's mirror of a network goes as soon as the network is deleted, and a
+// presence nothing declares hears the deletion from it, not at its next resync.
+func TestANetworkDeletionReachesAPresenceNothingDeclaresAtOnce(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Hour})
+	mirror := s.mirrorNetwork()
+	s.runPresence(time.Hour)
+	s.unclaimed()
+
+	s.deleteNetwork()
+	require.NoError(t, s.hub.Delete(s.ctx, mirror))
+
+	s.eventually("the network's deletion ends the presence well before its resync", s.networkFinishes)
+}

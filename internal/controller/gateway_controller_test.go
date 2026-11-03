@@ -2162,6 +2162,21 @@ func TestReconcileGatewayStatus_DroppedListenerIsNotProgrammed(t *testing.T) {
 			expectReason: string(gatewayv1.GatewayReasonPending),
 		},
 		{
+			name:             "listener withheld by a wildcard the project is not entitled to",
+			listeners:        []gatewayv1.Listener{customListener("custom-https", "*.claimed.example.com")},
+			claimedHostnames: []string{"*.claimed.example.com"},
+			certHealth: map[gatewayv1.SectionName]listenerCertStatus{
+				"custom-https": {
+					reason:          gatewayv1.ListenerReasonInvalidCertificateRef,
+					message:         "wildcard hostnames are not enabled",
+					issuanceBlocked: true,
+					issuanceReason:  certificateServiceReasonWildcardNotEntitled,
+				},
+			},
+			expectStatus: metav1.ConditionFalse,
+			expectReason: string(gatewayv1.GatewayReasonListenersNotValid),
+		},
+		{
 			name: "certificate and hostname drops report the hostname",
 			listeners: []gatewayv1.Listener{
 				customListener("custom-https", "claimed.example.com"),

@@ -955,8 +955,8 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 }
 
 // listenerDropReport names the spec listeners that never reached the downstream
-// gateway, and records whether an unusable certificate held back every one of
-// them.
+// gateway, and records whether a certificate still on its way held back every
+// one of them.
 type listenerDropReport struct {
 	names           []gatewayv1.SectionName
 	allCertWithheld bool
@@ -1030,7 +1030,10 @@ func summarizeDroppedListeners(
 
 		report.names = append(report.names, l.Name)
 
-		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy {
+		// A wildcard the project is not entitled to never gets a certificate,
+		// so it does not clear on its own like a certificate still being issued.
+		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy ||
+			status.issuanceReason == certificateServiceReasonWildcardNotEntitled {
 			report.allCertWithheld = false
 		}
 	}

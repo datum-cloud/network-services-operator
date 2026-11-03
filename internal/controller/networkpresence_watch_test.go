@@ -9,14 +9,17 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
@@ -357,4 +360,87 @@ func TestAPresenceNothingDeclaresEndsAtItsGraceAfterARestart(t *testing.T) {
 		_, err := s.readContext()
 		return apierrors.IsNotFound(err)
 	})
+}
+
+// mirrorNetwork stands in for the replicator, which mirrors every network onto
+// the hub and deletes the mirror as soon as the network is deleted.
+func (s *presenceScenario) mirrorNetwork() *networkingv1alpha.Network {
+	s.t.Helper()
+	mirror := &networkingv1alpha.Network{}
+	mirror.Namespace = s.hubNamespace
+	mirror.Name = s.networkName
+	mirror.Spec = s.network.Spec
+	require.NoError(s.t, s.hub.Create(s.ctx, mirror))
+	return mirror
+}
+
+// The hub's mirror of a network goes as soon as the network is deleted, and a
+// presence nothing declares hears the deletion from it, not at its next resync.
+func TestANetworkDeletionReachesAPresenceNothingDeclaresAtOnce(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{unclaimedGrace: time.Hour})
+	mirror := s.mirrorNetwork()
+	s.runPresence(time.Hour)
+	s.unclaimed()
+
+	s.deleteNetwork()
+	require.NoError(t, s.hub.Delete(s.ctx, mirror))
+
+	s.eventually("the network's deletion ends the presence well before its resync", s.networkFinishes)
+}
+
+// hubCopy writes the hub copy of a context of network at location into a hub
+// namespace.
+func (s *presenceScenario) hubCopy(namespace, network, location string) reconcile.Request {
+	s.t.Helper()
+	copied := &networkingv1alpha.NetworkContext{}
+	copied.Namespace = namespace
+	copied.Name = networkContextName(network, locationsv1alpha1.LocationReference{Name: location})
+	copied.Labels = map[string]string{
+		networkingv1alpha.NetworkLabel:  network,
+		networkingv1alpha.LocationLabel: location,
+	}
+	copied.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: network}
+	copied.Spec.Location = locationsv1alpha1.LocationReference{Name: location}
+	copied.Spec.IPFamilies = []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol}
+	copied.Spec.MTU = 1440
+	require.NoError(s.t, s.hub.Create(s.ctx, copied))
+	return reconcile.Request{NamespacedName: client.ObjectKeyFromObject(copied)}
+}
+
+// A network's mirror maps to its presences in every location, and to no other
+// network's, nor to a network of the same name in another project.
+func TestANetworkMirrorMapsToItsPresencesInItsNamespace(t *testing.T) {
+	s := newPresenceScenario(t, presenceOptions{})
+	other := &corev1.Namespace{}
+	other.Name = "other-" + s.hubNamespace[:40]
+	require.NoError(t, s.hub.Create(s.ctx, other))
+
+	want := []reconcile.Request{
+		s.hubCopy(s.hubNamespace, s.networkName, "us-east-1"),
+		s.hubCopy(s.hubNamespace, s.networkName, "us-central-1"),
+	}
+	s.hubCopy(s.hubNamespace, "another-network", "us-east-1")
+	s.hubCopy(other.Name, s.networkName, "us-east-1")
+
+	presence := &NetworkPresenceReconciler{hub: s.hub}
+	got := presence.presencesOfNetworkMirror(s.ctx, s.mirrorNetwork())
+
+	require.ElementsMatch(t, want, got)
+}
+
+// Only a mirror's deletion brings presences back. Its creation, in every list a
+// start makes, and its edits say nothing a waiting presence reads.
+func TestOnlyANetworkMirrorGoingBringsItsPresencesBack(t *testing.T) {
+	live := &networkingv1alpha.Network{}
+	going := live.DeepCopy()
+	going.DeletionTimestamp = ptr.To(metav1.Now())
+	going.Finalizers = []string{"test.datumapis.com/hold"}
+	passes := networkMirrorGoing()
+
+	require.False(t, passes.Create(event.CreateEvent{Object: live}), "a creation")
+	require.False(t, passes.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: live.DeepCopy()}), "an edit")
+	require.True(t, passes.Update(event.UpdateEvent{ObjectOld: live, ObjectNew: going}),
+		"a deletion that a finalizer holds")
+	require.True(t, passes.Delete(event.DeleteEvent{Object: live}), "a deletion")
+	require.False(t, passes.Generic(event.GenericEvent{Object: live}), "a generic event")
 }

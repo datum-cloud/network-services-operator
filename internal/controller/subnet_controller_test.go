@@ -4,7 +4,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,7 +29,7 @@ func TestSubnetPublishesTheRangeItsSpecCarries(t *testing.T) {
 	ctx := context.Background()
 
 	namespace := &corev1.Namespace{}
-	namespace.Name = "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespace.Name = "ns-" + scenarioSuffix(t)
 	require.NoError(t, cl.Create(ctx, namespace))
 
 	subnet := &networkingv1alpha.Subnet{}
@@ -67,7 +66,7 @@ func TestSubnetWithoutARangeIsStillAllocatedFromItsLocation(t *testing.T) {
 	ctx := context.Background()
 
 	namespace := &corev1.Namespace{}
-	namespace.Name = "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespace.Name = "ns-" + scenarioSuffix(t)
 	require.NoError(t, cl.Create(ctx, namespace))
 
 	location := &locationsv1alpha1.Location{}
@@ -77,6 +76,7 @@ func TestSubnetWithoutARangeIsStillAllocatedFromItsLocation(t *testing.T) {
 		Topology:         map[string]string{locationsv1alpha1.TopologyCityCodeKey: "DFW"},
 	}
 	require.NoError(t, cl.Create(ctx, location))
+	t.Cleanup(func() { require.NoError(t, client.IgnoreNotFound(cl.Delete(ctx, location))) })
 
 	networkContext := &networkingv1alpha.NetworkContext{}
 	networkContext.Namespace = namespace.Name
@@ -199,7 +199,7 @@ func TestSubnetReadyFollowsTheCellsReport(t *testing.T) {
 	ctx := context.Background()
 
 	namespace := &corev1.Namespace{}
-	namespace.Name = "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespace.Name = "ns-" + scenarioSuffix(t)
 	require.NoError(t, cl.Create(ctx, namespace))
 
 	subnet := &networkingv1alpha.Subnet{}

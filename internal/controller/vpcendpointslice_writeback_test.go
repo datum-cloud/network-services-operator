@@ -49,8 +49,9 @@ func newReachability(t *testing.T) *reachability {
 	cellPlane, hubPlane := startPlanes(t)
 	ctx := context.Background()
 
-	namespace := "ns-" + sanitizeName(strings.ToLower(t.Name()))
-	projectNamespace := "proj-" + sanitizeName(strings.ToLower(t.Name()))
+	suffix := scenarioSuffix(t)
+	namespace := "ns-" + suffix
+	projectNamespace := "proj-" + suffix
 
 	for _, cl := range []client.Client{cellPlane, hubPlane} {
 		ns := &corev1.Namespace{}

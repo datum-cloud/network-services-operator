@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	eventsv1client "k8s.io/client-go/kubernetes/typed/events/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
@@ -35,7 +34,6 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
 
@@ -390,31 +388,12 @@ func publicV4Class() *ipamv1alpha1.IPClass {
 	return class
 }
 
+// startNetworkInterfaceEnv returns the package's first plane, which a scenario
+// here uses as its cell, its hub or its project's control plane.
 func startNetworkInterfaceEnv(t *testing.T) (client.Client, *rest.Config) {
 	t.Helper()
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
-	}
-
-	testScheme := runtime.NewScheme()
-	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
-	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
-	require.NoError(t, locationsv1alpha1.AddToScheme(testScheme))
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "config", "crd", "bases"),
-			filepath.Join("..", "..", "bin", "crds", "locations"),
-		},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = env.Stop() })
-
-	cl, err := client.New(cfg, client.Options{Scheme: testScheme})
-	require.NoError(t, err)
-	return cl, cfg
+	cell := sharedPlanes(t)[0]
+	return cell.client, cell.config
 }
 
 type scenario struct {
@@ -435,7 +414,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 	cl, restConfig := startNetworkInterfaceEnv(t)
 	ctx := context.Background()
 
-	namespaceName := "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespaceName := "ns-" + scenarioSuffix(t)
 
 	namespace := &corev1.Namespace{}
 	namespace.Name = namespaceName
@@ -534,19 +513,6 @@ func (c *transientNamespaceClient) Get(
 		return apierrors.NewServiceUnavailable("the server is currently unable to handle the request")
 	}
 	return c.Client.Get(ctx, key, obj, opts...)
-}
-
-func sanitizeName(in string) string {
-	var b strings.Builder
-	for _, r := range in {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }
 
 func (s *scenario) createClaim(name string, spec networkingv1alpha.NetworkInterfaceClaimSpec) *networkingv1alpha.NetworkInterfaceClaim {

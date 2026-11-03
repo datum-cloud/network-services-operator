@@ -412,7 +412,7 @@ func (s *presenceScenario) hubCopy(namespace, network, location string) reconcil
 func TestANetworkMirrorMapsToItsPresencesInItsNamespace(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 	other := &corev1.Namespace{}
-	other.Name = "other-" + s.hubNamespace[:40]
+	other.Name = "other-" + s.hubNamespace
 	require.NoError(t, s.hub.Create(s.ctx, other))
 
 	want := []reconcile.Request{

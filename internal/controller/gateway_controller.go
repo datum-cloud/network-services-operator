@@ -329,16 +329,6 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 		listenerCertHealth,
 	)
 
-	// A listener the user asked for that never reaches the downstream gateway
-	// makes the gateway dishonest about being programmed, whatever held it back.
-	// Derived from the listener set actually built, so a new reason to withhold
-	// one is covered without being enumerated here.
-	droppedListeners := summarizeDroppedListeners(
-		upstreamGateway,
-		desiredDownstreamGateway,
-		listenerCertHealth,
-	)
-
 	if err := writeDownstreamGateway(ctx, downstreamStrategy, upstreamGateway, downstreamGateway,
 		desiredDownstreamGateway.Spec, awaitsHostnameClaim(hostnameRefusals)); err != nil {
 		result.Err = err
@@ -387,6 +377,17 @@ func (r *GatewayReconciler) ensureDownstreamGateway(
 	} else {
 		clearCertificateServiceFailing(upstreamClusterName, upstreamGateway)
 	}
+
+	// A listener the user asked for that never reaches the downstream gateway
+	// makes the gateway dishonest about being programmed, whatever held it back.
+	// Derived from the listener set actually built, so a new reason to withhold
+	// one is covered without being enumerated here. Summarized after the
+	// certificate service so an entitlement block is known.
+	droppedListeners := summarizeDroppedListeners(
+		upstreamGateway,
+		desiredDownstreamGateway,
+		listenerCertHealth,
+	)
 
 	certResult := r.ensureListenerCertificates(
 		ctx,
@@ -955,8 +956,8 @@ func (r *GatewayReconciler) getDesiredDownstreamGateway(
 }
 
 // listenerDropReport names the spec listeners that never reached the downstream
-// gateway, and records whether an unusable certificate held back every one of
-// them.
+// gateway, and records whether a certificate still on its way held back every
+// one of them.
 type listenerDropReport struct {
 	names           []gatewayv1.SectionName
 	allCertWithheld bool
@@ -1030,7 +1031,8 @@ func summarizeDroppedListeners(
 
 		report.names = append(report.names, l.Name)
 
-		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy {
+		if status, gated := listenerCertHealth[l.Name]; !gated || status.healthy ||
+			status.issuanceReason == certificateServiceReasonWildcardNotEntitled {
 			report.allCertWithheld = false
 		}
 	}

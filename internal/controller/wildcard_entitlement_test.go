@@ -492,3 +492,26 @@ func seriesMatching(t *testing.T, vec prometheus.Collector, want prometheus.Labe
 	}
 	return count
 }
+
+func TestWildcardNotEntitledIsNotReportedPending(t *testing.T) {
+	f := newEntitlementFixture(t, "*.shop.example.com", false, fakeWildcardEntitlements{entitled: false})
+
+	_, created, _ := f.h.reconcile()
+	require.NotNil(t, created, "downstream gateway")
+	downstream := &gatewayv1.Gateway{}
+	require.NoError(t, f.h.downstream.Get(f.h.ctx, client.ObjectKeyFromObject(created), downstream))
+	apimeta.SetStatusCondition(&downstream.Status.Conditions, metav1.Condition{
+		Type:   string(gatewayv1.GatewayConditionProgrammed),
+		Status: metav1.ConditionTrue,
+		Reason: string(gatewayv1.GatewayReasonProgrammed),
+	})
+	require.NoError(t, f.h.downstream.Status().Update(f.h.ctx, downstream))
+
+	upstream, _, _ := f.h.reconcile()
+
+	programmed := apimeta.FindStatusCondition(upstream.Status.Conditions, string(gatewayv1.GatewayConditionProgrammed))
+	require.NotNil(t, programmed, "upstream Programmed condition")
+	assert.Equal(t, metav1.ConditionFalse, programmed.Status)
+	assert.Equal(t, string(gatewayv1.GatewayReasonListenersNotValid), programmed.Reason,
+		"a wildcard the project is not entitled to never gets a certificate, so it is not Pending")
+}

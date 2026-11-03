@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -296,10 +297,14 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 		if domain != internalDNSDefaultDomain || !enabled {
 			return nil, fmt.Errorf("DNSResolverContext %s/%s does not request the network default domain", network.Namespace, name)
 		}
+		if err := labelInternalDNSContext(ctx, cl, current, network); err != nil {
+			return nil, err
+		}
 		return current, nil
 	}
 
 	desired := newInternalDNSObject(internalDNSContextGVK, network.Namespace, name)
+	desired.SetLabels(internalDNSNetworkLabels(network))
 	desired.SetAnnotations(map[string]string{
 		internalDNSOwnerNetworkUIDAnnotation: string(network.UID),
 		internalDNSOwnerProjectUIDAnnotation: string(projectUID),
@@ -316,6 +321,39 @@ func (r *InternalDNSProjectReconciler) ensureContext(
 		return nil, err
 	}
 	return desired, nil
+}
+
+// internalDNSNetworkLabels names the network a resolver context serves. DNS
+// copies a context's labels to its managed zone, so the zone says which
+// network it is for.
+func internalDNSNetworkLabels(network *networkingv1alpha.Network) map[string]string {
+	labels := map[string]string{networkingv1alpha.NetworkUIDLabel: string(network.UID)}
+	if len(validation.IsValidLabelValue(network.Name)) == 0 {
+		labels[networkingv1alpha.NetworkLabel] = network.Name
+	}
+	return labels
+}
+
+// labelInternalDNSContext adds the network labels to a context created before
+// it carried them.
+func labelInternalDNSContext(ctx context.Context, cl client.Client, current *unstructured.Unstructured, network *networkingv1alpha.Network) error {
+	base := current.DeepCopy()
+	labels := current.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	changed := false
+	for key, value := range internalDNSNetworkLabels(network) {
+		if labels[key] != value {
+			labels[key] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	current.SetLabels(labels)
+	return cl.Patch(ctx, current, client.MergeFrom(base))
 }
 
 func resolverContextReady(obj *unstructured.Unstructured) bool {

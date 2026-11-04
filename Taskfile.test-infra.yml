@@ -111,7 +111,7 @@ vars:
 tasks:
 
   tools:
-    desc: "Install the pinned tool binaries this env needs into bin/ (kind v0.32.0, karmadactl, kustomize, cmctl, chainsaw, crane). Idempotent — skips any already present. Lets CI and a clean checkout bring up the env without hand-placed binaries."
+    desc: "Install the pinned tool binaries this env needs into bin/ (kind v0.32.0, karmadactl, kustomize, cmctl, chainsaw, crane). Idempotent — skips a tool whose pinned version is already there. Lets CI and a clean checkout bring up the env without hand-placed binaries. With CI_RELEASE_TOOLS=1 on Linux x86_64, the Go tools come from their release binaries, each checked against its SHA-256 (hack/install-go-tool.sh); elsewhere `go install` builds them."
     vars:
       KIND_TOOL_VERSION: v0.32.0
       KARMADACTL_VERSION: v1.15.2
@@ -120,20 +120,15 @@ tasks:
       CHAINSAW_VERSION: v0.2.15
     cmds:
       - mkdir -p {{.REPO}}/bin
-      - |
-        if [ ! -x {{.REPO}}/bin/kind-{{.KIND_TOOL_VERSION}} ]; then
-          echo "installing kind {{.KIND_TOOL_VERSION}}"
-          GOBIN={{.REPO}}/bin go install sigs.k8s.io/kind@{{.KIND_TOOL_VERSION}}
-          mv {{.REPO}}/bin/kind {{.REPO}}/bin/kind-{{.KIND_TOOL_VERSION}}
-        fi
-      - '[ -x {{.REPO}}/bin/kustomize ] || GOBIN={{.REPO}}/bin go install sigs.k8s.io/kustomize/kustomize/v5@{{.KUSTOMIZE_VERSION}}'
-      - '[ -x {{.REPO}}/bin/cmctl ] || GOBIN={{.REPO}}/bin go install github.com/cert-manager/cmctl/v2@{{.CMCTL_VERSION}}'
-      - '[ -x {{.REPO}}/bin/chainsaw ] || GOBIN={{.REPO}}/bin go install github.com/kyverno/chainsaw@{{.CHAINSAW_VERSION}}'
+      - hack/install-go-tool.sh {{.REPO}}/bin kind sigs.k8s.io/kind {{.KIND_TOOL_VERSION}}
+      - hack/install-go-tool.sh {{.REPO}}/bin kustomize sigs.k8s.io/kustomize/kustomize/v5 {{.KUSTOMIZE_VERSION}}
+      - hack/install-go-tool.sh {{.REPO}}/bin cmctl github.com/cert-manager/cmctl/v2 {{.CMCTL_VERSION}}
+      - hack/install-go-tool.sh {{.REPO}}/bin chainsaw github.com/kyverno/chainsaw {{.CHAINSAW_VERSION}}
       # crane reads the published IPAM manifest bundle out of ghcr.io. The flux
       # CLI can do this too, but its go.mod replace directives stop `go install`
       # building it, and crane is a much smaller dependency than all of flux for
       # one registry read.
-      - '[ -x {{.REPO}}/bin/crane ] || GOBIN={{.REPO}}/bin go install github.com/google/go-containerregistry/cmd/crane@{{.CRANE_VERSION}}'
+      - hack/install-go-tool.sh {{.REPO}}/bin crane github.com/google/go-containerregistry/cmd/crane {{.CRANE_VERSION}}
       # karmadactl carries replace directives in its go.mod, so `go install` can't
       # build it; pull the published release binary for this OS/arch instead.
       - |

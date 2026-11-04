@@ -271,6 +271,75 @@ export function useNetworkLoadBalancerRoutes(
   });
 }
 
+const SSAR_PATH = '/apis/authorization.k8s.io/v1/selfsubjectaccessreviews';
+const PERMISSION_STALE_MS = 5 * 60_000;
+const NETWORKING_GROUP = 'networking.datumapis.com';
+
+export async function canPerform(
+  projectId: string,
+  group: string,
+  resource: string,
+  verb: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${getProjectScopedBase(projectId)}${SSAR_PATH}`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiVersion: 'authorization.k8s.io/v1',
+        kind: 'SelfSubjectAccessReview',
+        spec: { resourceAttributes: { group, resource, verb, namespace: 'default' } },
+      }),
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { status?: { allowed?: boolean; denied?: boolean } };
+    return !!body.status?.allowed && !body.status?.denied;
+  } catch {
+    return false;
+  }
+}
+
+export interface NetworkPermissions {
+  canCreateNetwork: boolean;
+  canUpdateNetwork: boolean;
+  canDeleteNetwork: boolean;
+  canCreateService: boolean;
+  canDeleteService: boolean;
+}
+
+export const NO_NETWORK_PERMISSIONS: NetworkPermissions = {
+  canCreateNetwork: false,
+  canUpdateNetwork: false,
+  canDeleteNetwork: false,
+  canCreateService: false,
+  canDeleteService: false,
+};
+
+async function fetchNetworkPermissions(projectId: string): Promise<NetworkPermissions> {
+  const [canCreateNetwork, canUpdateNetwork, canDeleteNetwork, canCreateService, canDeleteService] =
+    await Promise.all([
+      canPerform(projectId, NETWORKING_GROUP, 'networks', 'create'),
+      canPerform(projectId, NETWORKING_GROUP, 'networks', 'patch'),
+      canPerform(projectId, NETWORKING_GROUP, 'networks', 'delete'),
+      canPerform(projectId, NETWORKING_GROUP, 'networkservices', 'create'),
+      canPerform(projectId, NETWORKING_GROUP, 'networkservices', 'delete'),
+    ]);
+  return { canCreateNetwork, canUpdateNetwork, canDeleteNetwork, canCreateService, canDeleteService };
+}
+
+export function useNetworkPermissions(
+  projectId: string | undefined
+): NetworkPermissions & { isLoading: boolean } {
+  const query = useQuery({
+    queryKey: [PLUGIN_ID, 'permissions', projectId],
+    enabled: !!projectId,
+    queryFn: () => fetchNetworkPermissions(projectId as string),
+    staleTime: PERMISSION_STALE_MS,
+    retry: false,
+  });
+  return { ...(query.data ?? NO_NETWORK_PERMISSIONS), isLoading: query.isPending && !!projectId };
+}
+
 export function computeWorkloadsHref(projectId: string): string {
   return `/project/${projectId}/services/compute-datumapis-com`;
 }

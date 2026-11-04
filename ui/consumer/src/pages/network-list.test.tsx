@@ -1,6 +1,7 @@
 import NetworkList from './network-list';
 import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
+import { ALL_NETWORK_PERMISSIONS, READ_ONLY_NETWORK_PERMISSIONS } from '../test/permissions';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
@@ -9,9 +10,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
-  return { ...actual, useNetworks: vi.fn() };
+  return { ...actual, useNetworkPermissions: vi.fn(), useNetworks: vi.fn() };
 });
 
+const useNetworkPermissionsMock = vi.mocked(api.useNetworkPermissions);
 const useNetworksMock = vi.mocked(api.useNetworks);
 
 function renderPage() {
@@ -42,6 +44,7 @@ function makeNetwork(name: string): Network {
 }
 
 beforeEach(() => {
+  useNetworkPermissionsMock.mockReset().mockReturnValue(ALL_NETWORK_PERMISSIONS);
   useNetworksMock.mockReset();
 });
 
@@ -128,5 +131,21 @@ describe('NetworkList state machine', () => {
 
     expect(screen.getByTestId('networking-plugin-network-table')).toBeInTheDocument();
     expect(screen.getByText('default')).toBeInTheDocument();
+  });
+
+
+  it('offers no create action to a read-only user', () => {
+    useNetworkPermissionsMock.mockReturnValue(READ_ONLY_NETWORK_PERMISSIONS);
+    useNetworksMock.mockReturnValue({
+      data: [],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    renderPage();
+
+    expect(screen.getByText(/no networks yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New' })).not.toBeInTheDocument();
   });
 });

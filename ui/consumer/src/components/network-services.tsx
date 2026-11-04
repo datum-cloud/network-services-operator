@@ -6,7 +6,12 @@ import { ServicesSkeleton } from './skeletons';
 import { ErrorOrRestrictedState, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
 import { TableSearch } from './table-search';
-import { useDeleteNetworkService, useNetworkServices } from '../lib/api';
+import {
+  useDeleteNetworkService,
+  useNetworkPermissions,
+  useNetworkServices,
+  type NetworkPermissions,
+} from '../lib/api';
 import {
   networkServiceMembersResolvedStatusToLabel,
   networkServiceReadyStatusToLabel,
@@ -55,18 +60,38 @@ function ServiceTable({
   services,
   projectId,
   networkName,
+  permissions,
 }: {
   services: NetworkService[];
   projectId: string | undefined;
   networkName: string | undefined;
+  permissions: NetworkPermissions;
 }) {
   const [deleteTarget, setDeleteTarget] = useState<NetworkService>();
   const deleteMutation = useDeleteNetworkService(projectId);
+  const { canCreateService, canDeleteService } = permissions;
 
   const columns = useMemo<ServiceColumn[]>(() => {
     const actions: ActionItem<NetworkService>[] = [
       { key: 'delete', label: 'Delete', variant: 'destructive', onClick: setDeleteTarget },
     ];
+    const actionsColumn: ServiceColumn = {
+      id: 'actions',
+      header: '',
+      enableSorting: false,
+      size: 48,
+      cell: ({ row }) => (
+        <div data-slot="dt-row-actions" className="inline-flex">
+          <MoreActions
+            row={row.original}
+            actions={actions}
+            sheetTitle={`Actions for ${row.original.name}`}
+            className="size-6 border"
+            iconClassName="size-3.5"
+          />
+        </div>
+      ),
+    };
     return [
       {
         id: 'name',
@@ -133,25 +158,9 @@ function ServiceTable({
           />
         ),
       },
-      {
-        id: 'actions',
-        header: '',
-        enableSorting: false,
-        size: 48,
-        cell: ({ row }) => (
-          <div data-slot="dt-row-actions" className="inline-flex">
-            <MoreActions
-              row={row.original}
-              actions={actions}
-              sheetTitle={`Actions for ${row.original.name}`}
-              className="size-6 border"
-              iconClassName="size-3.5"
-            />
-          </div>
-        ),
-      },
+      ...(canDeleteService ? [actionsColumn] : []),
     ];
-  }, []);
+  }, [canDeleteService]);
 
   return (
     <>
@@ -164,7 +173,9 @@ function ServiceTable({
         className="space-y-4">
         <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <TableSearch placeholder="Search services" />
-          <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
+          {canCreateService && (
+            <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
+          )}
         </div>
         <p className="text-muted-foreground text-xs">
           Services in this project — not limited to this network. A service's resolved network
@@ -210,6 +221,7 @@ export function NetworkServices({
   networkName: string | undefined;
 }) {
   const { data: services, isLoading, error, refetch } = useNetworkServices(projectId);
+  const permissions = useNetworkPermissions(projectId);
 
   if (isLoading) return <ServicesSkeleton />;
 
@@ -234,7 +246,11 @@ export function NetworkServices({
         <SectionEmpty
           title="No services yet"
           description="A service load-balances traffic across a workload's instances in every region they run in."
-          action={<CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />}
+          action={
+            permissions.canCreateService ? (
+              <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
+            ) : undefined
+          }
         />
       </div>
     );
@@ -248,7 +264,12 @@ export function NetworkServices({
         <StatTile icon={TriangleAlertIcon} label="Not ready" value={notReady} caption="needs attention" />
         <StatTile icon={UsersIcon} label="Members" value={totalMembers} caption="across all services" />
       </StatTileGrid>
-      <ServiceTable services={services ?? []} projectId={projectId} networkName={networkName} />
+      <ServiceTable
+        services={services ?? []}
+        projectId={projectId}
+        networkName={networkName}
+        permissions={permissions}
+      />
     </div>
   );
 }

@@ -31,8 +31,7 @@
       },
       "requirements": {
         "permissions": [
-          { "group": "networking.datumapis.com", "resource": "networks", "verb": "list" },
-          { "group": "networking.datumapis.com", "resource": "networks", "verb": "create" }
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "list" }
         ]
       }
     },
@@ -44,12 +43,7 @@
       },
       "requirements": {
         "permissions": [
-          { "group": "networking.datumapis.com", "resource": "networks", "verb": "get" },
-          { "group": "networking.datumapis.com", "resource": "networks", "verb": "update" },
-          { "group": "networking.datumapis.com", "resource": "networks", "verb": "delete" },
-          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "list" },
-          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "create" },
-          { "group": "networking.datumapis.com", "resource": "networkservices", "verb": "delete" }
+          { "group": "networking.datumapis.com", "resource": "networks", "verb": "get" }
         ]
       }
     },

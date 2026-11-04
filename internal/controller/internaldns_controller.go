@@ -749,7 +749,9 @@ func (r *InternalDNSReadinessReconciler) publish(
 	access := hubContext.Status.DNSAccess
 	hubCondition := apimeta.FindStatusCondition(hubContext.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
 	ready := hubCondition != nil && hubCondition.Status == metav1.ConditionTrue
-	if !ready || !dnsAccessMatches(intent, access) || access == nil || access.ServiceDestination != projectContext.Annotations[InternalDNSServiceDestinationAnnotation] {
+	if !ready || !dnsAccessMatches(intent, access) || access == nil ||
+		access.ServiceDestination != projectContext.Annotations[InternalDNSServiceDestinationAnnotation] ||
+		!sameInternalDNSIntent(projectContext.Annotations, hubContext.Annotations) {
 		condition := metav1.Condition{
 			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionUnknown,
 			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
@@ -935,6 +937,19 @@ func newInternalDNSObject(gvk schema.GroupVersionKind, namespace, name string) *
 	obj.SetNamespace(namespace)
 	obj.SetName(name)
 	return obj
+}
+
+// sameInternalDNSIntent reports whether the project context's DNS annotations
+// are the ones the hub copy carries. The hub copy only takes them once they
+// match the access DNS accepted, so settings are published from verified
+// intent alone.
+func sameInternalDNSIntent(project, hub map[string]string) bool {
+	for _, key := range internalDNSIntentAnnotations() {
+		if project[key] != hub[key] {
+			return false
+		}
+	}
+	return true
 }
 
 func internalDNSIntentAnnotations() []string {

@@ -19,7 +19,7 @@ Before enabling the feature:
   Consumer roles should manage Networks in the project API instead.
 - Apply the `config/components/networkcontext-dns-admission` policy in every
   API where the manager writes project NetworkContexts. It refuses any create
-  or update that changes `spec.dns` or a
+  or update that changes `spec.dns`, `spec.network`, `spec.location`, or a
   `networking.datumapis.com/internal-dns-*` annotation unless the request
   comes from a trusted identity. The trusted list names the manager's service account as
   `config/default` renders it. Replace it with the identity the manager
@@ -30,10 +30,14 @@ Before enabling the feature:
   controllers before enabling the project and cell DNS integrations.
 - The manager replicates a context's DNS annotations to the hub only after
   checking them against the access binding DNS accepted. While they don't
-  match, the hub copy keeps the last verified values and the manager logs
-  `keeping the last verified DNS annotations`. The project controller rewrites
-  changed annotations within a few seconds, so a persistent message points
-  at a binding DNS has refused or a binding that no longer exists.
+  match, the hub copy keeps the last verified values, the manager checks
+  again every minute, and at log verbosity 1 it logs
+  `keeping the last verified DNS annotations` with the reason. A held copy
+  usually means DNS has not accepted the binding, for example while its
+  resolver context is not ready.
+- With `internalDNS.enabled` off, the manager stops replicating new DNS
+  annotations to the hub but still replicates their removal, so cells keep
+  the access they have until a network turns DNS off.
 
 The generated manager role includes integration permissions. A runtime feature
 flag does not revoke RBAC grants. Deployments that require separate identities

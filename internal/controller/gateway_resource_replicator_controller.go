@@ -318,11 +318,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.ensureDownstreamResource(ctx, resourceCfg, upstreamClient, upstreamObj, downstreamStrategy); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
+	return r.ensureDownstreamResource(ctx, resourceCfg, upstreamClient, upstreamObj, downstreamStrategy)
 }
 
 // nolint:unparam
@@ -358,7 +354,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	upstreamClient client.Client,
 	upstreamObj *unstructured.Unstructured,
 	downstreamStrategy downstreamclient.ResourceStrategy,
-) error {
+) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Time the full downstream sync (CreateOrPatch) per resource kind so
@@ -374,30 +370,31 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	downstreamObjectMeta, err := downstreamStrategy.ObjectMetaFromUpstreamObject(ctx, upstreamObj)
 	if err != nil {
 		syncOutcome = syncOutcomeError
-		return fmt.Errorf("failed to derive downstream metadata: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed to derive downstream metadata: %w", err)
 	}
 
 	if isSecurityPolicyGVK(resource.gvk) {
 		if err := r.reconcileReferencedSecretLabels(ctx, upstreamClient, resource.gvk, upstreamObj.GetNamespace()); err != nil {
 			syncOutcome = syncOutcomeError
-			return err
+			return ctrl.Result{}, err
 		}
 
 		missing, err := r.missingDownstreamSecrets(ctx, upstreamObj, downstreamStrategy)
 		if err != nil {
 			syncOutcome = syncOutcomeError
-			return err
+			return ctrl.Result{}, err
 		}
 		if len(missing) > 0 {
 			if err := r.holdSecurityPolicy(ctx, resource, upstreamClient, upstreamObj, missing); err != nil {
 				syncOutcome = syncOutcomeError
-				return err
+				return ctrl.Result{}, err
 			}
-			return nil
+			return ctrl.Result{}, nil
 		}
 	}
 
 	propagateAnnotationsNow, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
+	var result ctrl.Result
 
 	downstreamObj := &unstructured.Unstructured{}
 	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
@@ -425,6 +422,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
 		if propagateAnnotationsNow {
 			propagateAnnotations(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations)
+		} else if annotationsDiffer(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations) {
+			// DNS objects aren't watched here, so check again for the access
+			// to be accepted.
+			result.RequeueAfter = internalDNSResyncInterval
 		}
 
 		if resource.replicationResourceConfig.stampUpstreamGeneration {
@@ -451,7 +452,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			replicatorConflictsTotal.WithLabelValues(resource.gvk.Kind).Inc()
 		}
 		syncOutcome = syncOutcomeError
-		return fmt.Errorf("failed to ensure downstream resource %s/%s: %w", downstreamObj.GetNamespace(), downstreamObj.GetName(), err)
+		return ctrl.Result{}, fmt.Errorf("failed to ensure downstream resource %s/%s: %w", downstreamObj.GetNamespace(), downstreamObj.GetName(), err)
 	}
 
 	if operation != controllerutil.OperationResultNone {
@@ -466,7 +467,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 
 	if verifyErr != nil {
 		syncOutcome = syncOutcomeError
-		return verifyErr
+		return ctrl.Result{}, verifyErr
 	}
 
 	// Propagate downstream status → upstream for types where a downstream
@@ -475,11 +476,11 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	if !resource.replicationResourceConfig.skipUpstreamStatusSync {
 		if err := r.syncUpstreamStatus(ctx, resource, upstreamClient, upstreamObj, downstreamObjectMeta, downstreamStrategy); err != nil {
 			syncOutcome = syncOutcomeError
-			return err
+			return ctrl.Result{}, err
 		}
 	}
 
-	return nil
+	return result, nil
 }
 
 // annotationsVerified reports whether the upstream object's propagated
@@ -504,9 +505,9 @@ func (r *GatewayResourceReplicatorReconciler) annotationsVerified(
 		return false, nil
 	}
 	networkName, _, _ := unstructured.NestedString(upstreamObj.Object, "spec", "network", "name")
-	err := verifyInternalDNSIntent(ctx, upstreamClient, upstreamObj, networkName)
+	err := verifyInternalDNSIntent(ctx, upstreamClient, upstreamObj, networkName, r.Config.InternalDNS.ServicePrefix)
 	if errors.Is(err, errInternalDNSIntentUnverified) {
-		log.FromContext(ctx).Info("keeping the last verified DNS annotations", "reason", err.Error())
+		log.FromContext(ctx).V(1).Info("keeping the last verified DNS annotations", "reason", err.Error())
 		return false, nil
 	}
 	if err != nil {
@@ -534,6 +535,16 @@ func propagateLabels(upstreamObj, downstreamObj *unstructured.Unstructured, name
 		}
 	}
 	downstreamObj.SetLabels(downstreamLabels)
+}
+
+func annotationsDiffer(upstreamObj, downstreamObj *unstructured.Unstructured, names []string) bool {
+	upstream, downstream := upstreamObj.GetAnnotations(), downstreamObj.GetAnnotations()
+	for _, name := range names {
+		if upstream[name] != downstream[name] {
+			return true
+		}
+	}
+	return false
 }
 
 func propagateAnnotations(upstreamObj, downstreamObj *unstructured.Unstructured, names []string) {

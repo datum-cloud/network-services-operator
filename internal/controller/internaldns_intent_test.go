@@ -24,7 +24,25 @@ import (
 	"go.datum.net/network-services-operator/internal/config"
 )
 
-const testDNSDestination = "fd70:100::10"
+const testDNSServicePrefix = "fd70:100::/64"
+
+// testDNSDestination is the destination allocated to the resolver context
+// acceptedDNSAccess returns.
+var testDNSDestination = func() string {
+	destination, err := internalDNSDestination(testDNSServicePrefix, "resolver-uid")
+	if err != nil {
+		panic(err)
+	}
+	return destination
+}()
+
+// verifiedDNSIntent is testDNSIntent naming the access acceptedDNSAccess
+// returns.
+func verifiedDNSIntent() map[string]string {
+	intent := testDNSIntent(time.Time{})
+	intent[InternalDNSServiceDestinationAnnotation] = testDNSDestination
+	return intent
+}
 
 func internalDNSIntentScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -89,6 +107,21 @@ func TestVerifyInternalDNSIntent(t *testing.T) {
 			annotations: func(a map[string]string) { a[InternalDNSSuffixAnnotation] = "red.internal" },
 			wantErr:     true,
 		},
+		"destination DNS accepted but not allocated to the context": {
+			annotations: func(a map[string]string) { a[InternalDNSServiceDestinationAnnotation] = "fd70:100::99" },
+			objects: func(_ *networkingv1alpha.Network, _, b *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(b.Object, "fd70:100::99", "spec", "destinationAddress")
+			},
+			wantErr: true,
+		},
+		"binding being deleted": {
+			objects: func(_ *networkingv1alpha.Network, _, b *unstructured.Unstructured) {
+				now := metav1.Now()
+				b.SetDeletionTimestamp(&now)
+				b.SetFinalizers([]string{"example.test/hold"})
+			},
+			wantErr: true,
+		},
 		"missing binding": {
 			annotations: func(a map[string]string) { a[InternalDNSAccessNameAnnotation] = "elsewhere" },
 			wantErr:     true,
@@ -141,14 +174,14 @@ func TestVerifyInternalDNSIntent(t *testing.T) {
 				tc.objects(network, dnsContext, binding)
 			}
 			networkContext := testNetworkContext("context", "context-uid")
-			networkContext.Annotations = testDNSIntent(time.Time{})
+			networkContext.Annotations = verifiedDNSIntent()
 			if tc.annotations != nil {
 				tc.annotations(networkContext.Annotations)
 			}
 			cl := fake.NewClientBuilder().WithScheme(internalDNSIntentScheme(t)).
 				WithObjects(network, dnsContext, binding).Build()
 
-			err := verifyInternalDNSIntent(context.Background(), cl, networkContext, networkContext.Spec.Network.Name)
+			err := verifyInternalDNSIntent(context.Background(), cl, networkContext, networkContext.Spec.Network.Name, testDNSServicePrefix)
 			if tc.wantErr != (err != nil) {
 				t.Fatalf("verify = %v, want error %v", err, tc.wantErr)
 			}
@@ -167,7 +200,7 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 	network, dnsContext, binding := acceptedDNSAccess(t)
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", UID: "ns-uid"}}
 	networkContext := testNetworkContext("context", "context-uid")
-	networkContext.Annotations = testDNSIntent(time.Time{})
+	networkContext.Annotations = verifiedDNSIntent()
 	networkContext.Finalizers = []string{gatewayResourceReplicatorFinalizer}
 
 	upstream := fake.NewClientBuilder().WithScheme(scheme).
@@ -175,6 +208,7 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 	downstream := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newReplicatorForGVKTest(gvk, upstream, downstream, scheme)
 	r.Config.InternalDNS.Enabled = true
+	r.Config.InternalDNS.ServicePrefix = testDNSServicePrefix
 	req := GVKRequest{GVK: gvk, Request: mcreconcile.Request{
 		ClusterName: "upstream",
 		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(networkContext)},
@@ -214,6 +248,9 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != testDNSDestination {
 		t.Fatalf("an unverified destination replaced the verified one: %v", got)
 	}
+	if result, err := r.Reconcile(ctx, req); err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("held intent is not checked again: %v, %v", result, err)
+	}
 
 	setUpstream(func(a map[string]string) { maps.DeleteFunc(a, func(string, string) bool { return true }) })
 	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != "" {
@@ -221,7 +258,7 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 	}
 
 	r.Config.InternalDNS.Enabled = false
-	setUpstream(func(a map[string]string) { maps.Copy(a, testDNSIntent(time.Time{})) })
+	setUpstream(func(a map[string]string) { maps.Copy(a, verifiedDNSIntent()) })
 	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != "" {
 		t.Fatalf("intent was replicated with internal DNS off: %v", got)
 	}
@@ -235,7 +272,7 @@ func TestInternalDNSReadinessWaitsForVerifiedIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	projectContext := testNetworkContext("context", "project-context-uid")
-	projectContext.Annotations = testDNSIntent(time.Time{})
+	projectContext.Annotations = verifiedDNSIntent()
 	hubContext := projectContext.DeepCopy()
 	projectContext.Annotations[InternalDNSSuffixAnnotation] = "red.internal"
 	hubContext.Status.DNSAccess = &networkingv1alpha.NetworkDNSAccessStatus{

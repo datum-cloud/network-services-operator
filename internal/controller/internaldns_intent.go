@@ -35,7 +35,13 @@ func internalDNSIntentComplete(annotations map[string]string) bool {
 // NetworkContext against the resolver context and access binding DNS accepted
 // for the context's network. It returns errInternalDNSIntentUnverified when
 // they disagree, and any other error when the check could not be made.
-func verifyInternalDNSIntent(ctx context.Context, cl client.Client, networkContext client.Object, networkName string) error {
+func verifyInternalDNSIntent(
+	ctx context.Context,
+	cl client.Client,
+	networkContext client.Object,
+	networkName string,
+	servicePrefix string,
+) error {
 	annotations := networkContext.GetAnnotations()
 	namespace := networkContext.GetNamespace()
 
@@ -52,7 +58,7 @@ func verifyInternalDNSIntent(ctx context.Context, cl client.Client, networkConte
 		return unverifiedIfNotFound(err)
 	}
 	consumerID, _, _ := unstructured.NestedString(dnsContext.Object, "spec", "consumerID")
-	if dnsContext.GetUID() == "" ||
+	if dnsContext.GetUID() == "" || !dnsContext.GetDeletionTimestamp().IsZero() ||
 		dnsContext.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) ||
 		!strings.HasSuffix(consumerID, "/"+string(network.UID)) {
 		return errInternalDNSIntentUnverified
@@ -68,7 +74,13 @@ func verifyInternalDNSIntent(ctx context.Context, cl client.Client, networkConte
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
 		return unverifiedIfNotFound(err)
 	}
-	if binding.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) ||
+	destination, err := internalDNSDestination(servicePrefix, dnsContext.GetUID())
+	if err != nil {
+		return err
+	}
+	if annotations[InternalDNSServiceDestinationAnnotation] != destination ||
+		!binding.GetDeletionTimestamp().IsZero() ||
+		binding.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) ||
 		!accessBindingMatches(binding, dnsContext, annotations[InternalDNSRegionAnnotation], annotations[InternalDNSServiceDestinationAnnotation]) ||
 		!accessBindingAccepted(binding) {
 		return errInternalDNSIntentUnverified
@@ -77,9 +89,8 @@ func verifyInternalDNSIntent(ctx context.Context, cl client.Client, networkConte
 }
 
 // accessBindingAccepted reports whether DNS accepted the binding's current
-// generation, which is when DNS claims its destination for the context.
-// Acceptance only turns false when the claim is refused, so a DNS outage that
-// leaves the binding unready still passes.
+// generation, which is when DNS claims its destination for the context. A DNS
+// controller outage leaves the last reported condition in place.
 func accessBindingAccepted(binding *unstructured.Unstructured) bool {
 	if binding.GetGeneration() < 1 {
 		return false

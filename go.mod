@@ -338,4 +338,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
+// The fork provides Manager.Owns and overrides the version other modules require.
 replace sigs.k8s.io/multicluster-runtime => github.com/datum-cloud/multicluster-runtime v0.24.2-0.20261008054817-748176e5c835

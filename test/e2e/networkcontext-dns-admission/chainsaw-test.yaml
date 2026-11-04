@@ -5,8 +5,9 @@ metadata:
   name: networkcontext-dns-admission
 spec:
   description: |
-    NetworkContext.spec.dns configures resolvers on guest interfaces, so only
-    the operator may write it. The suite runs as a cluster admin, which the
+    NetworkContext.spec.dns configures resolvers on guest interfaces, and the
+    internal DNS annotations decide which DNS a network's resolver traffic
+    reaches, so only the operator may write them. The suite runs as a cluster admin, which the
     admission policy does not exempt.
   cluster: nso-standard
   steps:
@@ -79,6 +80,44 @@ spec:
                 --type merge -p "$patch"
               kubectl --as="$operator" -n ipam-e2e-alpha patch networkcontext dns-admission-network-test-location \
                 --type merge -p '{"spec":{"dns":null}}'
+
+    - name: Another writer cannot set the internal DNS annotations
+      try:
+        - script:
+            content: |
+              set -u
+              if out=$(kubectl -n ipam-e2e-alpha annotate networkcontext dns-admission-network-test-location \
+                  networking.datumapis.com/internal-dns-service-destination=fd70:100::99 2>&1); then
+                echo "internal DNS annotation write was admitted: $out" >&2
+                exit 1
+              fi
+              if ! echo "$out" | grep -q 'internal-dns-\* annotations are managed by the network services operator'; then
+                echo "write refused for another reason: $out" >&2
+                exit 1
+              fi
+
+    - name: The operator identity can set and clear the internal DNS annotations
+      try:
+        - script:
+            content: |
+              set -eu
+              operator=system:serviceaccount:network-services-operator-system:network-services-operator-controller-manager
+              kubectl --as="$operator" -n ipam-e2e-alpha annotate networkcontext dns-admission-network-test-location \
+                networking.datumapis.com/internal-dns-service-destination=fd70:100::10
+        - script:
+            content: |
+              set -u
+              if out=$(kubectl -n ipam-e2e-alpha annotate networkcontext dns-admission-network-test-location \
+                  networking.datumapis.com/internal-dns-service-destination- 2>&1); then
+                echo "internal DNS annotation removal was admitted: $out" >&2
+                exit 1
+              fi
+        - script:
+            content: |
+              set -eu
+              operator=system:serviceaccount:network-services-operator-system:network-services-operator-controller-manager
+              kubectl --as="$operator" -n ipam-e2e-alpha annotate networkcontext dns-admission-network-test-location \
+                networking.datumapis.com/internal-dns-service-destination-
 
     - name: Another writer can still change other fields
       try:

@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -108,6 +109,11 @@ type replicationResourceConfig struct {
 	// labels the strategy stamps, and a federation policy selecting on anything
 	// else would match nothing.
 	propagatedLabels []string
+
+	// verifyInternalDNSIntent, when true, propagates the internal DNS
+	// annotations only once they match the access DNS accepted for the
+	// object's network. Otherwise the downstream copy keeps the ones it has.
+	verifyInternalDNSIntent bool
 }
 
 type replicationResource struct {
@@ -216,6 +222,7 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	contextConfig := configs[gvkKey(networkContextGVK)]
 	contextConfig.propagatedLabels = append(contextConfig.propagatedLabels, networkingv1alpha.NetworkUIDLabel)
 	contextConfig.propagatedAnnotations = internalDNSIntentAnnotations()
+	contextConfig.verifyInternalDNSIntent = true
 	configs[gvkKey(networkContextGVK)] = contextConfig
 
 	// The network itself, mirrored onto the hub so the central allocator of a
@@ -390,6 +397,8 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 	}
 
+	propagateAnnotationsNow, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
+
 	downstreamObj := &unstructured.Unstructured{}
 	downstreamObj.SetGroupVersionKind(resource.downstreamGVK)
 	downstreamObj.SetName(downstreamObjectMeta.Name)
@@ -414,7 +423,9 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 
 		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
-		propagateAnnotations(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations)
+		if propagateAnnotationsNow {
+			propagateAnnotations(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations)
+		}
 
 		if resource.replicationResourceConfig.stampUpstreamGeneration {
 			setUpstreamGenerationAnnotation(downstreamObj, upstreamObj)
@@ -453,6 +464,11 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		)
 	}
 
+	if verifyErr != nil {
+		syncOutcome = syncOutcomeError
+		return verifyErr
+	}
+
 	// Propagate downstream status → upstream for types where a downstream
 	// controller (e.g. Envoy Gateway) writes acceptance conditions. Skip for
 	// types whose status is owned by NSO's own upstream controllers.
@@ -464,6 +480,39 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	}
 
 	return nil
+}
+
+// annotationsVerified reports whether the upstream object's propagated
+// annotations may replace the downstream copy's. A cell programs a DNS
+// service path from the internal DNS annotations, so a complete set passes
+// only once it matches the access DNS accepted for the context's network.
+// Removing annotations, or leaving the set incomplete, only withdraws access,
+// so it always passes.
+func (r *GatewayResourceReplicatorReconciler) annotationsVerified(
+	ctx context.Context,
+	resource replicationResource,
+	upstreamClient client.Client,
+	upstreamObj *unstructured.Unstructured,
+) (bool, error) {
+	if !resource.replicationResourceConfig.verifyInternalDNSIntent {
+		return true, nil
+	}
+	if !internalDNSIntentComplete(upstreamObj.GetAnnotations()) {
+		return true, nil
+	}
+	if !r.Config.InternalDNS.Enabled {
+		return false, nil
+	}
+	networkName, _, _ := unstructured.NestedString(upstreamObj.Object, "spec", "network", "name")
+	err := verifyInternalDNSIntent(ctx, upstreamClient, upstreamObj, networkName)
+	if errors.Is(err, errInternalDNSIntentUnverified) {
+		log.FromContext(ctx).Info("keeping the last verified DNS annotations", "reason", err.Error())
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("verify DNS annotations: %w", err)
+	}
+	return true, nil
 }
 
 func propagateLabels(upstreamObj, downstreamObj *unstructured.Unstructured, names []string) {

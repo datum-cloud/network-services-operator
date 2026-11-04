@@ -1,7 +1,9 @@
 # NetworkContext DNS admission
 
-Refuses any create or update that changes `NetworkContext.spec.dns` unless the
-request comes from a trusted username.
+Refuses any create or update that changes `NetworkContext.spec.dns` or a
+`networking.datumapis.com/internal-dns-*` annotation unless the request comes
+from a trusted username. The annotations decide which DNS service a network's
+resolver traffic is routed to.
 
 The trusted list names the manager's service account as `config/default`
 renders it. A deployment must replace it with the identity the manager

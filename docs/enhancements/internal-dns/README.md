@@ -248,14 +248,16 @@ status:
 
 #### Protecting resolver intent
 
-The `NetworkContext` lives in the consumer project, and the cell trusts its replicated annotations when it programs the Galactic path. The protections today are:
+The `NetworkContext` lives in the consumer project, and the cell programs the Galactic path from the replicated annotations. The protections are:
 
 - `consumerID`, the context and binding names, and the service destination are computed by network services from server-side identities. No user-supplied field feeds them.
-- The shipped consumer roles (`networking.datumapis.com-viewer` and `networking.datumapis.com-admin`) grant only `get`, `list`, and `watch` on `NetworkContext`. Consumers cannot write `spec.dns`, the annotations, or status through them.
+- The shipped consumer roles (`networking.datumapis.com-viewer` and `networking.datumapis.com-admin`) grant only `get`, `list`, and `watch` on `NetworkContext`.
+- `config/components/networkcontext-dns-admission` refuses any change to `spec.dns` or to a `networking.datumapis.com/internal-dns-*` annotation from an identity other than the network services controller, so a custom role granting `update` or `patch` on `NetworkContext` cannot change them either.
+- Network services checks the annotations before replicating them out of the project. A complete set reaches the hub, and from there the cell, only when the named access binding belongs to the context's network, pins the named resolver context's current lifetime, matches the region and service destination, and DNS has accepted it; a set suffix must match the one DNS allocated. Otherwise the hub copy keeps the annotations it last verified. Removing annotations always replicates, since it only withdraws access.
+- Resolver settings are published to the project only when the project's annotations equal the verified copy on the hub, so a changed suffix or binding name never reaches guests.
 - DNS binds each destination to one context lifetime, and Galactic authorizes only the VPC the cell pins in the policy.
 
-> [!WARNING]
-> Open gap: `config/components/networkcontext-dns-admission` refuses changes to `spec.dns` from any identity other than the network services controller, but no admission check protects the annotations. The `NetworkContext` protected resource exposes `update` and `patch`, so a project member granted those permissions through a custom role could edit the annotations. Setting the service-destination annotation to another context's destination would make the cell program a path from this VPC to that context's DNS view; pointing the access-binding annotation at another binding changes which binding the readiness check compares against. Before enablement outside staging, this needs both an admission policy in the project API that rejects changes to the `internal-dns-*` annotations from any identity other than the network services controller, and a cell-side check that the destination matches the binding DNS accepted for this context instead of trusting the annotation alone. Tracked in #702.
+The cell does not read DNS objects itself: they live in the project API, which the cell does not reach. The hub and cell copies are written only by platform identities, so the check at the project boundary covers the cell.
 
 #### Disabling DNS on a network
 

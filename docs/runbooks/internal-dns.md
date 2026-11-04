@@ -19,14 +19,21 @@ Before enabling the feature:
   Consumer roles should manage Networks in the project API instead.
 - Apply the `config/components/networkcontext-dns-admission` policy in every
   API where the manager writes project NetworkContexts. It refuses any create
-  or update that changes `spec.dns` unless the request comes from a trusted
-  identity. The trusted list names the manager's service account as
+  or update that changes `spec.dns` or a
+  `networking.datumapis.com/internal-dns-*` annotation unless the request
+  comes from a trusted identity. The trusted list names the manager's service account as
   `config/default` renders it. Replace it with the identity the manager
   authenticates as to that API, or the manager's own DNS writes are refused.
   The policy trusts that username, so anyone allowed to impersonate it can
   also write `spec.dns`.
 - Configure federation access, DNS service destinations, and the Galactic cell
   controllers before enabling the project and cell DNS integrations.
+- The manager replicates a context's DNS annotations to the hub only after
+  checking them against the access binding DNS accepted. While they don't
+  match, the hub copy keeps the last verified values and the manager logs
+  `keeping the last verified DNS annotations`. The project controller rewrites
+  changed annotations within a few seconds, so a persistent message points
+  at a binding DNS has refused or a binding that no longer exists.
 
 The generated manager role includes integration permissions. A runtime feature
 flag does not revoke RBAC grants. Deployments that require separate identities

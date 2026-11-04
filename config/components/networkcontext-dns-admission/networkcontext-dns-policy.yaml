@@ -26,12 +26,32 @@ spec:
       expression: has(object.spec) && has(object.spec.dns)
     - name: hadDNS
       expression: request.operation == 'UPDATE' && has(oldObject.spec) && has(oldObject.spec.dns)
+    - name: annotations
+      expression: >-
+        has(object.metadata.annotations) ? object.metadata.annotations : {}
+    - name: oldAnnotations
+      expression: >-
+        request.operation == 'UPDATE' && has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}
+    - name: dnsAnnotations
+      expression: >-
+        variables.annotations.filter(k, k.startsWith('networking.datumapis.com/internal-dns-'))
+    - name: oldDNSAnnotations
+      expression: >-
+        variables.oldAnnotations.filter(k, k.startsWith('networking.datumapis.com/internal-dns-'))
   validations:
     - expression: >-
         variables.hasDNS == variables.hadDNS &&
         (!variables.hasDNS || object.spec.dns == oldObject.spec.dns)
       messageExpression: >-
         'spec.dns is managed by the network services operator and cannot be changed by ' +
+        request.userInfo.username
+      reason: Forbidden
+    - expression: >-
+        size(variables.dnsAnnotations) == size(variables.oldDNSAnnotations) &&
+        variables.dnsAnnotations.all(k,
+          k in variables.oldAnnotations && variables.annotations[k] == variables.oldAnnotations[k])
+      messageExpression: >-
+        'networking.datumapis.com/internal-dns-* annotations are managed by the network services operator and cannot be changed by ' +
         request.userInfo.username
       reason: Forbidden
 ---

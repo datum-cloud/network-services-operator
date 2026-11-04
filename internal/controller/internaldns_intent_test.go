@@ -271,6 +271,22 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 	if err := upstream.Update(ctx, binding); err != nil {
 		t.Fatal(err)
 	}
+	if result, err := r.Reconcile(ctx, req); err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("a verified copy is not checked again: %v, %v", result, err)
+	}
+	if err := upstream.Delete(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != "" || got[InternalDNSAccessNameAnnotation] != "" {
+		t.Fatalf("a copy kept access whose binding is gone: %v", got)
+	}
+	binding.SetResourceVersion("")
+	if err := upstream.Create(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != testDNSDestination {
+		t.Fatalf("restored access was not replicated: %v", got)
+	}
 	setUpstream(func(a map[string]string) { a[InternalDNSServiceDestinationAnnotation] = "fd70:100::99" })
 
 	setCopy := func(mutate func(map[string]string)) {

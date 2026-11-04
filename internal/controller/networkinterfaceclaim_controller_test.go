@@ -56,6 +56,34 @@ const (
 	testPublicV4Class = "datum-public-v4"
 )
 
+func TestNetworkInterfaceClaimWriteRacesAreExpected(t *testing.T) {
+	resource := networkingv1alpha.GroupVersion.WithResource("networkinterfaceclaims").GroupResource()
+	tests := []struct {
+		name        string
+		err         error
+		wantHandled bool
+		wantRequeue bool
+	}{
+		{
+			name:        "conflict retries without reporting a controller failure",
+			err:         fmt.Errorf("status update: %w", apierrors.NewConflict(resource, "claim", fmt.Errorf("changed"))),
+			wantHandled: true,
+			wantRequeue: true,
+		},
+		{name: "not found outside finalizer removal is still reported", err: apierrors.NewNotFound(resource, "claim")},
+		{name: "other errors are still reported", err: fmt.Errorf("unavailable")},
+		{name: "nil is not a race"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, handled := networkInterfaceClaimWriteRace(tt.err)
+			require.Equal(t, tt.wantHandled, handled)
+			require.Equal(t, tt.wantRequeue, result.Requeue)
+		})
+	}
+}
+
 // fakeIPAM stands in for the IPAM API server. Allocation is synchronous there,
 // so the create response already carries the address.
 type fakeIPAM struct {

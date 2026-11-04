@@ -176,6 +176,26 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
+
+	// Finalization must not depend on the GatewayClass still existing. Project
+	// teardown can remove cluster-scoped dependencies before namespaced
+	// resources; checking the class first would leave this finalizer behind
+	// forever once the class was gone.
+	if !gateway.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
+			if result := r.finalizeGateway(ctx, string(req.ClusterName), cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
+				return result.Complete(ctx)
+			}
+
+			if err := finalizer.Remove(ctx, cl, &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName)); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
+			}
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	// Look up the GatewayClass to determine if it's applicable to this controller
 	var upstreamGatewayClass gatewayv1.GatewayClass
 	if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &upstreamGatewayClass); err != nil {
@@ -190,22 +210,6 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if upstreamGatewayClass.Spec.ControllerName != r.Config.Gateway.ControllerName {
 		logger.Info("gateway class controller name mismatch, requeueing", "expected", r.Config.Gateway.ControllerName, "actual", upstreamGatewayClass.Spec.ControllerName, "requeueAfter", gatewayClassRequeueInterval)
 		return ctrl.Result{RequeueAfter: gatewayClassRequeueInterval}, nil
-	}
-
-	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), cl.GetClient(), r.DownstreamCluster.GetClient())
-
-	if !gateway.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&gateway, gatewayControllerFinalizer) {
-			if result := r.finalizeGateway(ctx, string(req.ClusterName), cl.GetClient(), &gateway, downstreamStrategy); result.ShouldReturn() {
-				return result.Complete(ctx)
-			}
-
-			if err := finalizer.Remove(ctx, cl, &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName)); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
-			}
-		}
-
-		return ctrl.Result{}, nil
 	}
 
 	if intent, missing := r.upstreamGatewayIntent(&gateway); missing {

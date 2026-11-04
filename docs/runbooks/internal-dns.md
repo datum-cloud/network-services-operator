@@ -28,14 +28,48 @@ Before enabling the feature:
 - Configure federation access, DNS service destinations, and the Galactic cell
   controllers before enabling the project and cell DNS integrations.
 
-The generated manager role includes integration permissions. A runtime feature
-flag does not revoke RBAC grants. Deployments that require separate identities
-must bind the project and cell permissions at their respective API boundaries.
-
 With DNS disabled, no internal DNS controller or additional federation manager
 starts. Existing project NetworkContexts remain unchanged by NetworkBinding
 reconciliation. Certificate challenge and solver controllers use the deployment
 API independently of the DNS setting.
+
+## Permissions
+
+The generated role, shared by the manager and cell bundles, grants the
+internal DNS permissions whether or not `internalDNS.enabled` is set:
+
+- Create, update and delete on DNS resolver contexts and access bindings.
+- Create, update and delete on Galactic service endpoints and route policies,
+  and read on route policy status.
+
+This scope is accepted. The grants belong to the operator's own service
+account, which already manages networks, VPCs, attachments and DNS records;
+they give consumers nothing. A runtime flag cannot revoke RBAC, so turning
+the feature off stops the controllers that use these permissions but leaves
+the grants in place. A deployment that needs them withheld until it enables
+internal DNS must remove those rules from the role it binds, and restore them
+before enabling.
+
+## Turning the feature on
+
+Enabling `internalDNS.enabled` applies to existing networks, not only new
+ones:
+
+- Every Network whose `spec.dns.mode` is empty or `Managed` gets private DNS.
+  The manager creates its resolver context and an access binding for each
+  region it is used in, and publishes resolver settings on its
+  NetworkContexts once the cell verifies the path.
+- Networks set to `Disabled` are left without DNS. The manager only confirms
+  there is nothing to remove. Set `Disabled` on every network that must stay
+  out before enabling the feature, since there is no per-project switch.
+- NetworkBinding reconciliation starts keeping existing NetworkContexts in
+  step with their Network, including the network, location, IP families, MTU
+  and network labels. With the feature off, existing contexts are left as
+  they are.
+- Instances already running get the managed resolver only when their provider
+  reapplies interface settings. New instances get it when they start.
+- Turning DNS off for one network later withdraws its access and settings, as
+  described in the design. Turning the feature flag off does not; see above.
 
 Monitor resolver access readiness, route programming conditions, and DNS queries
 from a newly created instance. Existing answers alone do not verify that new

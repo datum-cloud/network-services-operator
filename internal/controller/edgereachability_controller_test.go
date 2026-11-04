@@ -4,7 +4,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -39,7 +38,7 @@ func newExposure(t *testing.T) *exposure {
 	ctx := context.Background()
 
 	namespace := &corev1.Namespace{}
-	namespace.Name = "proj-" + sanitizeName(strings.ToLower(t.Name()))
+	namespace.Name = "proj-" + scenarioSuffix(t)
 	require.NoError(t, projectPlane.Create(ctx, namespace))
 
 	hubNamespace := &corev1.Namespace{}
@@ -278,7 +277,7 @@ func TestNoRecordIsWrittenWithoutAHubNamespace(t *testing.T) {
 	e := newExposure(t)
 
 	orphan := &corev1.Namespace{}
-	orphan.Name = "proj-unfederated-" + sanitizeName(strings.ToLower(t.Name()))
+	orphan.Name = "proj-unfederated-" + scenarioSuffix(t)
 	require.NoError(t, e.project.Create(e.ctx, orphan))
 
 	require.NoError(t, e.reconciler.record(e.ctx, "cluster-"+testProject, e.project, orphan.Name))

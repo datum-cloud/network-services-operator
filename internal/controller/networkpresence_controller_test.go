@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -84,10 +83,7 @@ func newPresenceScenario(t *testing.T, opts presenceOptions) *presenceScenario {
 	cl, cfg := startNetworkInterfaceEnv(t)
 	ctx := context.Background()
 
-	suffix := sanitizeName(strings.ToLower(t.Name()))
-	if len(suffix) > 48 {
-		suffix = suffix[:48]
-	}
+	suffix := scenarioSuffix(t)
 	s := &presenceScenario{
 		t:                t,
 		ctx:              ctx,
@@ -414,7 +410,7 @@ func TestNetworkPresenceLeavesProjectPlaneBindingsAlone(t *testing.T) {
 	s := newPresenceScenario(t, presenceOptions{})
 
 	plain := &corev1.Namespace{}
-	plain.Name = "plane-" + sanitizeName(strings.ToLower(t.Name()))[:40]
+	plain.Name = "plane-" + scenarioSuffix(t)
 	require.NoError(t, s.hub.Create(s.ctx, plain))
 
 	binding := &networkingv1alpha.NetworkBinding{}

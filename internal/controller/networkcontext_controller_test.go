@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -52,7 +51,7 @@ func newNetworkContextScenario(t *testing.T, ipam *fakeIPAM) *networkContextScen
 	cl, _ := startNetworkInterfaceEnv(t)
 	ctx := context.Background()
 
-	namespaceName := "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespaceName := "ns-" + scenarioSuffix(t)
 	namespace := &corev1.Namespace{}
 	namespace.Name = namespaceName
 	namespace.Labels = map[string]string{
@@ -721,7 +720,7 @@ func TestANetworkTakesDownOnlyItsOwnLocations(t *testing.T) {
 	ctx := context.Background()
 
 	namespace := &corev1.Namespace{}
-	namespace.Name = "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespace.Name = "ns-" + scenarioSuffix(t)
 	require.NoError(t, cl.Create(ctx, namespace))
 
 	newNetwork := func(name string) *networkingv1alpha.Network {

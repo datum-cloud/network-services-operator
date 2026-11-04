@@ -5,23 +5,23 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -32,25 +32,12 @@ import (
 )
 
 func TestConnectorEngagesClusterWithoutLeaseDiscovery(t *testing.T) {
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
-	}
+	cfg := sharedPlanes(t)[0].config
 
 	log.SetLogger(zap.New(zap.UseDevMode(true)))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "config", "crd", "bases"),
-			filepath.Join("..", "..", "bin", "crds", "locations"),
-		},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = env.Stop() })
 
 	testScheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
@@ -59,8 +46,9 @@ func TestConnectorEngagesClusterWithoutLeaseDiscovery(t *testing.T) {
 	provider := &staticProvider{clusters: map[string]cluster.Cluster{}}
 
 	mgr, err := mcmanager.New(cfg, provider, ctrl.Options{
-		Scheme:  testScheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
+		Scheme:     testScheme,
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: ctrlconfig.Controller{SkipNameValidation: ptr.To(true)},
 	})
 	require.NoError(t, err)
 
@@ -71,7 +59,9 @@ func TestConnectorEngagesClusterWithoutLeaseDiscovery(t *testing.T) {
 	directClient, err := client.New(cfg, client.Options{Scheme: testScheme})
 	require.NoError(t, err)
 
-	connectorKey := client.ObjectKey{Namespace: "default", Name: "connector"}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "lease-" + scenarioSuffix(t)}}
+	require.NoError(t, directClient.Create(ctx, namespace))
+	connectorKey := client.ObjectKey{Namespace: namespace.Name, Name: "connector"}
 	connector := &networkingv1alpha1.Connector{
 		ObjectMeta: metav1.ObjectMeta{Name: connectorKey.Name, Namespace: connectorKey.Namespace},
 		Spec:       networkingv1alpha1.ConnectorSpec{ConnectorClassName: "missing"},

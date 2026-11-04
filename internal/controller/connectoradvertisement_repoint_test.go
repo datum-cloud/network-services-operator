@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,7 +27,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
@@ -541,20 +538,10 @@ func connectorControllers(ad networkingv1alpha1.ConnectorAdvertisement) int {
 	return count
 }
 
-// startRepointEnv starts an API server with NSO's CRDs and returns a client
-// for it.
+// startRepointEnv returns a client for the package's first plane.
 func startRepointEnv(t *testing.T) client.WithWatch {
 	t.Helper()
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
-	}
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
-	cfg, err := env.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = env.Stop() })
+	cfg := sharedPlanes(t)[0].config
 
 	testScheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
@@ -627,12 +614,9 @@ func requireAcceptedForCurrentGeneration(t *testing.T, ad *networkingv1alpha1.Co
 	require.Equal(t, ad.Generation, cond.ObservedGeneration, "Accepted must describe the spec that names the current connector")
 }
 
-var namespaceSeq int
-
 func newNamespace(t *testing.T, cl client.Client) string {
 	t.Helper()
-	namespaceSeq++
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("repoint-%d", namespaceSeq)}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "repoint-" + scenarioSuffix(t)}}
 	require.NoError(t, cl.Create(context.Background(), ns))
 	return ns.Name
 }

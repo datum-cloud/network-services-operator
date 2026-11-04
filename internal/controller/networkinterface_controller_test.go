@@ -54,6 +54,8 @@ func (s *scenario) servedByDelivery() *locationsv1alpha1.ServingLocation {
 	served.Name = testLocationName
 	served.Spec.Topology = map[string]string{"topology.datum.net/city-code": "DFW"}
 	require.NoError(s.t, s.client.Create(s.ctx, served))
+	// A cell has one ServingLocation, and the planes outlive this test.
+	s.t.Cleanup(func() { require.NoError(s.t, client.IgnoreNotFound(s.client.Delete(s.ctx, served))) })
 	return served
 }
 

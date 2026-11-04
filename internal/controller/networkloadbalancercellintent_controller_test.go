@@ -496,19 +496,20 @@ func TestCellIntentPublishKeepsLabelsItDoesNotOwn(t *testing.T) {
 	parent.UID = types.UID("parent-1")
 	parent.Generation = 5
 	parent.Status.Endpoints = []networkingv1alpha.NetworkLoadBalancerEndpointStatus{allocatedCellIntentEndpoint("2001:db8::1", parent.Generation)}
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: types.UID("project-ns")}}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: types.UID(scenarioSuffix(t))}}
 	project := fake.NewClientBuilder().WithScheme(networkServiceTestScheme(t)).
 		WithObjects(namespace, route, parent, readyIntentNetwork(), testRouteNetworkService(), testRouteMember("member", true, "fd00::1/128")).
 		WithStatusSubresource(route, parent).Build()
 	hub, _ := startNetworkInterfaceEnv(t)
-	require.NoError(t, hub.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-project-ns"}}))
+	hubNamespace := "ns-" + string(namespace.UID)
+	require.NoError(t, hub.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: hubNamespace}}))
 	reconciler := &NetworkLoadBalancerCellIntentReconciler{HubCluster: &fakeCluster{cl: hub}}
 	key := client.ObjectKeyFromObject(parent)
 
 	_, err := reconciler.reconcileParentIntents(ctx, "project", project, key)
 	require.NoError(t, err)
 	var published networkingv1alpha.NetworkLoadBalancerCellIntentList
-	require.NoError(t, hub.List(ctx, &published))
+	require.NoError(t, hub.List(ctx, &published, client.InNamespace(hubNamespace)))
 	require.Len(t, published.Items, 1)
 	claimed := &published.Items[0]
 	claimed.Labels[karmadaClaimLabel] = "nso-resources-id"

@@ -90,9 +90,10 @@ func acceptedDNSAccess(t *testing.T) (*networkingv1alpha.Network, *unstructured.
 func TestVerifyInternalDNSIntent(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
-		annotations func(map[string]string)
-		objects     func(*networkingv1alpha.Network, *unstructured.Unstructured, *unstructured.Unstructured)
-		wantErr     bool
+		annotations     func(map[string]string)
+		objects         func(*networkingv1alpha.Network, *unstructured.Unstructured, *unstructured.Unstructured)
+		wantErr         bool
+		wantNotAccepted bool
 	}{
 		"accepted access": {},
 		"another destination": {
@@ -150,13 +151,22 @@ func TestVerifyInternalDNSIntent(t *testing.T) {
 					"type": "Accepted", "status": "False", "observedGeneration": int64(1),
 				}}, "status", "conditions")
 			},
-			wantErr: true,
+			wantErr:         true,
+			wantNotAccepted: true,
 		},
 		"binding not yet accepted at its generation": {
 			objects: func(_ *networkingv1alpha.Network, _, b *unstructured.Unstructured) {
 				b.SetGeneration(2)
 			},
-			wantErr: true,
+			wantErr:         true,
+			wantNotAccepted: true,
+		},
+		"resolver context with no allocated suffix yet": {
+			objects: func(_ *networkingv1alpha.Network, c, _ *unstructured.Unstructured) {
+				c.Object["status"] = map[string]any{}
+			},
+			wantErr:         true,
+			wantNotAccepted: true,
 		},
 		"binding accepted but not ready": {
 			objects: func(_ *networkingv1alpha.Network, _, b *unstructured.Unstructured) {
@@ -187,6 +197,9 @@ func TestVerifyInternalDNSIntent(t *testing.T) {
 			}
 			if err != nil && !errors.Is(err, errInternalDNSIntentUnverified) {
 				t.Fatalf("a mismatch was reported as a failed check: %v", err)
+			}
+			if tc.wantNotAccepted != errors.Is(err, errInternalDNSAccessNotAccepted) {
+				t.Fatalf("verify = %v, want not accepted %v", err, tc.wantNotAccepted)
 			}
 		})
 	}

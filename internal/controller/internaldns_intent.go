@@ -68,9 +68,13 @@ func verifyInternalDNSIntent(
 		!strings.HasSuffix(consumerID, "/"+string(network.UID)) {
 		return errInternalDNSIntentUnverified
 	}
+	notAccepted := false
 	if suffix := annotations[InternalDNSSuffixAnnotation]; suffix != "" {
 		allocated, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
-		if suffix != allocated {
+		switch {
+		case allocated == "":
+			notAccepted = true
+		case suffix != allocated:
 			return errInternalDNSIntentUnverified
 		}
 	}
@@ -89,7 +93,7 @@ func verifyInternalDNSIntent(
 		!accessBindingMatches(binding, dnsContext, annotations[InternalDNSRegionAnnotation], annotations[InternalDNSServiceDestinationAnnotation]) {
 		return errInternalDNSIntentUnverified
 	}
-	if !accessBindingAccepted(binding) {
+	if notAccepted || !accessBindingAccepted(binding) {
 		return errInternalDNSAccessNotAccepted
 	}
 	return nil

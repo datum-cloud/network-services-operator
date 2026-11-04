@@ -573,6 +573,9 @@ func (r *GatewayResourceReplicatorReconciler) heldAnnotationsVerified(
 		return false, nil
 	}
 	err := r.verifyInternalDNSAnnotations(ctx, upstreamClient, upstreamObj, held)
+	if errors.Is(err, errInternalDNSAccessNotAccepted) {
+		return true, nil
+	}
 	if errors.Is(err, errInternalDNSIntentUnverified) {
 		log.FromContext(ctx).Info("withdrawing DNS annotations that no longer verify", "reason", err.Error())
 		return false, nil

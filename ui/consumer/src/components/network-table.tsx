@@ -3,7 +3,7 @@ import { EnableIPv6Dialog } from './enable-ipv6-dialog';
 import { SortableHeader } from './sortable-header';
 import { StatusBadge } from './status-badge';
 import { TableSearch } from './table-search';
-import { useDeleteNetwork } from '../lib/api';
+import { useDeleteNetwork, useNetworkPermissions } from '../lib/api';
 import { readyStatusToBadgeType, readyStatusToLabel, type Network } from '../schema';
 import {
   DataTable,
@@ -68,6 +68,7 @@ export function NetworkTable({
   const [enableTarget, setEnableTarget] = useState<Network>();
   const [deleteTarget, setDeleteTarget] = useState<Network>();
   const deleteMutation = useDeleteNetwork(projectId);
+  const { canUpdateNetwork, canDeleteNetwork } = useNetworkPermissions(projectId);
 
   const columns = useMemo<NetworkColumn[]>(() => {
     const href = (name: string) => `${basePath}/${encodeURIComponent(name)}`;
@@ -76,13 +77,14 @@ export function NetworkTable({
       {
         key: 'enable-ipv6',
         label: 'Enable IPv6',
-        hidden: hasIPv6,
+        hidden: (network) => !canUpdateNetwork || hasIPv6(network),
         onClick: setEnableTarget,
       },
       {
         key: 'delete',
         label: 'Delete',
         variant: 'destructive',
+        hidden: !canDeleteNetwork,
         onClick: setDeleteTarget,
       },
     ];
@@ -167,7 +169,7 @@ export function NetworkTable({
         ),
       },
     ];
-  }, [basePath, navigate]);
+  }, [basePath, navigate, canUpdateNetwork, canDeleteNetwork]);
 
   return (
     <>

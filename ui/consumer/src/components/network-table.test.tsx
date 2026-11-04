@@ -1,5 +1,6 @@
 import { NetworkTable } from './network-table';
 import * as api from '../lib/api';
+import { ALL_NETWORK_PERMISSIONS, READ_ONLY_NETWORK_PERMISSIONS } from '../test/permissions';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -8,13 +9,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
-  return { ...actual, useDeleteNetwork: vi.fn() };
+  return { ...actual, useNetworkPermissions: vi.fn(), useDeleteNetwork: vi.fn() };
 });
 
+const useNetworkPermissionsMock = vi.mocked(api.useNetworkPermissions);
 const useDeleteNetworkMock = vi.mocked(api.useDeleteNetwork);
 const deleteMock = vi.fn();
 
 beforeEach(() => {
+  useNetworkPermissionsMock.mockReset().mockReturnValue(ALL_NETWORK_PERMISSIONS);
   deleteMock.mockReset().mockResolvedValue(undefined);
   useDeleteNetworkMock.mockReset().mockReturnValue({ mutateAsync: deleteMock } as never);
 });
@@ -178,5 +181,18 @@ describe('NetworkTable', () => {
 
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('prod-net'));
     expect(location()).toHaveTextContent(/\/networks$/);
+  });
+
+
+  it('offers only View to a read-only user', () => {
+    useNetworkPermissionsMock.mockReturnValue(READ_ONLY_NETWORK_PERMISSIONS);
+    renderTable(
+      <NetworkTable networks={[makeNetwork({ name: 'v4-only', ipFamilies: ['IPv4'] })]} projectId="demo-project" />
+    );
+    openRowMenu('v4-only');
+
+    expect(screen.getByRole('button', { name: 'View' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Enable IPv6' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 });

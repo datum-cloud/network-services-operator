@@ -3,7 +3,7 @@ import { CreateNetworkDialog } from '../components/create-network-dialog';
 import { NetworkTable } from '../components/network-table';
 import { NetworkListSkeleton } from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
-import { useNetworks } from '../lib/api';
+import { useNetworkPermissions, useNetworks } from '../lib/api';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -22,6 +22,7 @@ import { Link, useParams } from 'react-router';
 export default function NetworkList() {
   const { projectId } = useParams<{ projectId: string; serviceSlug: string }>();
   const { data: networks, isLoading, error, refetch } = useNetworks(projectId);
+  const { canCreateNetwork } = useNetworkPermissions(projectId);
   const [createOpen, setCreateOpen] = useState(false);
   const isEmpty = !isLoading && !error && (networks?.length ?? 0) === 0;
 
@@ -62,25 +63,31 @@ export default function NetworkList() {
 
       {isEmpty && (
         <div className="flex flex-col gap-6" data-testid="networking-plugin-network-empty">
-          <CreateNetworkDialog
-            projectId={projectId}
-            open={createOpen}
-            onOpenChange={setCreateOpen}
-            showTrigger={false}
-          />
+          {canCreateNetwork && (
+            <CreateNetworkDialog
+              projectId={projectId}
+              open={createOpen}
+              onOpenChange={setCreateOpen}
+              showTrigger={false}
+            />
+          )}
           <EmptyContent
-            title="let's create a network to get you started"
+            title={canCreateNetwork ? "let's create a network to get you started" : 'No networks yet'}
             subtitle="Networks give your workloads and load balancers private IPv6 addressing across every region they run in."
             className="w-full"
-            actions={[
-              {
-                label: 'New',
-                type: 'primary',
-                theme: 'solid',
-                icon: <Icon icon={PlusIcon} className="size-3" />,
-                onClick: () => setCreateOpen(true),
-              },
-            ]}
+            actions={
+              canCreateNetwork
+                ? [
+                    {
+                      label: 'New',
+                      type: 'primary',
+                      theme: 'solid',
+                      icon: <Icon icon={PlusIcon} className="size-3" />,
+                      onClick: () => setCreateOpen(true),
+                    },
+                  ]
+                : undefined
+            }
           />
           <NetworkCliSections projectId={projectId} />
         </div>
@@ -91,11 +98,13 @@ export default function NetworkList() {
           networks={networks}
           projectId={projectId}
           actions={
-            <CreateNetworkDialog
-              projectId={projectId}
-              open={createOpen}
-              onOpenChange={setCreateOpen}
-            />
+            canCreateNetwork ? (
+              <CreateNetworkDialog
+                projectId={projectId}
+                open={createOpen}
+                onOpenChange={setCreateOpen}
+              />
+            ) : undefined
           }
         />
       )}

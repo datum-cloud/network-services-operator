@@ -1,5 +1,6 @@
 import { NetworkConfiguration } from './network-configuration';
 import * as api from '../lib/api';
+import { ALL_NETWORK_PERMISSIONS, READ_ONLY_NETWORK_PERMISSIONS } from '../test/permissions';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
@@ -7,9 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
-  return { ...actual, useDeleteNetwork: vi.fn(), useUpdateNetwork: vi.fn() };
+  return { ...actual, useNetworkPermissions: vi.fn(), useDeleteNetwork: vi.fn(), useUpdateNetwork: vi.fn() };
 });
 
+const useNetworkPermissionsMock = vi.mocked(api.useNetworkPermissions);
 const useDeleteNetworkMock = vi.mocked(api.useDeleteNetwork);
 const useUpdateNetworkMock = vi.mocked(api.useUpdateNetwork);
 const deleteMutateAsyncMock = vi.fn();
@@ -43,6 +45,7 @@ function renderConfiguration(overrides: Partial<Network> = {}, onDeleted = vi.fn
 const ipCard = () => within(screen.getByTestId('networking-plugin-config-ip'));
 
 beforeEach(() => {
+  useNetworkPermissionsMock.mockReset().mockReturnValue(ALL_NETWORK_PERMISSIONS);
   deleteMutateAsyncMock.mockReset().mockResolvedValue(undefined);
   useDeleteNetworkMock.mockReset().mockReturnValue({
     mutateAsync: deleteMutateAsyncMock,
@@ -152,5 +155,16 @@ describe('NetworkConfiguration', () => {
 
     await waitFor(() => expect(deleteMutateAsyncMock).toHaveBeenCalledWith('prod-net'));
     await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+  });
+
+
+  it('hides editing and the danger zone for a read-only user', () => {
+    useNetworkPermissionsMock.mockReturnValue(READ_ONLY_NETWORK_PERMISSIONS);
+    renderConfiguration({ ipFamilies: ['IPv4'] });
+
+    expect(ipCard().queryByRole('button', { name: /Edit/ })).not.toBeInTheDocument();
+    expect(ipCard().queryByRole('button', { name: 'Enable IPv6' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Danger Zone' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete network' })).not.toBeInTheDocument();
   });
 });

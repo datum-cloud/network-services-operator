@@ -1,6 +1,7 @@
 import NetworkDetail from './network-detail';
 import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
+import { ALL_NETWORK_PERMISSIONS } from '../test/permissions';
 import type { Network } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -11,6 +12,7 @@ vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
   return {
     ...actual,
+    useNetworkPermissions: vi.fn(),
     useNetwork: vi.fn(),
     useSubnets: vi.fn(),
     useNetworkInterfaces: vi.fn(),
@@ -18,6 +20,7 @@ vi.mock('../lib/api', async () => {
   };
 });
 
+const useNetworkPermissionsMock = vi.mocked(api.useNetworkPermissions);
 const useNetworkMock = vi.mocked(api.useNetwork);
 const useSubnetsMock = vi.mocked(api.useSubnets);
 const useNetworkInterfacesMock = vi.mocked(api.useNetworkInterfaces);
@@ -67,6 +70,7 @@ function makeNetwork(overrides: Partial<Network> = {}): Network {
 const deleteMutateAsyncMock = vi.fn();
 
 beforeEach(() => {
+  useNetworkPermissionsMock.mockReset().mockReturnValue(ALL_NETWORK_PERMISSIONS);
   useNetworkMock.mockReset();
   useSubnetsMock.mockReset().mockReturnValue(emptyListResult);
   useNetworkInterfacesMock.mockReset().mockReturnValue(emptyListResult);

@@ -252,6 +252,59 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 		t.Fatalf("held intent is not checked again: %v, %v", result, err)
 	}
 
+	if err := upstream.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
+		t.Fatal(err)
+	}
+	_ = unstructured.SetNestedSlice(binding.Object, []any{map[string]any{
+		"type": "Accepted", "status": "False", "observedGeneration": int64(1),
+	}}, "status", "conditions")
+	if err := upstream.Update(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	setUpstream(func(a map[string]string) { maps.Copy(a, verifiedDNSIntent()) })
+	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != testDNSDestination {
+		t.Fatalf("a copy that matches the project lost its access while DNS was not accepting: %v", got)
+	}
+	_ = unstructured.SetNestedSlice(binding.Object, []any{map[string]any{
+		"type": "Accepted", "status": "True", "observedGeneration": int64(1),
+	}}, "status", "conditions")
+	if err := upstream.Update(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	setUpstream(func(a map[string]string) { a[InternalDNSServiceDestinationAnnotation] = "fd70:100::99" })
+
+	setCopy := func(mutate func(map[string]string)) {
+		t.Helper()
+		copy := &unstructured.Unstructured{}
+		copy.SetGroupVersionKind(gvk)
+		if err := downstream.Get(ctx, client.ObjectKey{Namespace: "ns-ns-uid", Name: "context"}, copy); err != nil {
+			t.Fatal(err)
+		}
+		annotations := copy.GetAnnotations()
+		mutate(annotations)
+		copy.SetAnnotations(annotations)
+		if err := downstream.Update(ctx, copy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setCopy(func(a map[string]string) { a[InternalDNSServiceDestinationAnnotation] = "fd70:100::98" })
+	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != "" || got[InternalDNSAccessNameAnnotation] != "" {
+		t.Fatalf("a copy kept annotations that never verified: %v", got)
+	}
+
+	setUpstream(func(a map[string]string) {
+		maps.DeleteFunc(a, func(string, string) bool { return true })
+		a[InternalDNSSuffixAnnotation] = "red.internal"
+		a[InternalDNSRegionAnnotation] = "us-central"
+	})
+	if got := replicated(); got[InternalDNSSuffixAnnotation] != "" || got[InternalDNSRegionAnnotation] != "" {
+		t.Fatalf("an incomplete set reached the copy unverified: %v", got)
+	}
+	setUpstream(func(a map[string]string) { maps.Copy(a, verifiedDNSIntent()) })
+	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != testDNSDestination {
+		t.Fatalf("verified intent was not replicated again: %v", got)
+	}
+
 	setUpstream(func(a map[string]string) { maps.DeleteFunc(a, func(string, string) bool { return true }) })
 	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != "" {
 		t.Fatalf("withdrawn intent stayed on the copy: %v", got)

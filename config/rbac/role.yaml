@@ -183,6 +183,7 @@ rules:
   resources:
   - networkfabricidentities
   - networkgateways
+  - serviceendpointproducerreports
   verbs:
   - get
   - list

@@ -16,16 +16,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
 	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
+	"go.datum.net/galactic/pkg/serviceplan"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
-	"go.datum.net/network-services-operator/internal/dnsaccess"
 	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
@@ -58,6 +62,7 @@ type InternalDNSCellReconciler struct {
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=vpcattachments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=serviceendpoints;serviceroutepolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=serviceroutepolicies/status,verbs=get
+// +kubebuilder:rbac:groups=galactic.datumapis.com,resources=serviceendpointproducerreports,verbs=get;list;watch
 
 func (r *InternalDNSCellReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	cl, err := r.mgr.GetCluster(ctx, req.ClusterName)
@@ -160,14 +165,27 @@ func (r *InternalDNSCellReconciler) reconcile(
 		return ctrl.Result{}, err
 	}
 
+	reports, err := r.producerReports(ctx, cl, networkContext.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	now := r.now()
+	requeue := internalDNSRetryInterval
 	for _, path := range paths {
-		_, ready := policyProgrammed(path.policy, path.endpoint, attachmentPointers, vpc.Status.VPC, r.now())
+		// A Spread endpoint's plan depends on which producers the nodes
+		// report healthy, which can change when a report expires without any
+		// object changing. Recheck no later than that.
+		endpoint := serviceplan.WithProducerReports(path.endpoint, reports)
+		if expiry, ok := serviceplan.NextProducerReportExpiry(endpoint, now); ok && expiry < requeue {
+			requeue = max(expiry, time.Second)
+		}
+		_, ready := policyProgrammed(path.policy, endpoint, attachmentPointers, vpc.Status.VPC, now)
 		if !ready {
-			condition := unreadyPathCondition(path.policy, path.endpoint, attachmentPointers, vpc.Status.VPC)
+			condition := unreadyPathCondition(path.policy, endpoint, attachmentPointers, vpc.Status.VPC, now)
 			if err := r.report(ctx, networkContext, nil, condition); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+			return ctrl.Result{RequeueAfter: requeue}, nil
 		}
 	}
 
@@ -184,7 +202,36 @@ func (r *InternalDNSCellReconciler) reconcile(
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// spreadConfigured reports whether any resolver spreads traffic across
+// several producers, which is when producer reports matter.
+func (r *InternalDNSCellReconciler) spreadConfigured() bool {
+	for _, resolver := range r.Config.EffectiveResolvers() {
+		if resolver.Spread() {
+			return true
+		}
+	}
+	return false
+}
+
+// producerReports lists the producer health reports in namespace. Only Spread
+// endpoints read them, so a deployment without one neither lists nor needs
+// the report API.
+func (r *InternalDNSCellReconciler) producerReports(
+	ctx context.Context,
+	cl client.Client,
+	namespace string,
+) ([]networkv1alpha1.ServiceEndpointProducerReport, error) {
+	if !r.spreadConfigured() {
+		return nil, nil
+	}
+	var reports networkv1alpha1.ServiceEndpointProducerReportList
+	if err := cl.List(ctx, &reports, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list service endpoint producer reports: %w", err)
+	}
+	return reports.Items, nil
 }
 
 func (r *InternalDNSCellReconciler) now() time.Time {
@@ -254,11 +301,7 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 	}}
 	_, err := controllerutil.CreateOrUpdate(ctx, cl, endpoint, func() error {
 		labelInternalDNSRoute(endpoint, networkContext)
-		endpoint.Spec = networkv1alpha1.ServiceEndpointSpec{
-			ServiceClass: "internal-dns", Address: destination, Port: 53, Protocol: protocol,
-			Region: region, DeliveryMode: networkv1alpha1.ServiceEndpointDeliveryModePreferNodeLocal,
-			AttachmentSelector: &metav1.LabelSelector{MatchLabels: resolver.ProducerAttachmentSelector},
-		}
+		endpoint.Spec = internalDNSEndpointSpec(resolver, protocol, destination, region)
 		return controllerutil.SetControllerReference(networkContext, endpoint, cl.Scheme())
 	})
 	if err != nil {
@@ -287,6 +330,34 @@ func (r *InternalDNSCellReconciler) ensureServicePath(
 		return nil, nil, err
 	}
 	return endpoint, policy, nil
+}
+
+// internalDNSEndpointSpec renders the service endpoint of one resolver and
+// protocol. A Single resolver leaves distribution unset, as endpoints written
+// before distribution existed did, so its spec does not change.
+func internalDNSEndpointSpec(
+	resolver config.InternalDNSResolver,
+	protocol networkv1alpha1.NetworkServiceProtocol,
+	destination string,
+	region string,
+) networkv1alpha1.ServiceEndpointSpec {
+	spec := networkv1alpha1.ServiceEndpointSpec{
+		ServiceClass: "internal-dns", Address: destination, Port: 53, Protocol: protocol,
+		Region: region, DeliveryMode: networkv1alpha1.ServiceEndpointDeliveryModePreferNodeLocal,
+		AttachmentSelector: resolver.ProducerLabelSelector(),
+	}
+	if resolver.Spread() && resolver.HealthCheck != nil {
+		check := resolver.HealthCheck.WithDefaults()
+		spec.Distribution = networkv1alpha1.ServiceEndpointDistributionSpread
+		spec.HealthCheck = &networkv1alpha1.ServiceEndpointHealthCheck{
+			Port:               check.Port,
+			IntervalSeconds:    check.IntervalSeconds,
+			TimeoutSeconds:     check.TimeoutSeconds,
+			UnhealthyThreshold: check.UnhealthyThreshold,
+			HealthyThreshold:   check.HealthyThreshold,
+		}
+	}
+	return spec
 }
 
 func internalDNSServicePathName(
@@ -358,14 +429,17 @@ func (r *InternalDNSCellReconciler) deleteServicePaths(
 
 // unreadyPathCondition explains why a DNS service path is not ready. With
 // nothing attached there is no path to acknowledge, so it says that instead
-// of reporting a programming failure.
+// of reporting a programming failure. endpoint is the same view
+// policyProgrammed received.
 func unreadyPathCondition(
 	policy *networkv1alpha1.ServiceRoutePolicy,
 	endpoint *networkv1alpha1.ServiceEndpoint,
 	attachments []*cloudv1alpha1.VPCAttachment,
 	consumerVPCIdentity string,
+	now time.Time,
 ) metav1.Condition {
-	if _, err := dnsaccess.ProgrammingPlan(policy, endpoint, attachments, consumerVPCIdentity); errors.Is(err, dnsaccess.ErrNoEligibleConsumers) {
+	_, err := serviceplan.ProgrammingPlanAt(policy, endpoint, attachments, consumerVPCIdentity, now)
+	if errors.Is(err, serviceplan.ErrNoEligibleConsumers) {
 		return noAttachmentsCondition()
 	}
 	return metav1.Condition{
@@ -383,6 +457,10 @@ func noAttachmentsCondition() metav1.Condition {
 	}
 }
 
+// policyProgrammed reports whether every node the plan requires has
+// acknowledged the policy's current inputs. Pass a Spread endpoint through
+// serviceplan.WithProducerReports first, so the plan counts the producers the
+// routers count.
 func policyProgrammed(
 	policy *networkv1alpha1.ServiceRoutePolicy,
 	endpoint *networkv1alpha1.ServiceEndpoint,
@@ -395,7 +473,7 @@ func policyProgrammed(
 		policy.Spec.Authorization == nil || !policy.Spec.Authorization.Persistent {
 		return time.Time{}, false
 	}
-	plan, err := dnsaccess.ProgrammingPlan(policy, endpoint, attachments, consumerVPCIdentity)
+	plan, err := serviceplan.ProgrammingPlanAt(policy, endpoint, attachments, consumerVPCIdentity, now)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -515,10 +593,101 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 	}
 	r.mgr = mgr
 	r.localReader = mgr.GetLocalManager().GetClient()
-	return mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false)).
-		Named("internaldns-cell").
-		Complete(r)
+	builder := mcbuilder.ControllerManagedBy(mgr).
+		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false))
+	if r.spreadConfigured() {
+		// Only Spread endpoints read producer reports. Watching them only
+		// then keeps a deployment without Spread from needing their API.
+		builder = builder.Watches(
+			&networkv1alpha1.ServiceEndpointProducerReport{},
+			enqueueInternalDNSContextForProducerReport,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(producerReportChanged(r.now)),
+		)
+	}
+	return builder.Named("internaldns-cell").Complete(r)
+}
+
+// enqueueInternalDNSContextForProducerReport maps a producer report to the
+// network context that owns the endpoint it describes.
+func enqueueInternalDNSContextForProducerReport(
+	clusterName multicluster.ClusterName,
+	cl cluster.Cluster,
+) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		report, ok := obj.(*networkv1alpha1.ServiceEndpointProducerReport)
+		if !ok || report.Spec.EndpointName == "" {
+			return nil
+		}
+		endpoint := &networkv1alpha1.ServiceEndpoint{}
+		key := client.ObjectKey{Namespace: report.Namespace, Name: report.Spec.EndpointName}
+		if err := cl.GetClient().Get(ctx, key, endpoint); err != nil {
+			return nil
+		}
+		if _, managed := endpoint.Labels[internalDNSRouteContextLabel]; !managed {
+			return nil
+		}
+		owner := metav1.GetControllerOf(endpoint)
+		if owner == nil || owner.Kind != "NetworkContext" ||
+			owner.APIVersion != networkingv1alpha.GroupVersion.String() {
+			return nil
+		}
+		return []mcreconcile.Request{{
+			ClusterName: clusterName,
+			Request: ctrl.Request{NamespacedName: client.ObjectKey{
+				Namespace: endpoint.Namespace, Name: owner.Name,
+			}},
+		}}
+	})
+}
+
+// producerReportChanged passes report events that can change a plan: a report
+// created or deleted, a producer's decision or identity changed, or an entry
+// that was expired becoming current again. A node renews its entries every
+// 15 seconds without changing them; those renewals are filtered out, and the
+// reconciler requeues itself at the next expiry instead.
+func producerReportChanged(now func() time.Time) predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldReport, ok := e.ObjectOld.(*networkv1alpha1.ServiceEndpointProducerReport)
+			if !ok {
+				return true
+			}
+			newReport, ok := e.ObjectNew.(*networkv1alpha1.ServiceEndpointProducerReport)
+			if !ok {
+				return true
+			}
+			return producerReportsDiffer(oldReport, newReport, now())
+		},
+	}
+}
+
+func producerReportsDiffer(
+	oldReport, newReport *networkv1alpha1.ServiceEndpointProducerReport,
+	now time.Time,
+) bool {
+	if oldReport.Spec.EndpointName != newReport.Spec.EndpointName ||
+		oldReport.Spec.EndpointUID != newReport.Spec.EndpointUID ||
+		oldReport.Spec.Node != newReport.Spec.Node ||
+		len(oldReport.Spec.Producers) != len(newReport.Spec.Producers) {
+		return true
+	}
+	type entryKey struct{ namespace, name, node string }
+	previous := make(map[entryKey]networkv1alpha1.ServiceEndpointProducerStatus, len(oldReport.Spec.Producers))
+	for _, entry := range oldReport.Spec.Producers {
+		previous[entryKey{entry.Namespace, entry.Name, entry.Node}] = entry
+	}
+	for _, entry := range newReport.Spec.Producers {
+		before, ok := previous[entryKey{entry.Namespace, entry.Name, entry.Node}]
+		if !ok || before.AttachmentUID != entry.AttachmentUID || before.State != entry.State ||
+			before.Port != entry.Port {
+			return true
+		}
+		if serviceplan.ProducerReportCurrent(entry, now) && !serviceplan.ProducerReportCurrent(before, now) {
+			return true
+		}
+	}
+	return false
 }
 
 func minTime(a, b time.Time) time.Time {

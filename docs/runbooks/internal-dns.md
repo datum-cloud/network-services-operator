@@ -34,7 +34,10 @@ Before enabling the feature:
   again every minute, and at log verbosity 1 it logs
   `keeping the last verified DNS annotations` with the reason. A held copy
   usually means DNS has not accepted the binding, for example while its
-  resolver context is not ready.
+  resolver context is not ready. A held copy that no longer passes the check
+  itself loses its DNS annotations, and the manager logs
+  `withdrawing DNS annotations that no longer verify`. An incomplete set of
+  annotations on the project context removes them all from the hub copy.
 - With `internalDNS.enabled` off, the manager stops replicating new DNS
   annotations to the hub but still replicates their removal, so cells keep
   the access they have until a network turns DNS off.

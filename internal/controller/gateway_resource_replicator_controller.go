@@ -393,7 +393,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 	}
 
-	propagateAnnotationsNow, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
+	decision, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
 	var result ctrl.Result
 
 	downstreamObj := &unstructured.Unstructured{}
@@ -420,12 +420,30 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 
 		propagateLabels(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedLabels)
-		if propagateAnnotationsNow {
-			propagateAnnotations(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations)
-		} else if annotationsDiffer(upstreamObj, downstreamObj, resource.replicationResourceConfig.propagatedAnnotations) {
+		names := resource.replicationResourceConfig.propagatedAnnotations
+		switch decision {
+		case annotationsPropagate:
+			propagateAnnotations(upstreamObj, downstreamObj, names)
+		case annotationsWithdraw:
+			removeAnnotations(downstreamObj, names)
+		case annotationsHold:
+			if !annotationsDiffer(upstreamObj, downstreamObj, names) {
+				break
+			}
 			// DNS objects aren't watched here, so check again for the access
 			// to be accepted.
 			result.RequeueAfter = internalDNSResyncInterval
+			if verifyErr != nil || !r.Config.InternalDNS.Enabled {
+				break
+			}
+			held, err := r.heldAnnotationsVerified(ctx, upstreamClient, upstreamObj, downstreamObj)
+			if err != nil {
+				verifyErr = err
+				break
+			}
+			if !held {
+				removeAnnotations(downstreamObj, names)
+			}
 		}
 
 		if resource.replicationResourceConfig.stampUpstreamGeneration {
@@ -483,37 +501,90 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	return result, nil
 }
 
-// annotationsVerified reports whether the upstream object's propagated
-// annotations may replace the downstream copy's. A cell programs a DNS
-// service path from the internal DNS annotations, so a complete set passes
-// only once it matches the access DNS accepted for the context's network.
-// Removing annotations, or leaving the set incomplete, only withdraws access,
-// so it always passes.
+type annotationDecision int
+
+const (
+	annotationsPropagate annotationDecision = iota
+	annotationsWithdraw
+	annotationsHold
+)
+
+// annotationsVerified decides what happens to the downstream copy's
+// propagated annotations. A cell programs a DNS service path from the
+// internal DNS annotations, so a complete set propagates only once it matches
+// the access DNS accepted for the context's network, and an incomplete set is
+// withdrawn rather than passed on. Otherwise the copy holds the set it has,
+// as long as that set still verifies.
 func (r *GatewayResourceReplicatorReconciler) annotationsVerified(
 	ctx context.Context,
 	resource replicationResource,
 	upstreamClient client.Client,
 	upstreamObj *unstructured.Unstructured,
-) (bool, error) {
+) (annotationDecision, error) {
 	if !resource.replicationResourceConfig.verifyInternalDNSIntent {
-		return true, nil
+		return annotationsPropagate, nil
 	}
 	if !internalDNSIntentComplete(upstreamObj.GetAnnotations()) {
-		return true, nil
+		return annotationsWithdraw, nil
 	}
 	if !r.Config.InternalDNS.Enabled {
-		return false, nil
+		return annotationsHold, nil
 	}
-	networkName, _, _ := unstructured.NestedString(upstreamObj.Object, "spec", "network", "name")
-	err := verifyInternalDNSIntent(ctx, upstreamClient, upstreamObj, networkName, r.Config.InternalDNS.ServicePrefix)
+	err := r.verifyInternalDNSAnnotations(ctx, upstreamClient, upstreamObj, upstreamObj.GetAnnotations())
 	if errors.Is(err, errInternalDNSIntentUnverified) {
 		log.FromContext(ctx).V(1).Info("keeping the last verified DNS annotations", "reason", err.Error())
+		return annotationsHold, nil
+	}
+	if err != nil {
+		return annotationsHold, fmt.Errorf("verify DNS annotations: %w", err)
+	}
+	return annotationsPropagate, nil
+}
+
+// heldAnnotationsVerified reports whether the annotations a downstream copy
+// holds still match the access DNS accepted, so a copy never keeps a set that
+// was not verified.
+func (r *GatewayResourceReplicatorReconciler) heldAnnotationsVerified(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamObj, downstreamObj *unstructured.Unstructured,
+) (bool, error) {
+	held := downstreamObj.GetAnnotations()
+	if !internalDNSIntentComplete(held) {
+		return false, nil
+	}
+	err := r.verifyInternalDNSAnnotations(ctx, upstreamClient, upstreamObj, held)
+	if errors.Is(err, errInternalDNSIntentUnverified) {
+		log.FromContext(ctx).Info("withdrawing DNS annotations that no longer verify", "reason", err.Error())
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("verify DNS annotations: %w", err)
+		return false, fmt.Errorf("verify held DNS annotations: %w", err)
 	}
 	return true, nil
+}
+
+func (r *GatewayResourceReplicatorReconciler) verifyInternalDNSAnnotations(
+	ctx context.Context,
+	upstreamClient client.Client,
+	upstreamObj *unstructured.Unstructured,
+	annotations map[string]string,
+) error {
+	candidate := upstreamObj.DeepCopy()
+	candidate.SetAnnotations(annotations)
+	networkName, _, _ := unstructured.NestedString(upstreamObj.Object, "spec", "network", "name")
+	return verifyInternalDNSIntent(ctx, upstreamClient, candidate, networkName, r.Config.InternalDNS.ServicePrefix)
+}
+
+func removeAnnotations(obj *unstructured.Unstructured, names []string) {
+	annotations := obj.GetAnnotations()
+	if len(annotations) == 0 {
+		return
+	}
+	for _, name := range names {
+		delete(annotations, name)
+	}
+	obj.SetAnnotations(annotations)
 }
 
 func propagateLabels(upstreamObj, downstreamObj *unstructured.Unstructured, names []string) {

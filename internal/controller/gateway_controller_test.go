@@ -2928,6 +2928,47 @@ func TestReconcileRequeuesWhenGatewayClassUnavailable(t *testing.T) {
 	}
 }
 
+func TestReconcileFinalizesGatewayWithoutGatewayClass(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(testScheme))
+	require.NoError(t, gatewayv1.Install(testScheme))
+
+	now := metav1.Now()
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "test",
+			Name:              "deleting-gateway",
+			UID:               "gateway-uid",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{gatewayControllerFinalizer},
+		},
+		Spec: gatewayv1.GatewaySpec{GatewayClassName: "already-deleted"},
+	}
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test", UID: "namespace-uid"}}
+	downstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-namespace-uid"}}
+	upstream := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(gateway, upstreamNamespace).Build()
+	downstream := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(downstreamNamespace).Build()
+
+	reconciler := &GatewayReconciler{
+		mgr:               &fakeMockManager{cl: upstream},
+		Config:            config.NetworkServicesOperator{Gateway: config.GatewayConfig{}},
+		DownstreamCluster: &fakeCluster{cl: downstream},
+	}
+	result, err := reconciler.Reconcile(context.Background(), mcreconcile.Request{
+		ClusterName: "project",
+		Request: reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: gateway.Namespace,
+			Name:      gateway.Name,
+		}},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+	assert.False(t, result.Requeue)
+
+	err = upstream.Get(context.Background(), client.ObjectKeyFromObject(gateway), &gatewayv1.Gateway{})
+	assert.True(t, apierrors.IsNotFound(err), "removing the last finalizer should complete deletion")
+}
+
 func TestIsDatumManagedGatewayHostname(t *testing.T) {
 	const (
 		currentDomain = "datumproxy.net"

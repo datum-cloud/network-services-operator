@@ -100,7 +100,23 @@ func (r *NetworkInterfaceClaimReconciler) Reconcile(ctx context.Context, req mcr
 	logger.V(1).Info("reconciling network interface claim")
 	defer logger.V(1).Info("reconcile complete")
 
-	return r.reconcileClaim(ctx, cl.GetClient(), cl.GetEventRecorder("networkinterfaceclaim-controller"), req.NamespacedName)
+	result, err := r.reconcileClaim(ctx, cl.GetClient(), cl.GetEventRecorder("networkinterfaceclaim-controller"), req.NamespacedName)
+	if retryResult, expected := networkInterfaceClaimWriteRace(err); expected {
+		// Another reconciler or the API server won the write race. A fresh read is
+		// required, but this is normal convergence rather than a controller error.
+		logger.V(1).Info("resource changed while reconciling; retrying")
+		return retryResult, nil
+	}
+	return result, err
+}
+
+func networkInterfaceClaimWriteRace(err error) (ctrl.Result, bool) {
+	switch {
+	case apierrors.IsConflict(err):
+		return ctrl.Result{Requeue: true}, true
+	default:
+		return ctrl.Result{}, false
+	}
 }
 
 func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
@@ -1517,6 +1533,11 @@ func (r *NetworkInterfaceClaimReconciler) release(
 
 	controllerutil.RemoveFinalizer(claim, networkInterfaceClaimFinalizer)
 	if err := cl.Update(ctx, claim); err != nil {
+		// Deletion can complete after the initial read but before this finalizer
+		// write. The object being gone means the release is already complete.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("failed removing finalizer: %w", err)
 	}
 	return nil

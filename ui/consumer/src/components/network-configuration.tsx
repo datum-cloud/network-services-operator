@@ -4,7 +4,7 @@ import { DangerCard } from './danger-card';
 import { EnableIPv6Dialog } from './enable-ipv6-dialog';
 import { FieldLabel } from './field-label';
 import { StatusBadge } from './status-badge';
-import { useDeleteNetwork, useUpdateNetwork } from '../lib/api';
+import { useDeleteNetwork, useNetworkPermissions, useUpdateNetwork } from '../lib/api';
 import { readyStatusToBadgeType, readyStatusToLabel, type Network } from '../schema';
 import { Button } from '@datum-cloud/datum-ui/button';
 import {
@@ -24,15 +24,13 @@ import { SettingsNav, SettingsNavItem, SettingsNavLabel } from '@datum-cloud/dat
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { Text, Title } from '@datum-cloud/datum-ui/typography';
 import { PencilIcon, Share2Icon, SquareLibraryIcon, Trash2Icon, type LucideIcon } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const SECTIONS: { id: string; label: string; icon: LucideIcon }[] = [
   { id: 'general', label: 'General', icon: SquareLibraryIcon },
   { id: 'ip-configuration', label: 'IP Configuration', icon: Share2Icon },
   { id: 'danger', label: 'Danger Zone', icon: Trash2Icon },
 ];
-
-const SECTION_IDS = SECTIONS.map((s) => s.id);
 
 const MTU_MIN = 1300;
 const MTU_MAX = 8856;
@@ -186,9 +184,11 @@ function mtuError(draft: string): string | undefined {
 function IPConfigurationCard({
   network,
   projectId,
+  canUpdate,
 }: {
   network: Network;
   projectId: string | undefined;
+  canUpdate: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftMtu, setDraftMtu] = useState('');
@@ -226,18 +226,20 @@ function IPConfigurationCard({
       title="IP Configuration"
       testId="networking-plugin-config-ip"
       action={
-        <Button
-          type="secondary"
-          theme="outline"
-          size="xs"
-          className={editing ? 'invisible shrink-0' : 'shrink-0'}
-          disabled={editing}
-          aria-hidden={editing}
-          tabIndex={editing ? -1 : undefined}
-          onClick={startEdit}>
-          <Icon icon={PencilIcon} size={12} />
-          Edit
-        </Button>
+        canUpdate ? (
+          <Button
+            type="secondary"
+            theme="outline"
+            size="xs"
+            className={editing ? 'invisible shrink-0' : 'shrink-0'}
+            disabled={editing}
+            aria-hidden={editing}
+            tabIndex={editing ? -1 : undefined}
+            onClick={startEdit}>
+            <Icon icon={PencilIcon} size={12} />
+            Edit
+          </Button>
+        ) : undefined
       }
       footer={
         editing ? (
@@ -273,7 +275,7 @@ function IPConfigurationCard({
             ) : (
               <Empty />
             )}
-            {!hasIPv6 && (
+            {canUpdate && !hasIPv6 && (
               <Button type="secondary" theme="outline" size="xs" onClick={() => setEnableOpen(true)}>
                 Enable IPv6
               </Button>
@@ -378,14 +380,20 @@ export function NetworkConfiguration({
   projectId: string | undefined;
   onDeleted: () => void;
 }) {
-  const activeSection = useSectionScrollSpy(SECTION_IDS, 'general');
+  const { canUpdateNetwork, canDeleteNetwork } = useNetworkPermissions(projectId);
+  const sections = useMemo(
+    () => SECTIONS.filter((s) => s.id !== 'danger' || canDeleteNetwork),
+    [canDeleteNetwork]
+  );
+  const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
+  const activeSection = useSectionScrollSpy(sectionIds, 'general');
 
   return (
     <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:gap-10">
       <aside className="lg:sticky lg:top-0 lg:w-56 lg:shrink-0">
         <SettingsNav>
           <SettingsNavLabel>Settings</SettingsNavLabel>
-          {SECTIONS.map((section) => (
+          {sections.map((section) => (
             <SettingsNavItem
               key={section.id}
               href={`#${section.id}`}
@@ -402,11 +410,13 @@ export function NetworkConfiguration({
           <GeneralCard network={network} />
         </section>
         <section id="ip-configuration" className="scroll-mt-24">
-          <IPConfigurationCard network={network} projectId={projectId} />
+          <IPConfigurationCard network={network} projectId={projectId} canUpdate={canUpdateNetwork} />
         </section>
-        <section id="danger" className="scroll-mt-24">
-          <DangerZone network={network} projectId={projectId} onDeleted={onDeleted} />
-        </section>
+        {canDeleteNetwork && (
+          <section id="danger" className="scroll-mt-24">
+            <DangerZone network={network} projectId={projectId} onDeleted={onDeleted} />
+          </section>
+        )}
       </div>
     </div>
   );

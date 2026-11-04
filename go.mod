@@ -29,7 +29,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.datum.net/datumctl v0.18.1
-	go.datum.net/galactic v0.8.3-0.20261104024102-e9c2e6196fa6
+	go.datum.net/galactic v0.8.3-0.20261104185229-6c013232855c
 	go.miloapis.com/activity v0.7.1
 	go.miloapis.com/dns-operator v0.5.1
 	go.miloapis.com/instrumentation v0.6.0
@@ -338,4 +338,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
+// The fork provides Manager.Owns and overrides the version other modules require.
 replace sigs.k8s.io/multicluster-runtime => github.com/datum-cloud/multicluster-runtime v0.24.2-0.20261008054817-748176e5c835

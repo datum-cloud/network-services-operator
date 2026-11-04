@@ -22,6 +22,10 @@ jobs:
     timeout-minutes: 60
     env:
       TMPDIR: /tmp
+      # The pinned Go tools come from their release binaries, each checked
+      # against its SHA-256, instead of `go install` building them (about four
+      # minutes, and a proxy.golang.org or sum.golang.org outage fails the job).
+      CI_RELEASE_TOOLS: "1"
     steps:
       - name: Clone the code
         uses: actions/checkout@v7

@@ -4,8 +4,6 @@ package controller
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,17 +25,10 @@ type networkServiceScenario struct {
 
 func newNetworkServiceScenario(t *testing.T) *networkServiceScenario {
 	t.Helper()
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
-	}
-
-	clients, err := planes()
-	require.NoError(t, err)
-
+	cl := sharedPlanes(t)[0].client
 	ctx := context.Background()
-	cl := clients[0]
 
-	namespaceName := "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespaceName := "ns-" + scenarioSuffix(t)
 	namespace := &corev1.Namespace{}
 	namespace.Name = namespaceName
 	require.NoError(t, cl.Create(ctx, namespace))

@@ -1,6 +1,7 @@
 import { NetworkServices } from './network-services';
 import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
+import { ALL_NETWORK_PERMISSIONS, READ_ONLY_NETWORK_PERMISSIONS } from '../test/permissions';
 import type { NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
@@ -10,12 +11,14 @@ vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
   return {
     ...actual,
+    useNetworkPermissions: vi.fn(),
     useNetworkServices: vi.fn(),
     useNetworkInterfaces: vi.fn(),
     useDeleteNetworkService: vi.fn(),
   };
 });
 
+const useNetworkPermissionsMock = vi.mocked(api.useNetworkPermissions);
 const useNetworkServicesMock = vi.mocked(api.useNetworkServices);
 const useNetworkInterfacesMock = vi.mocked(api.useNetworkInterfaces);
 const useDeleteNetworkServiceMock = vi.mocked(api.useDeleteNetworkService);
@@ -43,6 +46,7 @@ function makeService(overrides: Partial<NetworkService> = {}): NetworkService {
 const deleteMutateAsyncMock = vi.fn();
 
 beforeEach(() => {
+  useNetworkPermissionsMock.mockReset().mockReturnValue(ALL_NETWORK_PERMISSIONS);
   useNetworkServicesMock.mockReset();
   useNetworkInterfacesMock.mockReset();
   useNetworkInterfacesMock.mockReturnValue({
@@ -184,5 +188,22 @@ describe('NetworkServices', () => {
     fireEvent.click(dialogButtons[dialogButtons.length - 1]);
 
     await waitFor(() => expect(deleteMutateAsyncMock).toHaveBeenCalledWith('storefront'));
+  });
+
+
+  it('hides create and delete for a read-only user', () => {
+    useNetworkPermissionsMock.mockReturnValue(READ_ONLY_NETWORK_PERMISSIONS);
+    useNetworkServicesMock.mockReturnValue({
+      data: [makeService()],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    } as never);
+
+    render(<NetworkServices projectId="demo-project" networkName="default" />);
+
+    expect(screen.getByText('storefront')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Actions for storefront' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /create service/i })).not.toBeInTheDocument();
   });
 });

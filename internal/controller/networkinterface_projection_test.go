@@ -5,10 +5,7 @@ package controller
 import (
 	"context"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,17 +14,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/recorder"
-
-	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -85,74 +78,13 @@ type visibility struct {
 	collector *NetworkInterfaceProjectionGCReconciler
 }
 
-// The planes are started once for the package. An apiserver takes long enough
-// that one per test does not finish, and every scenario names its own
-// namespaces, so sharing them isolates nothing less.
-var planes = sync.OnceValues(func() ([]client.Client, error) {
-	testScheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(testScheme); err != nil {
-		return nil, err
-	}
-	if err := networkingv1alpha.AddToScheme(testScheme); err != nil {
-		return nil, err
-	}
-	if err := locationsv1alpha1.AddToScheme(testScheme); err != nil {
-		return nil, err
-	}
-
-	clients := make([]client.Client, 0, 2)
-	for range 2 {
-		env := &envtest.Environment{
-			CRDDirectoryPaths: []string{
-				filepath.Join("..", "..", "config", "crd", "bases"),
-				filepath.Join("..", "..", "bin", "crds", "locations"),
-			},
-			ErrorIfCRDPathMissing: true,
-		}
-		cfg, err := env.Start()
-		if err != nil {
-			return nil, err
-		}
-		planeEnvironments = append(planeEnvironments, env)
-
-		cl, err := client.New(cfg, client.Options{Scheme: testScheme})
-		if err != nil {
-			return nil, err
-		}
-		clients = append(clients, cl)
-	}
-
-	return clients, nil
-})
-
-var planeEnvironments []*envtest.Environment
-
-func TestMain(m *testing.M) {
-	code := m.Run()
-	for _, env := range planeEnvironments {
-		_ = env.Stop()
-	}
-	os.Exit(code)
-}
-
-func startPlanes(t *testing.T) (cellPlane, hubPlane client.Client) {
-	t.Helper()
-	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		t.Skip("KUBEBUILDER_ASSETS unset; run via `make test` to exercise envtest")
-	}
-
-	clients, err := planes()
-	require.NoError(t, err)
-	return clients[0], clients[1]
-}
-
 func newVisibility(t *testing.T) *visibility {
 	t.Helper()
 
 	cellPlane, hubPlane := startPlanes(t)
 	ctx := context.Background()
 
-	suffix := sanitizeName(strings.ToLower(t.Name()))
+	suffix := scenarioSuffix(t)
 	cellNamespace := "ns-" + suffix
 	projectNamespace := "proj-" + suffix
 
@@ -655,7 +587,7 @@ func TestAnUnroutableInterfaceIsNotPublished(t *testing.T) {
 	v := newVisibility(t)
 
 	namespace := &corev1.Namespace{}
-	namespace.Name = "unlabelled-" + sanitizeName(strings.ToLower(t.Name()))
+	namespace.Name = "unlabelled-" + scenarioSuffix(t)
 	require.NoError(t, v.cell.Create(v.ctx, namespace))
 
 	iface := &networkingv1alpha.NetworkInterface{}

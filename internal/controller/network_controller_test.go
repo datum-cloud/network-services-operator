@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,7 +50,7 @@ func newNetworkScenario(t *testing.T, ipam *fakeIPAM) *networkScenario {
 	cl, _ := startNetworkInterfaceEnv(t)
 	ctx := context.Background()
 
-	namespaceName := "ns-" + sanitizeName(strings.ToLower(t.Name()))
+	namespaceName := "ns-" + scenarioSuffix(t)
 	namespace := &corev1.Namespace{}
 	namespace.Name = namespaceName
 	namespace.Labels = map[string]string{

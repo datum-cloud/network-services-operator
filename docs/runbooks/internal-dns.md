@@ -19,23 +19,89 @@ Before enabling the feature:
   Consumer roles should manage Networks in the project API instead.
 - Apply the `config/components/networkcontext-dns-admission` policy in every
   API where the manager writes project NetworkContexts. It refuses any create
-  or update that changes `spec.dns` unless the request comes from a trusted
-  identity. The trusted list names the manager's service account as
+  or update that changes `spec.dns`, `spec.network`, `spec.location`, or a
+  `networking.datumapis.com/internal-dns-*` annotation unless the request
+  comes from a trusted identity. The trusted list names the manager's service account as
   `config/default` renders it. Replace it with the identity the manager
   authenticates as to that API, or the manager's own DNS writes are refused.
   The policy trusts that username, so anyone allowed to impersonate it can
   also write `spec.dns`.
 - Configure federation access, DNS service destinations, and the Galactic cell
   controllers before enabling the project and cell DNS integrations.
-
-The generated manager role includes integration permissions. A runtime feature
-flag does not revoke RBAC grants. Deployments that require separate identities
-must bind the project and cell permissions at their respective API boundaries.
+- The manager replicates a context's DNS annotations to the hub only after
+  checking them against the access binding DNS accepted. While they don't
+  match, the hub copy keeps the last verified values, the manager checks
+  again every minute, and at log verbosity 1 it logs
+  `keeping the last verified DNS annotations` with the reason. A held copy
+  usually means DNS has not accepted the binding, for example while its
+  resolver context is not ready.
+- With `internalDNS.enabled` off, the manager stops replicating new DNS
+  annotations to the hub but still replicates their removal, so cells keep
+  the access they have until a network turns DNS off.
 
 With DNS disabled, no internal DNS controller or additional federation manager
 starts. Existing project NetworkContexts remain unchanged by NetworkBinding
 reconciliation. Certificate challenge and solver controllers use the deployment
 API independently of the DNS setting.
+
+## Permissions
+
+The generated role, which the manager and cell bundles both bind in the
+cluster they run in, grants the internal DNS permissions whether or not
+`internalDNS.enabled` is set:
+
+- Create, update and delete on DNS resolver contexts and access bindings.
+- Create, update and delete on Galactic service endpoints and route policies,
+  and read on route policy status.
+
+The manager writes resolver contexts and access bindings in project control
+planes. Its permission there is granted to its project integration identity
+outside this repository and, like the role, stays in place when the feature
+is off.
+
+This scope is accepted. The grants belong to the operator's own identities,
+which already manage networks, VPCs, attachments and DNS records; they give
+consumers nothing. A runtime flag cannot revoke RBAC, so turning the feature
+off stops the controllers that use these permissions but leaves the grants in
+place. A deployment that needs them withheld until it enables internal DNS
+must remove those rules from the role it binds, and the project grant, and
+restore them before enabling.
+
+## Turning the feature on
+
+Enabling `internalDNS.enabled` applies to existing networks, not only new
+ones:
+
+- Every Network whose `spec.dns.mode` is empty or `Managed` gets private DNS.
+  The manager adds a finalizer to each of its project NetworkContexts,
+  creates its resolver context and an access binding for each region it is
+  used in, and publishes resolver settings on its NetworkContexts once the
+  cell verifies the path.
+- Networks set to `Disabled` get no DNS, but their NetworkContexts are still
+  written: the manager clears any DNS settings, annotations and finalizer it
+  left there, deletes a resolver context it created, and reports `DNSReady`
+  `False` with reason `Disabled`, checking again every 10 seconds. Set
+  `Disabled` on every network that must stay out before enabling the
+  feature, since there is no per-project switch.
+- NetworkBinding reconciliation starts keeping every existing NetworkContext,
+  including those of `Disabled` networks, in step with its Network: the
+  network, location, IP families, MTU, network generation, network labels,
+  and the Network as controlling owner. It also starts watching Networks. A
+  context owned by an earlier Network of the same name cannot take the new
+  owner, so its binding stays not ready until the old context is removed.
+  A binding whose context is being deleted reports an error until the
+  deletion finishes.
+- Compute providers apply the new resolver settings from interface status.
+  Whether an instance that is already running picks them up depends on its
+  provider; a newly started instance gets them.
+- Turning DNS off for one network withdraws its access and settings, as
+  described in the [design](../enhancements/internal-dns/README.md). Turning
+  the feature flag off does not withdraw anything, and leaves the finalizer
+  on project NetworkContexts. With the flag off nothing removes it, so a
+  NetworkContext deleted after a rollback stays terminating until the flag
+  is turned back on or the finalizer is removed by hand. To back out cleanly,
+  set `Disabled` on each network and wait for its contexts to report
+  `DNSReady` with reason `Disabled` before turning the flag off.
 
 Monitor resolver access readiness, route programming conditions, and DNS queries
 from a newly created instance. Existing answers alone do not verify that new

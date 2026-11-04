@@ -252,6 +252,27 @@ func TestReplicationCarriesOnlyVerifiedDNSIntent(t *testing.T) {
 		t.Fatalf("held intent is not checked again: %v, %v", result, err)
 	}
 
+	if err := upstream.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
+		t.Fatal(err)
+	}
+	_ = unstructured.SetNestedSlice(binding.Object, []any{map[string]any{
+		"type": "Accepted", "status": "False", "observedGeneration": int64(1),
+	}}, "status", "conditions")
+	if err := upstream.Update(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	setUpstream(func(a map[string]string) { maps.Copy(a, verifiedDNSIntent()) })
+	if got := replicated(); got[InternalDNSServiceDestinationAnnotation] != testDNSDestination {
+		t.Fatalf("a copy that matches the project lost its access while DNS was not accepting: %v", got)
+	}
+	_ = unstructured.SetNestedSlice(binding.Object, []any{map[string]any{
+		"type": "Accepted", "status": "True", "observedGeneration": int64(1),
+	}}, "status", "conditions")
+	if err := upstream.Update(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	setUpstream(func(a map[string]string) { a[InternalDNSServiceDestinationAnnotation] = "fd70:100::99" })
+
 	setCopy := func(mutate func(map[string]string)) {
 		t.Helper()
 		copy := &unstructured.Unstructured{}

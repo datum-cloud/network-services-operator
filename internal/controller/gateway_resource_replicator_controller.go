@@ -542,8 +542,8 @@ func (r *GatewayResourceReplicatorReconciler) annotationsVerified(
 }
 
 // heldAnnotationsVerified reports whether the annotations a downstream copy
-// holds still match the access DNS accepted, so a copy never keeps a set that
-// was not verified.
+// holds, while the upstream set is held back, still match the access DNS
+// accepted.
 func (r *GatewayResourceReplicatorReconciler) heldAnnotationsVerified(
 	ctx context.Context,
 	upstreamClient client.Client,

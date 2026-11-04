@@ -64,6 +64,14 @@ func TestInternalDNSResolvers(t *testing.T) {
 	resolver := func(frontend string, selector map[string]string) InternalDNSResolver {
 		return InternalDNSResolver{Frontend: frontend, ProducerAttachmentSelector: selector}
 	}
+	tiers := func(values ...string) *metav1.LabelSelector {
+		return &metav1.LabelSelector{
+			MatchLabels: map[string]string{"service.datum.net/internal-dns": "true"},
+			MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key: "internal-dns.datum.net/tier", Operator: metav1.LabelSelectorOpIn, Values: values,
+			}},
+		}
+	}
 	tests := []struct {
 		name    string
 		cfg     InternalDNSConfig
@@ -104,7 +112,7 @@ func TestInternalDNSResolvers(t *testing.T) {
 		{
 			name:    "missing producer selector",
 			cfg:     InternalDNSConfig{Resolvers: []InternalDNSResolver{resolver("fd53::53", primary), resolver("fd53::54", nil)}},
-			wantSub: "resolvers[1].producerAttachmentSelector is required",
+			wantSub: "resolvers[1].producerAttachmentSelector or resolvers[1].producerSelector is required",
 		},
 		{
 			name:    "same producer selector",
@@ -117,6 +125,127 @@ func TestInternalDNSResolvers(t *testing.T) {
 				resolver("fd53::53", primary), resolver("fd53::54", map[string]string{"service.datum.net/internal-dns": "true"}),
 			}},
 			wantSub: "overlaps resolvers[0]",
+		},
+		{
+			name: "full selector beside a disjoint tier",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: tiers("node", "node-c")},
+				resolver("fd53::54", secondary),
+			}},
+		},
+		{
+			name: "full selector containing another resolver's tier",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				resolver("fd53::53", primary),
+				{Frontend: "fd53::54", ProducerSelector: tiers("node", "node-b")},
+			}},
+			wantSub: "resolvers[1].producerSelector overlaps resolvers[0]",
+		},
+		{
+			name: "full selector contained by an existence check",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: tiers("node-b")},
+				{Frontend: "fd53::54", ProducerSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"service.datum.net/internal-dns": "true"},
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key: "internal-dns.datum.net/tier", Operator: metav1.LabelSelectorOpExists,
+					}},
+				}},
+			}},
+			wantSub: "resolvers[1].producerSelector overlaps resolvers[0]",
+		},
+		{
+			name: "both selector fields",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary, ProducerSelector: tiers("node")},
+			}},
+			wantSub: "resolvers[0].producerSelector is mutually exclusive",
+		},
+		{
+			name: "full selector matching everything",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: &metav1.LabelSelector{}},
+			}},
+			wantSub: "must require a label to be present",
+		},
+		{
+			name: "full selector with only negative requirements",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: "tier", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"x"}},
+						{Key: "retired", Operator: metav1.LabelSelectorOpDoesNotExist},
+					},
+				}},
+			}},
+			wantSub: "resolvers[0].producerSelector must require a label to be present",
+		},
+		{
+			name: "full selector with an invalid operator",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: "Near"}},
+				}},
+			}},
+			wantSub: "resolvers[0].producerSelector is invalid",
+		},
+		{
+			name: "spread with a health check",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: tiers("node", "node-b"),
+					Distribution: InternalDNSDistributionSpread, HealthCheck: &InternalDNSHealthCheck{Port: 8053}},
+			}},
+		},
+		{
+			name: "explicit single",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary, Distribution: InternalDNSDistributionSingle},
+			}},
+		},
+		{
+			name: "spread without a health check",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: tiers("node", "node-b"), Distribution: InternalDNSDistributionSpread},
+			}},
+			wantSub: "resolvers[0].healthCheck is required when distribution is Spread",
+		},
+		{
+			name: "health check without spread",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary, HealthCheck: &InternalDNSHealthCheck{Port: 8053}},
+			}},
+			wantSub: "resolvers[0].healthCheck is only allowed when distribution is Spread",
+		},
+		{
+			name: "health check without a port",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary,
+					Distribution: InternalDNSDistributionSpread, HealthCheck: &InternalDNSHealthCheck{}},
+			}},
+			wantSub: "resolvers[0].healthCheck.port must be a TCP port",
+		},
+		{
+			name: "health check timeout longer than its interval",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary, Distribution: InternalDNSDistributionSpread,
+					HealthCheck: &InternalDNSHealthCheck{Port: 8053, IntervalSeconds: 2, TimeoutSeconds: 3}},
+			}},
+			wantSub: "timeoutSeconds (3) must not exceed intervalSeconds (2)",
+		},
+		{
+			name: "health check threshold out of range",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary, Distribution: InternalDNSDistributionSpread,
+					HealthCheck: &InternalDNSHealthCheck{Port: 8053, UnhealthyThreshold: 11}},
+			}},
+			wantSub: "resolvers[0].healthCheck.unhealthyThreshold must be between 1 and 10",
+		},
+		{
+			name: "unknown distribution",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerAttachmentSelector: primary, Distribution: "RoundRobin"},
+			}},
+			wantSub: "resolvers[0].distribution must be Single or Spread",
 		},
 	}
 	for _, tt := range tests {
@@ -155,6 +284,44 @@ internalDNS:
 	}
 	if err := cfg.InternalDNS.validate(); err != nil {
 		t.Fatalf("decoded resolvers rejected: %v", err)
+	}
+}
+
+func TestDecodeInternalDNSSpreadResolver(t *testing.T) {
+	data := []byte(`apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: CellControllerManager
+internalDNS:
+  enabled: true
+  resolvers:
+  - frontend: fd53::53
+    producerSelector:
+      matchLabels:
+        service.datum.net/internal-dns: "true"
+      matchExpressions:
+      - key: internal-dns.datum.net/tier
+        operator: In
+        values: [node, node-b]
+    distribution: Spread
+    healthCheck:
+      port: 8053
+      intervalSeconds: 2
+`)
+	var cfg CellControllerManager
+	decodeInto(t, data, &cfg)
+	if err := cfg.InternalDNS.validate(); err != nil {
+		t.Fatalf("decoded Spread resolver rejected: %v", err)
+	}
+	resolver := cfg.InternalDNS.EffectiveResolvers()[0]
+	if !resolver.Spread() {
+		t.Fatalf("distribution = %q, want Spread", resolver.Distribution)
+	}
+	want := InternalDNSHealthCheck{Port: 8053, IntervalSeconds: 2, TimeoutSeconds: 2, UnhealthyThreshold: 3, HealthyThreshold: 3}
+	if resolver.HealthCheck == nil || *resolver.HealthCheck != want {
+		t.Fatalf("health check = %#v, want %#v", resolver.HealthCheck, want)
+	}
+	selector := resolver.ProducerLabelSelector()
+	if len(selector.MatchExpressions) != 1 || !slices.Equal(selector.MatchExpressions[0].Values, []string{"node", "node-b"}) {
+		t.Fatalf("producer selector = %#v", selector)
 	}
 }
 

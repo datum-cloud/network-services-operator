@@ -23,6 +23,21 @@ internalDNS:
   # - frontend: fd53::54
   #   producerAttachmentSelector:
   #     internal-dns.datum.net/tier: node-b
+  # A resolver can instead select its attachments with a full label selector
+  # and spread queries across every healthy one on a node. Spread requires a
+  # TCP health check port that every selected attachment listens on.
+  # resolvers:
+  # - frontend: fd53::53
+  #   producerSelector:
+  #     matchLabels:
+  #       service.datum.net/internal-dns: "true"
+  #     matchExpressions:
+  #     - key: internal-dns.datum.net/tier
+  #       operator: In
+  #       values: [node, node-b]
+  #   distribution: Spread
+  #   healthCheck:
+  #     port: 8053
 metricsServer:
   bindAddress: ":8443"
 ipam:

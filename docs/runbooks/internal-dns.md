@@ -151,8 +151,8 @@ internalDNS:
 - Give each attachment labels that only one resolver's selector matches.
   Startup refuses a selector that is equal to or contained in another, but
   two different selectors that both match one attachment pass that check.
-  Galactic then rejects the service path whose selector matches two producers
-  on one node.
+  Galactic then rejects the service path of a `Single` resolver whose
+  selector matches two producers on one node.
 - All resolvers share the network's service destination. Each gets its own
   service endpoint and route policy per protocol.
 - Set the same list on the manager and on every cell. The manager publishes
@@ -186,3 +186,101 @@ interface settings.
 Interfaces carry every nameserver in `status.dns`. A compute provider that
 configures guests from its own static resolver list, rather than from
 `status.dns`, must list the new frontend as well, or guests never use it.
+
+## Several resolvers behind one address
+
+By default a resolver is `Single`: each node may hold one of its producer
+attachments, so serving one address from two resolver instances on a node
+means two addresses, and guests decide how to use them. Most guests send
+almost every query to the first address and try the second only after a
+timeout, so a rollout of the first resolver still interrupts lookups.
+
+Set `distribution: Spread` on a resolver to let several producer attachments
+on one node serve its address. Galactic sends each new query to any of them
+that its health check has not found unhealthy, and stops sending new queries
+to an instance within roughly `intervalSeconds × unhealthyThreshold +
+timeoutSeconds` of it failing. When every instance on a node is unhealthy,
+all of them stay eligible.
+
+```yaml
+internalDNS:
+  enabled: true
+  resolvers:
+  - frontend: fd53::53
+    producerSelector:
+      matchLabels:
+        service.datum.net/internal-dns: "true"
+      matchExpressions:
+      - key: internal-dns.datum.net/tier
+        operator: In
+        values: [node, node-b]
+    distribution: Spread
+    healthCheck:
+      port: 8053
+      # Optional; the defaults are shown.
+      intervalSeconds: 5
+      timeoutSeconds: 2
+      unhealthyThreshold: 3
+      healthyThreshold: 3
+```
+
+- `producerSelector` is a full Kubernetes label selector, with `matchLabels`
+  and `matchExpressions`. It replaces `producerAttachmentSelector` on that
+  entry; set one or the other. Use it to select attachments that differ in a
+  label value, such as two tiers, without relabeling them.
+  `producerAttachmentSelector` keeps working unchanged.
+- `distribution` is `Single` (the default) or `Spread`. `healthCheck` is
+  required with `Spread` and refused with `Single`.
+- `healthCheck.port` is required. Each resolver serves both UDP and TCP, and
+  the UDP path has no TCP port of its own to probe. Every selected attachment
+  must accept TCP connections on that port while it can answer queries.
+- The node that hosts an attachment probes it from its host-side interface's
+  link-local address. Where interface traffic policy is enforced, the
+  attachment must allow TCP from `fe80::/10` to the health check port.
+- A node may hold at most 16 attachments of one `Spread` resolver.
+- Every cell's Galactic routers must run at least the Galactic version this
+  operator is built against. Older routers that already support `Spread`
+  can choose a different set of nodes for a consumer with no local
+  resolver, and that path then never reports ready.
+- The cell identity needs `get`, `list` and `watch` on
+  `serviceendpointproducerreports.galactic.datumapis.com`. The generated
+  role includes it; deployments that bind cell permissions separately must
+  add it. Without it, or without the report CRD, contexts report `DNSReady`
+  `False` with `NetworkPathNotReady`.
+- Each context gets its own `Spread` endpoints, and every node renews a
+  health report for each of them every 15 seconds. Check the resulting
+  write load on the cell API before enabling `Spread` on a cell with many
+  contexts.
+- The overlap rule between resolvers still applies: a selector must not
+  match every attachment another resolver's selector matches.
+
+### Moving from separate addresses to one shared address
+
+Starting from two `Single` resolvers, `fd53::53` on tier `node` and
+`fd53::54` on tier `node-b`:
+
+1. Make every resolver instance accept TCP on the health check port, and
+   allow it in interface traffic policy where that is enforced.
+2. Upgrade Galactic in every cell to a release that supports `Spread`.
+3. Switch the first resolver alone to `Spread`, keeping its selector and
+   the second resolver. Switching a resolver between `Single` and `Spread`
+   replaces its routes on each node once, so do this while `fd53::54` still
+   answers, one cell at a time. Wait until `DNSReady` is `True` on every
+   context in every cell before the next step. Do not skip this step: doing
+   it together with the next one replaces `fd53::53`'s routes and removes
+   `fd53::54` at the same moment.
+4. Replace the list with the single `Spread` resolver above, which selects
+   both tiers, on the cells and then on the manager. `fd53::53` is already
+   `Spread`, so this does not switch its mode again: the second
+   tier's instances join it, and `fd53::54`'s route objects are deleted.
+5. Guests that already applied both nameservers keep `fd53::54` until their
+   provider reapplies interface settings. It no longer answers, so those
+   guests time out on it if they fall back to it, which they rarely need
+   to now that `fd53::53` survives the loss of either tier.
+
+Keep `fd53::53` as the first entry throughout: changing the first entry
+recreates every resolver's routes.
+
+To go back, restore the previous list. Switching back to `Single` replaces
+the routes once more, and a `Single` resolver must again select at most one
+attachment per node.

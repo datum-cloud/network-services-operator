@@ -19,10 +19,10 @@ import (
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
 	networkv1alpha1 "go.datum.net/galactic/api/network/v1alpha1"
+	"go.datum.net/galactic/pkg/serviceplan"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
-	"go.datum.net/network-services-operator/internal/dnsaccess"
 )
 
 func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
@@ -69,7 +69,7 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 		},
 	}
 	attachments := []*cloudv1alpha1.VPCAttachment{consumer, producer}
-	plan, err := dnsaccess.ProgrammingPlan(policy, endpoint, attachments, "vpc-fabric-id")
+	plan, err := serviceplan.ProgrammingPlanAt(policy, endpoint, attachments, "vpc-fabric-id", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,14 +92,14 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 	if _, ready := policyProgrammed(policy, endpoint, attachments, "vpc-fabric-id", now); ready {
 		t.Fatal("expired node report was accepted")
 	}
-	if condition := unreadyPathCondition(policy, endpoint, attachments, "vpc-fabric-id"); condition.Reason !=
+	if condition := unreadyPathCondition(policy, endpoint, attachments, "vpc-fabric-id", now); condition.Reason !=
 		networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
 		t.Fatalf("unacknowledged path reported %s, want NetworkPathNotReady", condition.Reason)
 	}
 
 	broken := consumer.DeepCopy()
 	broken.Status.HostInterface = ""
-	if condition := unreadyPathCondition(policy, endpoint, []*cloudv1alpha1.VPCAttachment{broken, producer}, "vpc-fabric-id"); condition.Reason !=
+	if condition := unreadyPathCondition(policy, endpoint, []*cloudv1alpha1.VPCAttachment{broken, producer}, "vpc-fabric-id", now); condition.Reason !=
 		networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
 		t.Fatalf("a placed attachment that isn't ready reported %s, want NetworkPathNotReady", condition.Reason)
 	}
@@ -110,7 +110,7 @@ func TestPolicyProgrammedRequiresExactCurrentNodeReports(t *testing.T) {
 	if _, ready := policyProgrammed(policy, endpoint, idle, "vpc-fabric-id", now); ready {
 		t.Fatal("a network with no attachments was reported ready")
 	}
-	if condition := unreadyPathCondition(policy, endpoint, idle, "vpc-fabric-id"); condition.Status != metav1.ConditionFalse ||
+	if condition := unreadyPathCondition(policy, endpoint, idle, "vpc-fabric-id", now); condition.Status != metav1.ConditionFalse ||
 		condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonNoAttachments {
 		t.Fatalf("no attachments reported %s/%s, want False/NoAttachments", condition.Status, condition.Reason)
 	}

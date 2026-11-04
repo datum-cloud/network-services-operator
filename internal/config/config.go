@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -276,9 +279,120 @@ type InternalDNSResolver struct {
 	Frontend string `json:"frontend"`
 
 	// ProducerAttachmentSelector selects the shared DNS service attachments
-	// that serve this frontend. It must not select the attachments of another
-	// resolver.
-	ProducerAttachmentSelector map[string]string `json:"producerAttachmentSelector"`
+	// that serve this frontend by exact label values. It must not select the
+	// attachments of another resolver. Mutually exclusive with
+	// ProducerSelector; one of the two is required.
+	ProducerAttachmentSelector map[string]string `json:"producerAttachmentSelector,omitempty"`
+
+	// ProducerSelector selects the shared DNS service attachments that serve
+	// this frontend with a full label selector, so one resolver can select
+	// attachments that differ in a label value, such as two tiers. It must
+	// not select the attachments of another resolver. Mutually exclusive with
+	// ProducerAttachmentSelector.
+	ProducerSelector *metav1.LabelSelector `json:"producerSelector,omitempty"`
+
+	// Distribution says how the producers this resolver selects on one node
+	// share its traffic. Single, the default, allows one producer per node.
+	// Spread sends new flows to any producer on the consumer's node that its
+	// health check has not found unhealthy, and requires HealthCheck.
+	Distribution InternalDNSDistribution `json:"distribution,omitempty"`
+
+	// HealthCheck configures the TCP health check that decides which
+	// producers receive new flows. Required when Distribution is Spread and
+	// refused otherwise.
+	HealthCheck *InternalDNSHealthCheck `json:"healthCheck,omitempty"`
+}
+
+// InternalDNSDistribution selects how traffic spreads across the producers of
+// one resolver on a node.
+type InternalDNSDistribution string
+
+const (
+	// InternalDNSDistributionSingle sends every consumer on a node to the one
+	// producer there.
+	InternalDNSDistributionSingle InternalDNSDistribution = "Single"
+	// InternalDNSDistributionSpread spreads new flows across the healthy
+	// producers on the consumer's node.
+	InternalDNSDistributionSpread InternalDNSDistribution = "Spread"
+)
+
+// +k8s:deepcopy-gen=true
+
+// InternalDNSHealthCheck configures the TCP health check of a resolver's
+// producers. Each producer's own node probes it.
+type InternalDNSHealthCheck struct {
+	// Port is the TCP port probed on every producer. Required: a resolver
+	// also serves UDP, whose endpoint has no TCP port to fall back to.
+	Port int32 `json:"port"`
+
+	// IntervalSeconds is the time between two probes of one producer,
+	// 1-300. Defaults to 5.
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+
+	// TimeoutSeconds is how long a probe waits for the handshake, 1-60 and
+	// no more than IntervalSeconds. Defaults to 2.
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// UnhealthyThreshold is the number of consecutive failed probes that
+	// make a producer unhealthy, 1-10. Defaults to 3.
+	UnhealthyThreshold int32 `json:"unhealthyThreshold,omitempty"`
+
+	// HealthyThreshold is the number of consecutive successful probes that
+	// make a producer healthy again, 1-10. Defaults to 3.
+	HealthyThreshold int32 `json:"healthyThreshold,omitempty"`
+}
+
+// WithDefaults returns a copy of the health check with every unset field set
+// to the default Galactic applies.
+func (h InternalDNSHealthCheck) WithDefaults() InternalDNSHealthCheck {
+	if h.IntervalSeconds == 0 {
+		h.IntervalSeconds = 5
+	}
+	if h.TimeoutSeconds == 0 {
+		h.TimeoutSeconds = 2
+	}
+	if h.UnhealthyThreshold == 0 {
+		h.UnhealthyThreshold = 3
+	}
+	if h.HealthyThreshold == 0 {
+		h.HealthyThreshold = 3
+	}
+	return h
+}
+
+func (h InternalDNSHealthCheck) validate() error {
+	h = h.WithDefaults()
+	switch {
+	case h.Port < 1 || h.Port > 65535:
+		return fmt.Errorf("port must be a TCP port between 1 and 65535, got %d", h.Port)
+	case h.IntervalSeconds < 1 || h.IntervalSeconds > 300:
+		return fmt.Errorf("intervalSeconds must be between 1 and 300, got %d", h.IntervalSeconds)
+	case h.TimeoutSeconds < 1 || h.TimeoutSeconds > 60:
+		return fmt.Errorf("timeoutSeconds must be between 1 and 60, got %d", h.TimeoutSeconds)
+	case h.TimeoutSeconds > h.IntervalSeconds:
+		return fmt.Errorf("timeoutSeconds (%d) must not exceed intervalSeconds (%d)", h.TimeoutSeconds, h.IntervalSeconds)
+	case h.UnhealthyThreshold < 1 || h.UnhealthyThreshold > 10:
+		return fmt.Errorf("unhealthyThreshold must be between 1 and 10, got %d", h.UnhealthyThreshold)
+	case h.HealthyThreshold < 1 || h.HealthyThreshold > 10:
+		return fmt.Errorf("healthyThreshold must be between 1 and 10, got %d", h.HealthyThreshold)
+	}
+	return nil
+}
+
+// Spread reports whether the resolver spreads traffic across several
+// producers on a node.
+func (r *InternalDNSResolver) Spread() bool {
+	return r.Distribution == InternalDNSDistributionSpread
+}
+
+// ProducerLabelSelector returns the label selector for the resolver's
+// producer attachments, from whichever of ProducerSelector and
+// ProducerAttachmentSelector is set.
+func (r *InternalDNSResolver) ProducerLabelSelector() *metav1.LabelSelector {
+	if r.ProducerSelector != nil {
+		return r.ProducerSelector.DeepCopy()
+	}
+	return &metav1.LabelSelector{MatchLabels: maps.Clone(r.ProducerAttachmentSelector)}
 }
 
 const maxInternalDNSResolvers = 3
@@ -290,7 +404,11 @@ func SetDefaults_InternalDNSConfig(obj *InternalDNSConfig) {
 	if obj.ServicePrefix == "" {
 		obj.ServicePrefix = "fd70:100::/64"
 	}
-
+	for i := range obj.Resolvers {
+		if check := obj.Resolvers[i].HealthCheck; check != nil {
+			*check = check.WithDefaults()
+		}
+	}
 }
 
 // EffectiveResolvers returns the configured resolvers in nameserver order. The
@@ -328,12 +446,13 @@ func (c *InternalDNSConfig) validate() error {
 	}
 	resolvers := c.EffectiveResolvers()
 	frontends := map[netip.Addr]bool{}
+	selectors := make([]labels.Requirements, len(resolvers))
 	for i, resolver := range resolvers {
 		field := "frontend"
-		selectorField := "producerAttachmentSelector"
+		path := ""
 		if len(c.Resolvers) > 0 {
-			field = fmt.Sprintf("resolvers[%d].frontend", i)
-			selectorField = fmt.Sprintf("resolvers[%d].producerAttachmentSelector", i)
+			path = fmt.Sprintf("resolvers[%d].", i)
+			field = path + "frontend"
 		}
 		frontend, err := netip.ParseAddr(resolver.Frontend)
 		if err != nil || !frontend.Is6() || frontend.Zone() != "" {
@@ -343,26 +462,112 @@ func (c *InternalDNSConfig) validate() error {
 			return fmt.Errorf("%s repeats frontend %s", field, frontend)
 		}
 		frontends[frontend] = true
-		if len(resolver.ProducerAttachmentSelector) == 0 {
-			return fmt.Errorf("%s is required", selectorField)
+
+		selectorField := path + "producerAttachmentSelector"
+		switch {
+		case resolver.ProducerSelector != nil && len(resolver.ProducerAttachmentSelector) > 0:
+			return fmt.Errorf("%sproducerSelector is mutually exclusive with %s", path, selectorField)
+		case resolver.ProducerSelector != nil:
+			selectorField = path + "producerSelector"
+		case len(resolver.ProducerAttachmentSelector) == 0 && path == "":
+			return errors.New("producerAttachmentSelector is required")
+		case len(resolver.ProducerAttachmentSelector) == 0:
+			return fmt.Errorf("%s or %sproducerSelector is required", selectorField, path)
 		}
+		selector, err := metav1.LabelSelectorAsSelector(resolver.ProducerLabelSelector())
+		if err != nil {
+			return fmt.Errorf("%s is invalid: %w", selectorField, err)
+		}
+		requirements, _ := selector.Requirements()
+		if !slices.ContainsFunc(requirements, func(requirement labels.Requirement) bool {
+			op := positive(requirement.Operator())
+			return op == selection.In || op == selection.Exists
+		}) {
+			return fmt.Errorf("%s must require a label to be present: one with only negative requirements matches unlabeled attachments", selectorField)
+		}
+		selectors[i] = requirements
 		for j := range i {
-			if selectorContains(resolver.ProducerAttachmentSelector, resolvers[j].ProducerAttachmentSelector) ||
-				selectorContains(resolvers[j].ProducerAttachmentSelector, resolver.ProducerAttachmentSelector) {
-				return fmt.Errorf("%s overlaps resolvers[%d].producerAttachmentSelector: one matches every attachment the other does", selectorField, j)
+			if selectorContains(selectors[i], selectors[j]) || selectorContains(selectors[j], selectors[i]) {
+				return fmt.Errorf("%s overlaps resolvers[%d]'s producer selector: one matches every attachment the other does", selectorField, j)
 			}
+		}
+
+		switch resolver.Distribution {
+		case "", InternalDNSDistributionSingle:
+			if resolver.HealthCheck != nil {
+				return fmt.Errorf("%shealthCheck is only allowed when distribution is Spread", path)
+			}
+		case InternalDNSDistributionSpread:
+			if resolver.HealthCheck == nil {
+				return fmt.Errorf("%shealthCheck is required when distribution is Spread", path)
+			}
+			if err := resolver.HealthCheck.validate(); err != nil {
+				return fmt.Errorf("%shealthCheck.%w", path, err)
+			}
+		default:
+			return fmt.Errorf("%sdistribution must be Single or Spread, got %q", path, resolver.Distribution)
 		}
 	}
 	return nil
 }
 
-func selectorContains(broader, narrower map[string]string) bool {
-	for key, value := range broader {
-		if other, ok := narrower[key]; !ok || other != value {
+// selectorContains reports whether broader provably matches every label set
+// narrower matches: each of broader's requirements is implied by one of
+// narrower's. It can miss a containment that only a combination of
+// narrower's requirements implies.
+func selectorContains(broader, narrower labels.Requirements) bool {
+	for _, wide := range broader {
+		implied := false
+		for _, narrow := range narrower {
+			if requirementImplies(narrow, wide) {
+				implied = true
+				break
+			}
+		}
+		if !implied {
 			return false
 		}
 	}
 	return true
+}
+
+// requirementImplies reports whether every label set that satisfies narrow
+// also satisfies wide.
+func requirementImplies(narrow, wide labels.Requirement) bool {
+	if narrow.Key() != wide.Key() {
+		return false
+	}
+	narrowValues, wideValues := narrow.Values(), wide.Values()
+	switch positive(narrow.Operator()) {
+	case selection.In:
+		switch positive(wide.Operator()) {
+		case selection.In:
+			return wideValues.IsSuperset(narrowValues)
+		case selection.Exists:
+			return true
+		case selection.NotIn:
+			return !wideValues.HasAny(narrowValues.UnsortedList()...)
+		}
+	case selection.Exists:
+		return wide.Operator() == selection.Exists
+	case selection.NotIn:
+		return positive(wide.Operator()) == selection.NotIn && narrowValues.IsSuperset(wideValues)
+	case selection.DoesNotExist:
+		return wide.Operator() == selection.DoesNotExist ||
+			positive(wide.Operator()) == selection.NotIn
+	}
+	return false
+}
+
+// positive folds the operators that mean the same set test into one.
+func positive(op selection.Operator) selection.Operator {
+	switch op {
+	case selection.Equals, selection.DoubleEquals, selection.In:
+		return selection.In
+	case selection.NotEquals, selection.NotIn:
+		return selection.NotIn
+	}
+	return op
 }
 
 // +k8s:deepcopy-gen=true

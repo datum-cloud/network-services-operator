@@ -172,9 +172,19 @@ internalDNS:
   link-local address. Where interface traffic policy is enforced, the
   attachment must allow TCP from `fe80::/10` to the health check port.
 - A node may hold at most 16 attachments of one `Spread` resolver.
-- The cells need a Galactic release that supports `Spread` and publishes
-  producer health reports, and the cell identity needs read access to those
-  reports. The generated role grants it.
+- Every cell's Galactic routers must run at least the Galactic version this
+  operator is built against. Older routers that already support `Spread`
+  can choose a different set of nodes for a consumer with no local
+  resolver, and that path then never reports ready.
+- The cell identity needs `get`, `list` and `watch` on
+  `serviceendpointproducerreports.galactic.datumapis.com`. The generated
+  role includes it; deployments that bind cell permissions separately must
+  add it. Without it, or without the report CRD, contexts report `DNSReady`
+  `False` with `NetworkPathNotReady`.
+- Each context gets its own `Spread` endpoints, and every node renews a
+  health report for each of them every 15 seconds. Check the resulting
+  write load on the cell API before enabling `Spread` on a cell with many
+  contexts.
 - The overlap rule between resolvers still applies: a selector must not
   match every attachment another resolver's selector matches.
 
@@ -186,14 +196,17 @@ Starting from two `Single` resolvers, `fd53::53` on tier `node` and
 1. Make every resolver instance accept TCP on the health check port, and
    allow it in interface traffic policy where that is enforced.
 2. Upgrade Galactic in every cell to a release that supports `Spread`.
-3. Optional: switch the first resolver alone to `Spread`, keeping its
-   selector. This checks the health check with one instance per node before
-   widening it. Switching a resolver between `Single` and `Spread` replaces
-   its routes on each node once; do it one cell at a time and check that
-   `DNSReady` returns to `True`.
+3. Switch the first resolver alone to `Spread`, keeping its selector and
+   the second resolver. Switching a resolver between `Single` and `Spread`
+   replaces its routes on each node once, so do this while `fd53::54` still
+   answers, one cell at a time. Wait until `DNSReady` is `True` on every
+   context in every cell before the next step. Do not skip this step: doing
+   it together with the next one replaces `fd53::53`'s routes and removes
+   `fd53::54` at the same moment.
 4. Replace the list with the single `Spread` resolver above, which selects
-   both tiers, on the cells and then on the manager. Both tiers' instances
-   start serving `fd53::53`, and `fd53::54`'s route objects are deleted.
+   both tiers, on the cells and then on the manager. `fd53::53` is already
+   `Spread`, so this does not switch its mode again: the second
+   tier's instances join it, and `fd53::54`'s route objects are deleted.
 5. Guests that already applied both nameservers keep `fd53::54` until their
    provider reapplies interface settings. It no longer answers, so those
    guests time out on it if they fall back to it, which they rarely need

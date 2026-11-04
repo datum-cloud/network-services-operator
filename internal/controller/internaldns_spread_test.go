@@ -8,10 +8,13 @@ import (
 	"testing"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
@@ -299,5 +302,54 @@ func TestProducerReportsDiffer(t *testing.T) {
 	})
 	if !producerReportsDiffer(renewed, added, now) {
 		t.Error("a new producer entry was filtered out")
+	}
+}
+
+func TestInternalDNSCellReportsMissingProducerReportAPI(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{
+		networkingv1alpha.AddToScheme, cloudv1alpha1.AddToScheme, networkv1alpha1.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	networkContext := testNetworkContext("context", "context-uid")
+	networkContext.Annotations = testDNSIntent(time.Time{})
+	iface, attachment, vpc := consumerPath("one", networkContext.Name, "blue", "vpc-uid", "vpc-fabric-id")
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(networkContext.DeepCopy(), iface, attachment, vpc).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*networkv1alpha1.ServiceEndpointProducerReportList); ok {
+					return &apimeta.NoKindMatchError{GroupKind: schema.GroupKind{
+						Group: "galactic.datumapis.com", Kind: "ServiceEndpointProducerReport",
+					}}
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+	hub := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&networkingv1alpha.NetworkContext{}).
+		WithObjects(networkContext.DeepCopy()).Build()
+	r := &InternalDNSCellReconciler{
+		Location:    config.LocationConfig{Name: "ord-1"},
+		localReader: noServingLocations{cl},
+		Config:      config.InternalDNSConfig{Resolvers: []config.InternalDNSResolver{spreadResolver}},
+		HubCluster:  &fakeCluster{cl: hub},
+	}
+	if _, err := r.reconcile(ctx, cl, networkContext); err != nil {
+		t.Fatal(err)
+	}
+	reported := &networkingv1alpha.NetworkContext{}
+	if err := hub.Get(ctx, client.ObjectKeyFromObject(networkContext), reported); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(reported.Status.Conditions, networkingv1alpha.NetworkContextDNSReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady {
+		t.Fatalf("missing report API reported %#v, want False/NetworkPathNotReady", condition)
 	}
 }

@@ -166,7 +166,19 @@ func TestInternalDNSResolvers(t *testing.T) {
 			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
 				{Frontend: "fd53::53", ProducerSelector: &metav1.LabelSelector{}},
 			}},
-			wantSub: "must not select every attachment",
+			wantSub: "must require a label to be present",
+		},
+		{
+			name: "full selector with only negative requirements",
+			cfg: InternalDNSConfig{Resolvers: []InternalDNSResolver{
+				{Frontend: "fd53::53", ProducerSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: "tier", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"x"}},
+						{Key: "retired", Operator: metav1.LabelSelectorOpDoesNotExist},
+					},
+				}},
+			}},
+			wantSub: "resolvers[0].producerSelector must require a label to be present",
 		},
 		{
 			name: "full selector with an invalid operator",

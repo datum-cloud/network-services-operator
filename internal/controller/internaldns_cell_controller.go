@@ -166,6 +166,13 @@ func (r *InternalDNSCellReconciler) reconcile(
 	}
 
 	reports, err := r.producerReports(ctx, cl, networkContext.Namespace)
+	if apimeta.IsNoMatchError(err) || apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, r.report(ctx, networkContext, nil, metav1.Condition{
+			Type: networkingv1alpha.NetworkContextDNSReady, Status: metav1.ConditionFalse,
+			Reason:  networkingv1alpha.NetworkContextDNSReadyReasonNetworkPathNotReady,
+			Message: "A Spread resolver is configured, but this cell cannot read Galactic producer health reports",
+		})
+	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}

@@ -479,8 +479,11 @@ func (c *InternalDNSConfig) validate() error {
 			return fmt.Errorf("%s is invalid: %w", selectorField, err)
 		}
 		requirements, _ := selector.Requirements()
-		if len(requirements) == 0 {
-			return fmt.Errorf("%s must not select every attachment", selectorField)
+		if !slices.ContainsFunc(requirements, func(requirement labels.Requirement) bool {
+			op := positive(requirement.Operator())
+			return op == selection.In || op == selection.Exists
+		}) {
+			return fmt.Errorf("%s must require a label to be present: one with only negative requirements matches unlabeled attachments", selectorField)
 		}
 		selectors[i] = requirements
 		for j := range i {

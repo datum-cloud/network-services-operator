@@ -47,6 +47,11 @@ import (
 )
 
 const (
+	// internalDNSRecheckInterval is how often a hub copy carrying DNS
+	// annotations is checked against DNS again, since DNS objects aren't
+	// watched here.
+	internalDNSRecheckInterval = 5 * time.Minute
+
 	gatewayResourceReplicatorControllerName = "gateway_resource_replicator"
 	gatewayResourceReplicatorFinalizer      = "gateway.networking.datumapis.com/gateway-resource-replicator"
 )
@@ -393,7 +398,7 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 	}
 
-	decision, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
+	decision, upstreamErr, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
 	var result ctrl.Result
 
 	downstreamObj := &unstructured.Unstructured{}
@@ -424,10 +429,23 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		switch decision {
 		case annotationsPropagate:
 			propagateAnnotations(upstreamObj, downstreamObj, names)
+			if resource.replicationResourceConfig.verifyInternalDNSIntent && internalDNSIntentComplete(upstreamObj.GetAnnotations()) {
+				result.RequeueAfter = internalDNSRecheckInterval
+			}
 		case annotationsWithdraw:
 			removeAnnotations(downstreamObj, names)
 		case annotationsHold:
 			if !annotationsDiffer(upstreamObj, downstreamObj, names) {
+				// A copy equal to the project keeps access DNS only stopped
+				// accepting, so an outage withdraws nothing. Access that is
+				// gone or belongs to another network lifetime is withdrawn.
+				if errors.Is(upstreamErr, errInternalDNSIntentUnverified) &&
+					!errors.Is(upstreamErr, errInternalDNSAccessNotAccepted) {
+					log.FromContext(ctx).Info("withdrawing DNS annotations that no longer verify", "reason", upstreamErr.Error())
+					removeAnnotations(downstreamObj, names)
+				} else if upstreamErr != nil {
+					result.RequeueAfter = internalDNSRecheckInterval
+				}
 				break
 			}
 			// DNS objects aren't watched here, so check again for the access
@@ -514,31 +532,32 @@ const (
 // internal DNS annotations, so a complete set propagates only once it matches
 // the access DNS accepted for the context's network, and an incomplete set is
 // withdrawn rather than passed on. Otherwise the copy holds the set it has,
-// as long as that set still verifies.
+// as long as that set still verifies. The second result is why a complete set
+// did not verify; the third is a failure to check it.
 func (r *GatewayResourceReplicatorReconciler) annotationsVerified(
 	ctx context.Context,
 	resource replicationResource,
 	upstreamClient client.Client,
 	upstreamObj *unstructured.Unstructured,
-) (annotationDecision, error) {
+) (annotationDecision, error, error) {
 	if !resource.replicationResourceConfig.verifyInternalDNSIntent {
-		return annotationsPropagate, nil
+		return annotationsPropagate, nil, nil
 	}
 	if !internalDNSIntentComplete(upstreamObj.GetAnnotations()) {
-		return annotationsWithdraw, nil
+		return annotationsWithdraw, nil, nil
 	}
 	if !r.Config.InternalDNS.Enabled {
-		return annotationsHold, nil
+		return annotationsHold, nil, nil
 	}
 	err := r.verifyInternalDNSAnnotations(ctx, upstreamClient, upstreamObj, upstreamObj.GetAnnotations())
 	if errors.Is(err, errInternalDNSIntentUnverified) {
 		log.FromContext(ctx).V(1).Info("keeping the last verified DNS annotations", "reason", err.Error())
-		return annotationsHold, nil
+		return annotationsHold, err, nil
 	}
 	if err != nil {
-		return annotationsHold, fmt.Errorf("verify DNS annotations: %w", err)
+		return annotationsHold, nil, fmt.Errorf("verify DNS annotations: %w", err)
 	}
-	return annotationsPropagate, nil
+	return annotationsPropagate, nil, nil
 }
 
 // heldAnnotationsVerified reports whether the annotations a downstream copy
@@ -554,6 +573,9 @@ func (r *GatewayResourceReplicatorReconciler) heldAnnotationsVerified(
 		return false, nil
 	}
 	err := r.verifyInternalDNSAnnotations(ctx, upstreamClient, upstreamObj, held)
+	if errors.Is(err, errInternalDNSAccessNotAccepted) {
+		return true, nil
+	}
 	if errors.Is(err, errInternalDNSIntentUnverified) {
 		log.FromContext(ctx).Info("withdrawing DNS annotations that no longer verify", "reason", err.Error())
 		return false, nil

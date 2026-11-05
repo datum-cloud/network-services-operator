@@ -21,6 +21,11 @@ import (
 // not name access that DNS accepted for the context's own network.
 var errInternalDNSIntentUnverified = errors.New("DNS annotations do not match the access DNS accepted for this network")
 
+// errInternalDNSAccessNotAccepted means the annotations name the network's
+// current access, but DNS does not accept it right now. It wraps
+// errInternalDNSIntentUnverified.
+var errInternalDNSAccessNotAccepted = fmt.Errorf("%w: DNS has not accepted the access binding", errInternalDNSIntentUnverified)
+
 // internalDNSIntentComplete reports whether the annotations carry everything a
 // cell needs to program a DNS service path. A cell withdraws any path it has
 // for a context whose intent is incomplete.
@@ -63,9 +68,13 @@ func verifyInternalDNSIntent(
 		!strings.HasSuffix(consumerID, "/"+string(network.UID)) {
 		return errInternalDNSIntentUnverified
 	}
+	notAccepted := false
 	if suffix := annotations[InternalDNSSuffixAnnotation]; suffix != "" {
 		allocated, _, _ := unstructured.NestedString(dnsContext.Object, "status", "managedNamespace", "suffix")
-		if suffix != allocated {
+		switch {
+		case allocated == "":
+			notAccepted = true
+		case suffix != allocated:
 			return errInternalDNSIntentUnverified
 		}
 	}
@@ -81,9 +90,11 @@ func verifyInternalDNSIntent(
 	if annotations[InternalDNSServiceDestinationAnnotation] != destination ||
 		!binding.GetDeletionTimestamp().IsZero() ||
 		binding.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) ||
-		!accessBindingMatches(binding, dnsContext, annotations[InternalDNSRegionAnnotation], annotations[InternalDNSServiceDestinationAnnotation]) ||
-		!accessBindingAccepted(binding) {
+		!accessBindingMatches(binding, dnsContext, annotations[InternalDNSRegionAnnotation], annotations[InternalDNSServiceDestinationAnnotation]) {
 		return errInternalDNSIntentUnverified
+	}
+	if notAccepted || !accessBindingAccepted(binding) {
+		return errInternalDNSAccessNotAccepted
 	}
 	return nil
 }

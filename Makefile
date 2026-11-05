@@ -1,7 +1,5 @@
 # Image URL to use all building/pushing image targets
 IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
-# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.31.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -66,8 +64,11 @@ locations-crds: kustomize ## Render the locations service CRDs envtest installs.
 	$(KUSTOMIZE) build config/tools/locations-crds -o $(LOCALBIN)/crds/locations
 
 .PHONY: test
-test: manifests generate fmt vet envtest locations-crds ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet test-suite ## Generate the code, then run the unit and envtest suite.
+
+.PHONY: test-suite
+test-suite: envtest locations-crds ## Run the unit and envtest suite, as CI's required check does.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e)
 
 # The e2e suite runs against the two-cluster prod-fidelity env; bring it up and
 # run it with `task test-infra:up` then `task test-infra:test-e2e`
@@ -265,7 +266,16 @@ GO_LICENSES ?= $(LOCALBIN)/go-licenses
 KUSTOMIZE_VERSION ?= v5.5.0
 CONTROLLER_TOOLS_VERSION ?= v0.17.3
 DEFAULTER_GEN_VERSION ?= v0.32.3
-ENVTEST_VERSION ?= release-0.19
+#ENVTEST_VERSION is the controller-runtime version to use for setup-envtest, derived from go.mod
+ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \
+  [ -n "$$v" ] || { echo "Set ENVTEST_VERSION manually (controller-runtime replace has no tag)" >&2; exit 1; }; \
+  printf '%s\n' "$$v")
+
+#ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries, derived from go.mod's k8s.io/api
+ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
+  [ -n "$$v" ] || { echo "Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag)" >&2; exit 1; }; \
+  printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
+
 GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # renovate: datasource=go depName=github.com/cert-manager/cert-manager
@@ -335,6 +345,11 @@ go-licenses: ## Find or download go-licenses
 # $1 - target path with name of binary
 # $2 - package url which can be installed
 # $3 - specific version of package
+# gomodver prints a module's version from go.mod, or its replacement's.
+define gomodver
+$(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
+endef
+
 define go-install-tool
 @[ -f "$(1)-$(3)" ] || { \
 set -e; \

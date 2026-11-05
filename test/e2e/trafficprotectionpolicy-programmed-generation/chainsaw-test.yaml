@@ -1,0 +1,247 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: trafficprotectionpolicy-programmed-generation
+#
+# Regression for network-services-operator#266 (ecv acceptance on that issue):
+# after a TrafficProtectionPolicy spec change, convergence to the new generation
+# must be observable via ancestor Programmed (observedGeneration), not inferred
+# from a request eventually succeeding. An unbounded silent lag fails this test.
+#
+# Single-cluster e2e applies in well under a second, so an intermediate
+# Programmed lag window is not asserted here (forcing it would require scaling
+# the shared extension server and break parallel tests). Lag visibility under
+# real multi-edge delay is covered by TrafficProtectionPolicyApplyLagSLOViolation.
+#
+# Wire-level inverted-paranoia remediation remains covered by
+# trafficprotectionpolicy-neutralize-inverted; this scenario owns the
+# generation / Programmed observability contract.
+#
+# Precondition: downstream WAF data plane
+# (`make prepare-infra-cluster` → `make downstream-waf-dataplane`).
+spec:
+  cluster: nso-infra
+  namespaceTemplate:
+    metadata:
+      labels:
+        meta.datumapis.com/upstream-cluster-name: e2e
+  steps:
+    - name: Deploy a backend
+      try:
+        - apply:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: echo
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: echo
+                template:
+                  metadata:
+                    labels:
+                      app: echo
+                  spec:
+                    containers:
+                      - name: echo
+                        image: hashicorp/http-echo:1.0
+                        args: ["-text=hello from backend", "-listen=:8080"]
+                        ports:
+                          - containerPort: 8080
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: echo
+              spec:
+                selector:
+                  app: echo
+                ports:
+                  - port: 80
+                    targetPort: 8080
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: echo
+              status:
+                availableReplicas: 1
+
+    - name: Route through the WAF gateway with an Enforce policy
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
+      try:
+        - apply:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: waf-gw
+              spec:
+                gatewayClassName: datum-downstream-gateway-e2e
+                listeners:
+                  - name: http
+                    protocol: HTTP
+                    port: 80
+                    hostname: ($hostname)
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+        - apply:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: echo
+              spec:
+                parentRefs:
+                  - name: waf-gw
+                hostnames:
+                  - ($hostname)
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backendRefs:
+                      - name: echo
+                        port: 80
+        - apply:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: gen-waf
+              spec:
+                mode: Enforce
+                samplingPercentage: 100
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: waf-gw
+                ruleSets:
+                  - type: OWASPCoreRuleSet
+                    owaspCoreRuleSet:
+                      paranoiaLevels:
+                        blocking: 1
+                        detection: 1
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: waf-gw
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: TrafficProtectionPolicy
+              metadata:
+                name: gen-waf
+              status:
+                (ancestors[?conditions[?type == 'Programmed' && status == 'True']]):
+                  - (length(conditions[?type == 'Programmed' && status == 'True'])): 1
+      catch:
+        - script:
+            timeout: 60s
+            content: |
+              set -x
+              kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o yaml || true
+              kubectl -n "$NAMESPACE" get gateway waf-gw -o yaml || true
+              kubectl -n network-services-operator-system logs \
+                deploy/network-services-operator-envoy-gateway-extension-server --tail=200 || true
+
+    - name: Programmed must track the post-edit generation
+      description: >
+        Bump the policy generation with a real spec edit. Programmed must report
+        observedGeneration for the new generation; timing out here is an
+        unbounded silent propagation tail (#266).
+      try:
+        - script:
+            timeout: 4m
+            content: |
+              set -eu
+
+              programmed_obs() {
+                kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o go-template='{{.metadata.generation}} {{range .status.ancestors}}{{range .conditions}}{{if eq .type "Programmed"}}{{.status}} {{.observedGeneration}}{{end}}{{end}}{{end}}{{println}}'
+              }
+
+              set -- $(programmed_obs)
+              gen1=$1 status1=$2 obs1=$3
+              echo "before patch: generation=${gen1} Programmed=${status1} observedGeneration=${obs1}"
+              if [ "${status1}" != "True" ] || [ -z "${obs1}" ] || [ "${obs1}" -lt "${gen1}" ]; then
+                echo "precondition failed: Programmed must be True for the current generation"
+                exit 1
+              fi
+
+              kubectl -n "$NAMESPACE" patch trafficprotectionpolicy gen-waf --type=merge -p '{
+                "spec": {
+                  "samplingPercentage": 50,
+                  "ruleSets": [{
+                    "type": "OWASPCoreRuleSet",
+                    "owaspCoreRuleSet": {
+                      "paranoiaLevels": {"blocking": 2, "detection": 2}
+                    }
+                  }]
+                }
+              }'
+
+              i=1
+              while [ "$i" -le 60 ]; do
+                set -- $(programmed_obs)
+                gen=$1 status=$2 obs=$3
+                echo "converge probe ${i}: generation=${gen} Programmed=${status} observedGeneration=${obs}"
+                if [ "${gen}" -gt "${gen1}" ] && [ "${status}" = "True" ] && [ -n "${obs}" ] && [ "${obs}" -ge "${gen}" ]; then
+                  echo "Programmed caught up to generation ${gen}"
+                  exit 0
+                fi
+                sleep 3
+                i=$((i + 1))
+              done
+
+              echo "Programmed never reached the post-edit generation (unbounded silent lag, #266)"
+              kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o yaml || true
+              exit 1
+      catch:
+        - script:
+            timeout: 60s
+            content: |
+              set -x
+              kubectl -n "$NAMESPACE" get trafficprotectionpolicy gen-waf -o yaml || true
+              kubectl -n network-services-operator-system logs \
+                deploy/network-services-operator-envoy-gateway-extension-server --tail=200 || true
+
+    - name: Benign traffic still reaches the backend after the generation bump
+      bindings:
+        - name: hostname
+          value: (join('.', [$namespace, 'e2e.test']))
+      try:
+        - script:
+            env:
+              - name: HOSTNAME
+                value: ($hostname)
+            content: |
+              set -u
+              i=1
+              while [ "$i" -le 30 ]; do
+                code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                  -H "Host: ${HOSTNAME}" http://localhost:30080/) || code=000
+                echo "attempt ${i}: HTTP ${code}"
+                if [ "${code}" = "200" ]; then
+                  exit 0
+                fi
+                sleep 3
+                i=$((i + 1))
+              done
+              echo "benign request never returned 200 after Programmed caught up"
+              exit 1

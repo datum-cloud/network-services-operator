@@ -224,7 +224,7 @@ export function TrafficChart({
                   .sort((a, b) => Number(b.value) - Number(a.value));
                 if (items.length === 0) return null;
                 return (
-                  <div className="border-border/50 bg-background min-w-52 rounded-lg border px-3.5 py-2.5 text-xs shadow-xl">
+                  <div className="border-border/50 bg-background min-w-48 rounded-lg border px-3.5 py-2.5 text-xs shadow-xl">
                     <div className="text-muted-foreground mb-2">{format(ts, 'MMM d, h:mm:ss a')}</div>
                     <div className="flex flex-col gap-1.5">
                       {items.slice(0, TOOLTIP_ROWS).map((p) => (

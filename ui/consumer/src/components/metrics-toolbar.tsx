@@ -19,6 +19,7 @@ import { RefreshCwIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 const CONTROL_HEIGHT = 'h-8 min-h-8';
+const SELECT_MIN_WIDTH = { minWidth: '4rem' };
 
 export interface FilterOption {
   value: string;
@@ -58,7 +59,8 @@ function RefreshControl({ controls }: { controls: MetricsControls }) {
       <Select value={controls.refresh} onValueChange={controls.setRefresh}>
         <SelectTrigger
           aria-label="Auto refresh"
-          className="h-full min-h-0 w-auto min-w-16 rounded-l-none border-0 bg-transparent px-2 py-0 shadow-none focus:ring-0">
+          style={SELECT_MIN_WIDTH}
+          className="h-full min-h-0 w-auto rounded-l-none border-0 bg-transparent px-2 py-0 shadow-none focus:ring-0">
           <SelectValue placeholder="Auto refresh" />
         </SelectTrigger>
         <SelectContent>
@@ -100,7 +102,7 @@ export function MetricsToolbar({
     <div
       className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"
       data-testid="networking-plugin-metrics-toolbar">
-      <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         {regionOptions.length > 1 && (
           <MultiSelect
             className={cn('bg-card w-full sm:w-auto sm:min-w-44', CONTROL_HEIGHT)}
@@ -124,7 +126,7 @@ export function MetricsToolbar({
           />
         )}
       </div>
-      <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center lg:w-auto lg:justify-end">
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
         <DateTimeRangePicker
           value={pickerValue}
           onChange={(value) =>
@@ -154,7 +156,8 @@ export function MetricsToolbar({
             <Select value={controls.step} onValueChange={controls.setStep}>
               <SelectTrigger
                 aria-label="Step"
-                className="h-full min-h-0 w-auto min-w-16 rounded-l-none border-0 bg-transparent px-2 py-0 shadow-none focus:ring-0">
+                style={SELECT_MIN_WIDTH}
+                className="h-full min-h-0 w-auto rounded-l-none border-0 bg-transparent px-2 py-0 shadow-none focus:ring-0">
                 <SelectValue placeholder="Step" />
               </SelectTrigger>
               <SelectContent>

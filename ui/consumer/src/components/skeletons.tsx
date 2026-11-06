@@ -266,12 +266,12 @@ export function NetworkMetricsSkeleton() {
   return (
     <Loading kind="metrics">
       <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
-          <Skeleton className="h-8 w-full rounded-lg sm:w-44" />
-          <Skeleton className="h-8 w-full rounded-lg sm:w-64" />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Skeleton className="h-8 w-full rounded-lg sm:w-auto sm:min-w-44" />
+          <Skeleton className="h-8 w-full rounded-lg sm:w-auto sm:min-w-64" />
         </div>
-        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
-          <Skeleton className="h-8 w-full rounded-lg sm:w-64" />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Skeleton className="h-8 w-full rounded-lg sm:w-auto sm:min-w-64" />
           <div className="flex shrink-0 items-center gap-2">
             <Skeleton className="h-8 w-32 rounded-lg" />
             <Skeleton className="h-8 w-24 rounded-lg" />
@@ -291,7 +291,7 @@ export function NetworkMetricsSkeleton() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <TrafficLegendSkeleton />
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {Array.from({ length: 2 }).map((_, i) => (
               <div key={i} className="flex min-w-0 flex-col gap-2">
                 <div className="flex h-5 items-center">

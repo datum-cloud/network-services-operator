@@ -142,13 +142,11 @@ func (r *GatewayDownstreamGCReconciler) Reconcile(ctx context.Context, req GVKRe
 		}
 	}
 
-	if controllerutil.RemoveFinalizer(&obj, gatewayControllerGCFinalizer) {
-		if err := cl.GetClient().Update(ctx, &obj); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
-		}
+	result, err := removeFinalizer(ctx, cl, &obj, gatewayControllerGCFinalizer, fieldOwner(gatewayGCFinalizerOwner))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
-
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

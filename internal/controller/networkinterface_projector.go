@@ -64,7 +64,12 @@ func (r *NetworkInterfaceProjector) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if !published.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.teardown(ctx, &published)
+		err := r.teardown(ctx, &published)
+		if errors.Is(err, finalizer.ErrConflict) {
+			log.FromContext(ctx).Info("finalizer list changed during removal, requeueing", "error", err.Error())
+			return ctrl.Result{RequeueAfter: conflictRequeueInterval}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	if err := finalizer.Add(ctx, r.hub.GetClient(), &published, networkInterfaceProjectionFinalizer,

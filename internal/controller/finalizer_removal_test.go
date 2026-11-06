@@ -13,6 +13,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -95,4 +96,73 @@ func TestAReplicatedObjectGoneBeforeItsFinalizerIsRemovedIsDone(t *testing.T) {
 
 	_, err := reconciler.Reconcile(context.Background(), gvkRequestFor(replicated))
 	require.NoError(t, err)
+}
+
+// refusedFinalizerRemoval answers a finalizer's JSON patch with a 422. When
+// moveTheList is set it first removes another controller's entry, as a
+// concurrent removal does between the read and the patch.
+func refusedFinalizerRemoval(moveTheList bool, causes ...metav1.StatusCause) interceptor.Funcs {
+	return interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if patch.Type() != types.JSONPatchType {
+				return c.Patch(ctx, obj, patch, opts...)
+			}
+			if moveTheList {
+				live := &unstructured.Unstructured{}
+				live.SetGroupVersionKind(obj.GetObjectKind().GroupVersionKind())
+				if err := c.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
+					return err
+				}
+				live.SetFinalizers([]string{gatewayResourceReplicatorFinalizer})
+				if err := c.Update(ctx, live); err != nil {
+					return err
+				}
+			}
+			invalid := apierrors.NewInvalid(schema.GroupKind{}, obj.GetName(), nil)
+			invalid.ErrStatus.Details.Causes = causes
+			return invalid
+		},
+	}
+}
+
+func TestAReplicatedObjectsRefusedFinalizerRemoval(t *testing.T) {
+	for name, tc := range map[string]struct {
+		funcs   interceptor.Funcs
+		requeue bool
+	}{
+		"another controller's entry left first, so the removal requeues": {
+			funcs:   refusedFinalizerRemoval(true),
+			requeue: true,
+		},
+		"a refusal that changed nothing is still an error": {
+			funcs: refusedFinalizerRemoval(false),
+		},
+		"a refusal with causes is still an error": {
+			funcs: refusedFinalizerRemoval(false, metav1.StatusCause{Type: metav1.CauseTypeFieldValueInvalid, Message: "denied"}),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			testScheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(testScheme))
+
+			namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-suite", UID: "ns-uid"}}
+			replicated := newUnstructuredObject(namespace.Name, "example", map[string]string{"replicate": "true"}, map[string]any{"foo": "bar"})
+			replicated.SetUID("policy-uid")
+			replicated.SetFinalizers([]string{"example.com/other", gatewayResourceReplicatorFinalizer})
+			replicated.SetDeletionTimestamp(&metav1.Time{Time: metav1.Now().Time})
+
+			upstream := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(namespace, replicated).
+				WithInterceptorFuncs(tc.funcs).Build()
+			reconciler := newReplicatorForTest(upstream, fake.NewClientBuilder().WithScheme(testScheme).Build(), testScheme)
+
+			result, err := reconciler.Reconcile(context.Background(), gvkRequestFor(replicated))
+			if tc.requeue {
+				require.NoError(t, err)
+				require.Equal(t, conflictRequeueInterval, result.RequeueAfter)
+				return
+			}
+			require.Error(t, err)
+			require.True(t, apierrors.IsInvalid(err))
+		})
+	}
 }

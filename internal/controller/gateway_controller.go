@@ -54,7 +54,6 @@ import (
 	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
-	"go.datum.net/network-services-operator/internal/util/finalizer"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -64,7 +63,12 @@ const (
 	gatewayControllerName      = "gateway"
 	gatewayControllerFinalizer = "gateway.networking.datumapis.com/gateway-controller"
 )
-const gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
+
+const (
+	gatewayControllerGCFinalizer = "gateway.networking.datumapis.com/gateway-controller-gc"
+	gatewayGCFinalizerOwner      = "gateway-gc"
+)
+
 const certificateIssuerTLSOption = "gateway.networking.datumapis.com/certificate-issuer"
 
 // autoIssuerSentinel is the placeholder value the defaulting webhook stamps
@@ -188,9 +192,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 				return result.Complete(ctx)
 			}
 
-			if err := finalizer.Remove(ctx, cl, &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName)); err != nil {
+			result, err := removeFinalizer(ctx, cl, &gateway, gatewayControllerFinalizer, fieldOwner(gatewayControllerName))
+			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer from gateway: %w", err)
 			}
+			return result, nil
 		}
 
 		return ctrl.Result{}, nil
@@ -2172,6 +2178,10 @@ func (r *GatewayReconciler) detachHTTPRoutes(
 		} else {
 			route.Spec.ParentRefs = remainingRefs
 			if err := gatewayClient.Update(ctx, &route); err != nil {
+				if apierrors.IsConflict(err) {
+					result.RequeueAfter = conflictRequeueInterval
+					return result
+				}
 				result.Err = err
 				return result
 			}
@@ -2263,6 +2273,10 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 		if !controllerutil.ContainsFinalizer(&route, gatewayControllerGCFinalizer) {
 			controllerutil.AddFinalizer(&route, gatewayControllerGCFinalizer)
 			if err := upstreamClient.Update(ctx, &route); err != nil {
+				if apierrors.IsConflict(err) {
+					result.RequeueAfter = conflictRequeueInterval
+					return result
+				}
 				result.Err = fmt.Errorf("failed to add finalizer to httproute: %w", err)
 				return result
 			}

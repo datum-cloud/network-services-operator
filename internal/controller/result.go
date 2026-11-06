@@ -10,9 +10,25 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"go.datum.net/network-services-operator/internal/util/finalizer"
 	"go.datum.net/network-services-operator/internal/util/status"
 )
+
+const conflictRequeueInterval = time.Second
+
+// removeFinalizer removes name from obj and requeues, rather than failing the
+// reconcile, when another writer changed the finalizer list underneath it.
+func removeFinalizer(ctx context.Context, cl finalizer.Cluster, obj client.Object, name, owner string) (ctrl.Result, error) {
+	err := finalizer.Remove(ctx, cl, obj, name, owner)
+	if errors.Is(err, finalizer.ErrConflict) {
+		log.FromContext(ctx).Info("finalizer list changed during removal, requeueing",
+			"finalizer", name, "error", err.Error())
+		return ctrl.Result{RequeueAfter: conflictRequeueInterval}, nil
+	}
+	return ctrl.Result{}, err
+}
 
 type Result struct {
 	// Result contains the result of a Reconciler invocation.

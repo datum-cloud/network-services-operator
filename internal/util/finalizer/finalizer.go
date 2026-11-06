@@ -61,6 +61,11 @@ var removals = metrics.NewCounterVec(
 	[]string{"field_manager", labels.Outcome},
 )
 
+// ErrConflict marks a removal another writer raced: the finalizer list or the
+// object changed between the read and the patch. Reading again cures it, so a
+// caller requeues rather than reporting it as a failure.
+var ErrConflict = errors.New("finalizer list changed during removal")
+
 // Add makes name one of obj's finalizers by applying it under fieldOwner. The
 // apply carries obj's UID, so it never creates an object that was deleted.
 // fieldOwner must apply nothing else to obj: an apply that leaves the
@@ -128,8 +133,23 @@ func Remove(ctx context.Context, cl Cluster, obj client.Object, name, fieldOwner
 	if outcome == outcomePatch || outcome == outcomeGone {
 		return nil
 	}
+	if outcome == outcomeConflict && changedSince(ctx, cl, obj, live) {
+		return fmt.Errorf("remove finalizer %q at index %d from %s (UID %s): %w: %w",
+			name, slices.Index(live.GetFinalizers(), name), key, live.GetUID(), ErrConflict, err)
+	}
 	return fmt.Errorf("remove finalizer %q at index %d from %s (UID %s), %s: %w",
 		name, slices.Index(live.GetFinalizers(), name), key, live.GetUID(), outcome, err)
+}
+
+// changedSince reports whether another writer replaced the object or moved its
+// finalizer list after read, which is what a failed test in the removal's patch
+// means. A refusal that leaves both as read was not a race.
+func changedSince(ctx context.Context, cl Cluster, obj client.Object, read *metav1.PartialObjectMetadata) bool {
+	now, err := readMetadata(ctx, cl, obj)
+	if err != nil {
+		return apierrors.IsNotFound(err)
+	}
+	return now.GetUID() != read.GetUID() || !slices.Equal(now.GetFinalizers(), read.GetFinalizers())
 }
 
 // readMetadata reads obj's metadata from the API server.

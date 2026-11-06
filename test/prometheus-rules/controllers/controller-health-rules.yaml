@@ -99,4 +99,7 @@ groups:
     expr: |
       count_over_time((sum by (cluster, namespace, deployment, controller) (label_replace(increase(controller_runtime_reconcile_total{result="error"}[1h]), "deployment", "$1", "pod", "(.+)-[^-]+-[^-]+$")) > 0)[24h:1h])
   - record: controller_runtime:reconcile_error_floor:24h
-    expr: controller_runtime:reconcile_error_hours:24h >= 24
+    expr: |
+      controller_runtime:reconcile_error_hours:24h >= 24
+      unless on (cluster, namespace, deployment, controller)
+      controller_runtime:reconcile_error_floor:exempt

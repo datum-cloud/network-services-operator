@@ -158,3 +158,11 @@ is one of the patterns above, and an orphan is covered there too.
 
 **Remediate.** Fix the controller, or the data when the object is wrong, so the
 floor goes to zero. The warning resolves at the first hour without an error.
+
+**Exemptions.** A deployer that already alerts on a controller by a better
+signal can hand the floor to that alert: record
+`controller_runtime:reconcile_error_floor:exempt` with the controller's
+`cluster`, `namespace`, `deployment` and `controller` labels, and the floor skips
+it. Use it for a third-party controller whose errors you cannot fix in its code
+and that another alert already judges, never to quiet a controller this
+operator owns.

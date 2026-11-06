@@ -2,9 +2,10 @@ import { NetworkResources, groupByRegion } from './network-resources';
 import { ApiError } from '../lib/api';
 import * as api from '../lib/api';
 import type { NetworkInterface, NetworkService, Subnet } from '../schema';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
@@ -89,12 +90,49 @@ function regionHeader(region: string) {
 }
 
 function render_() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <MemoryRouter>
-      <NetworkResources projectId="demo-project" networkName="default" />
-    </MemoryRouter>
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <NetworkResources
+          projectId="demo-project"
+          networkName="default"
+          metricsHref="/networks/default/metrics"
+        />
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
+
+const fetchMock = vi.fn();
+
+function serveSparks(rates: Record<string, number>) {
+  fetchMock.mockImplementation(async () =>
+    new Response(
+      JSON.stringify({
+        status: 'success',
+        data: {
+          resultType: 'matrix',
+          result: Object.entries(rates).map(([network, rate]) => ({
+            metric: { network },
+            values: [[1_800_000_000, String(rate / 2)], [1_800_000_060, String(rate)]],
+          })),
+        },
+      }),
+      { status: 200 }
+    )
+  );
+}
+
+beforeEach(() => {
+  fetchMock.mockReset();
+  serveSparks({});
+  vi.stubGlobal('fetch', fetchMock);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('NetworkResources', () => {
   it('shows the loading skeleton while either list is fetching', () => {
@@ -187,6 +225,21 @@ describe('NetworkResources', () => {
       'href',
       '/project/demo-project/services/compute-datumapis-com/storefront'
     );
+  });
+
+  it('shows each instance traffic and links it to the Metrics tab', async () => {
+    useNetworkInterfacesMock.mockReturnValue(result([makeInterface()]));
+    serveSparks({ 'iface-storefront-abc123': 4000 });
+    render_();
+
+    const traffic = await screen.findByTestId('network-interface-traffic');
+    expect(traffic).toHaveTextContent('↓ 4.00 kb/s↑ 4.00 kb/s');
+    expect(traffic.closest('a')).toHaveAttribute(
+      'href',
+      '/networks/default/metrics?instances=iface-storefront-abc123'
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(new URLSearchParams(String(fetchMock.mock.calls[0][1].body)).get('step')).toBe('60s');
   });
 
   it('shows the raw interface name without a link when no workload name is known', () => {

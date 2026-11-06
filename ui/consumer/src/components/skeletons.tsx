@@ -1,10 +1,13 @@
 import { Card, CardContent, CardField, CardHeader } from '@datum-cloud/datum-ui/card';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
+import { TrafficSparkSkeleton } from './traffic-sparkline';
 import { cn } from '@datum-cloud/datum-ui/utils';
 
 const NETWORK_COLUMNS = ['Name', 'Status', 'IPv6 prefix', 'IP families', 'MTU', 'Created'];
 const SERVICE_COLUMNS = ['Name', 'Ports', 'Regions', 'Members', 'Healthy', 'Resolved', 'Ready', 'Created'];
-const RESOURCE_COLUMNS = ['Workload', 'Address', 'Status', 'Created'];
+const RESOURCE_COLUMNS = ['Workload', 'Address', 'Traffic · 30m', 'Status', 'Created'];
+const RESOURCE_ROW_HEIGHT = 53;
+const RESOURCE_HEADER_HEIGHT = 40;
 
 function Loading({ kind, children }: { kind: string; children: React.ReactNode }) {
   return (
@@ -114,7 +117,7 @@ function ResourcesTableSkeleton() {
       <Skeleton className="h-4 w-72" />
       <Card size="sm" sectioned className="overflow-hidden">
         <CardContent padding="none">
-          <div className="flex gap-4 border-b px-5 py-3">
+          <div className="flex items-center gap-4 border-b px-5" style={{ height: RESOURCE_HEADER_HEIGHT }}>
             {RESOURCE_COLUMNS.map((column) => (
               <span key={column} className="min-w-0 flex-1 truncate text-xs font-medium">
                 {column}
@@ -123,15 +126,26 @@ function ResourcesTableSkeleton() {
           </div>
           {Array.from({ length: 2 }).map((_, group) => (
             <div key={group}>
-              <div className="bg-muted/40 flex items-center justify-between border-b px-5 py-3">
+              <div
+                className="bg-muted/40 flex items-center justify-between border-b px-5"
+                style={{ height: RESOURCE_HEADER_HEIGHT }}>
                 <Skeleton className="h-4 w-40" />
                 <Skeleton className="h-4 w-24" />
               </div>
               {Array.from({ length: 3 }).map((_, row) => (
-                <div key={row} className="flex items-center gap-4 border-b px-5 py-3">
-                  {RESOURCE_COLUMNS.map((column) => (
-                    <Skeleton key={column} className="h-4 min-w-0 flex-1" />
-                  ))}
+                <div
+                  key={row}
+                  className="flex items-center gap-4 border-b px-5"
+                  style={{ height: RESOURCE_ROW_HEIGHT }}>
+                  {RESOURCE_COLUMNS.map((column) =>
+                    column.startsWith('Traffic') ? (
+                      <div key={column} className="min-w-0 flex-1">
+                        <TrafficSparkSkeleton />
+                      </div>
+                    ) : (
+                      <Skeleton key={column} className="h-4 min-w-0 flex-1" />
+                    )
+                  )}
                 </div>
               ))}
             </div>
@@ -196,6 +210,102 @@ export function ConfigurationSkeleton() {
           <Skeleton className="h-24 w-full rounded-lg" />
         </div>
       </div>
+    </Loading>
+  );
+}
+
+const METRICS_CHART_HEIGHT = 240;
+const LEGEND_CHIP_WIDTHS = [176, 168, 184, 180, 176, 172, 188];
+const OTHER_CHIP_WIDTH = 52;
+const TEXT_XS_LINE = 18;
+
+export function MetricKpiCardSkeleton() {
+  return (
+    <Card size="sm" className="h-full w-full overflow-hidden">
+      <CardContent className="flex min-w-0 flex-col gap-2">
+        <div className="flex h-4 items-center justify-between gap-2">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-2.5 w-8" />
+        </div>
+        <div className="flex h-8 items-center">
+          <Skeleton className="h-6 w-28" />
+        </div>
+        <Skeleton className="h-8 w-full" />
+      </CardContent>
+    </Card>
+  );
+}
+
+export function TrafficLegendSkeleton({
+  count = LEGEND_CHIP_WIDTHS.length,
+  other = true,
+}: {
+  count?: number;
+  other?: boolean;
+}) {
+  const widths = Array.from({ length: count }, (_, i) => LEGEND_CHIP_WIDTHS[i % LEGEND_CHIP_WIDTHS.length]);
+  if (other) widths.push(OTHER_CHIP_WIDTH);
+  if (widths.length < 2) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      {widths.map((width, i) => (
+        <span key={i} className="inline-flex items-center gap-1.5" style={{ height: TEXT_XS_LINE }}>
+          <Skeleton className="size-2 rounded-full" />
+          <Skeleton className="h-3" style={{ width: width - 14 }} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function TrafficChartSkeleton() {
+  return <Skeleton className="w-full rounded-md" style={{ height: METRICS_CHART_HEIGHT }} />;
+}
+
+export function NetworkMetricsSkeleton() {
+  return (
+    <Loading kind="metrics">
+      <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
+          <Skeleton className="h-8 w-full rounded-lg sm:w-44" />
+          <Skeleton className="h-8 w-full rounded-lg sm:w-64" />
+        </div>
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">
+          <Skeleton className="h-8 w-full rounded-lg sm:w-64" />
+          <div className="flex shrink-0 items-center gap-2">
+            <Skeleton className="h-8 w-32 rounded-lg" />
+            <Skeleton className="h-8 w-24 rounded-lg" />
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <MetricKpiCardSkeleton key={i} />
+        ))}
+      </div>
+      <Card size="sm" sectioned className="w-full overflow-hidden">
+        <CardHeader size="sm" bordered>
+          <div className="flex h-5 items-center">
+            <Skeleton className="h-4 w-16" />
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <TrafficLegendSkeleton />
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <div key={i} className="flex min-w-0 flex-col gap-2">
+                <div className="flex h-5 items-center">
+                  <Skeleton className="h-3.5 w-20" />
+                </div>
+                <TrafficChartSkeleton />
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center" style={{ height: TEXT_XS_LINE }}>
+            <Skeleton className="h-3 w-72" />
+          </div>
+        </CardContent>
+      </Card>
     </Loading>
   );
 }

@@ -145,7 +145,7 @@ describe('NetworkDetail', () => {
     expect(screen.getAllByText('prod-net').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('2001:db8::/48 · IPv6')).toBeInTheDocument();
     expect(tabs().queryByText('Resources')).not.toBeInTheDocument();
-    for (const tab of ['Overview', 'Services', 'Configuration']) {
+    for (const tab of ['Overview', 'Services', 'Metrics', 'Configuration']) {
       expect(tabs().getByText(tab)).toBeInTheDocument();
     }
   });
@@ -185,6 +185,16 @@ describe('NetworkDetail', () => {
 
     expect(screen.getByTestId('location-display')).toHaveTextContent(`${DETAIL_PATH}/configuration`);
     expect(screen.getByText('Resource name')).toBeInTheDocument();
+  });
+
+  it('opens the Metrics tab from its URL', async () => {
+    loaded();
+
+    renderPage(`${DETAIL_PATH}/metrics`);
+
+    expect(
+      await screen.findByTestId('networking-plugin-metrics-empty', {}, { timeout: 10_000 })
+    ).toBeInTheDocument();
   });
 
   it('sends an unknown tab back to the Overview', () => {

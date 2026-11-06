@@ -172,9 +172,11 @@ function IPConfigurationCard({ network }: { network: Network }) {
 export function NetworkOverview({
   network,
   projectId,
+  metricsHref,
 }: {
   network: Network;
   projectId: string | undefined;
+  metricsHref?: string;
 }) {
   const subnets = useSubnets(projectId, network.name);
   const interfaces = useNetworkInterfaces(projectId, network.name);
@@ -184,7 +186,7 @@ export function NetworkOverview({
   return (
     <div className="flex flex-col gap-6" data-testid="networking-plugin-network-overview">
       <HealthStrip network={network} groups={groups} loading={loading} />
-      <NetworkResources projectId={projectId} networkName={network.name} />
+      <NetworkResources projectId={projectId} networkName={network.name} metricsHref={metricsHref} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <GeneralCard network={network} />
         <IPConfigurationCard network={network} />

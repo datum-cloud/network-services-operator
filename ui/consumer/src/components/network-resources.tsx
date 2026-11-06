@@ -2,6 +2,7 @@ import { SortableHeader } from './sortable-header';
 import { ResourcesSkeleton } from './skeletons';
 import { ErrorOrRestrictedState, SectionEmpty } from './states';
 import { StatusBadge } from './status-badge';
+import { TrafficSparkCell, useInterfaceSparks, type InterfaceSparks } from './traffic-sparkline';
 import {
   computeWorkloadHref,
   useNetworkInterfaces,
@@ -29,6 +30,8 @@ import { Text } from '@datum-cloud/datum-ui/typography';
 import type { ColumnDef } from '@tanstack/react-table';
 import { MapPinIcon } from 'lucide-react';
 import { Link } from 'react-router';
+
+const NO_INTERFACES: NetworkInterface[] = [];
 
 export interface RegionGroup {
   region: string;
@@ -166,7 +169,9 @@ function resourceColumns(
   projectId: string | undefined,
   servicesByInterface: Map<NetworkInterface, string[]>,
   showServices: boolean,
-  hasSiblings: (iface: NetworkInterface) => boolean
+  hasSiblings: (iface: NetworkInterface) => boolean,
+  sparks: InterfaceSparks,
+  metricsHref: string | undefined
 ): InterfaceColumn[] {
   const servicesColumn: InterfaceColumn = {
     id: 'services',
@@ -199,6 +204,13 @@ function resourceColumns(
           {networkInterfacePrimaryAddress(row.original) ?? '—'}
         </Text>
       ),
+    },
+    {
+      id: 'traffic',
+      header: 'Traffic · 30m',
+      enableSorting: false,
+      size: 200,
+      cell: ({ row }) => <TrafficSparkCell iface={row.original} sparks={sparks} metricsHref={metricsHref} />,
     },
     ...(showServices ? [servicesColumn] : []),
     {
@@ -235,13 +247,16 @@ function resourceColumns(
 function ResourcesBody({
   projectId,
   networkName,
+  metricsHref,
 }: {
   projectId: string | undefined;
   networkName: string | undefined;
+  metricsHref: string | undefined;
 }) {
   const subnetsQuery = useSubnets(projectId, networkName);
   const interfacesQuery = useNetworkInterfaces(projectId, networkName);
   const { data: services } = useNetworkServices(projectId);
+  const sparks = useInterfaceSparks(projectId, interfacesQuery.data ?? NO_INTERFACES);
 
   if (subnetsQuery.isLoading || interfacesQuery.isLoading) return <ResourcesSkeleton />;
 
@@ -292,7 +307,7 @@ function ResourcesBody({
         data-testid="networking-plugin-resources-table">
         <CardContent padding="none">
           <GroupedTable<NetworkInterface>
-            columns={resourceColumns(projectId, servicesByInterface, showServices, hasSiblings)}
+            columns={resourceColumns(projectId, servicesByInterface, showServices, hasSiblings, sparks, metricsHref)}
             groups={groups.map((group) => ({
               id: group.region,
               title: <RegionTitle group={group} />,
@@ -326,13 +341,15 @@ function ResourcesBody({
 export function NetworkResources({
   projectId,
   networkName,
+  metricsHref,
 }: {
   projectId: string | undefined;
   networkName: string | undefined;
+  metricsHref?: string;
 }) {
   return (
     <div className="flex flex-col gap-4" data-testid="networking-plugin-network-resources">
-      <ResourcesBody projectId={projectId} networkName={networkName} />
+      <ResourcesBody projectId={projectId} networkName={networkName} metricsHref={metricsHref} />
     </div>
   );
 }

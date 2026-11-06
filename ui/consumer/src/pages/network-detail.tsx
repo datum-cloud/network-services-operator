@@ -4,6 +4,7 @@ import { NetworkConfiguration } from '../components/network-configuration';
 import { PluginTabs } from '../components/plugin-tabs';
 import {
   ConfigurationSkeleton,
+  NetworkMetricsSkeleton,
   NetworkOverviewSkeleton,
   ServicesSkeleton,
 } from '../components/skeletons';
@@ -22,6 +23,7 @@ import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { HomeIcon } from 'lucide-react';
+import { lazy, Suspense } from 'react';
 import {
   Link,
   Navigate,
@@ -34,11 +36,16 @@ import {
   useParams,
 } from 'react-router';
 
+const NetworkMetrics = lazy(() =>
+  import('../components/network-metrics').then((m) => ({ default: m.NetworkMetrics }))
+);
+
 interface DetailHrefs {
   project: string;
   networks: string;
   overview: string;
   services: string;
+  metrics: string;
   configuration: string;
 }
 
@@ -63,6 +70,7 @@ function useDetailHrefs(projectId: string | undefined): DetailHrefs {
     networks: overview.replace(/\/[^/]+$/, '') || '/',
     overview,
     services: `${overview}/services`,
+    metrics: `${overview}/metrics`,
     configuration: `${overview}/configuration`,
   };
 }
@@ -72,6 +80,7 @@ function TabSkeleton() {
   const tab = rest.split('/')[0];
   if (tab === 'services') return <ServicesSkeleton />;
   if (tab === 'configuration') return <ConfigurationSkeleton />;
+  if (tab === 'metrics') return <NetworkMetricsSkeleton />;
   return <NetworkOverviewSkeleton />;
 }
 
@@ -129,6 +138,7 @@ function DetailLayout() {
         tabs={[
           { label: 'Overview', href: hrefs.overview },
           { label: 'Services', href: hrefs.services },
+          { label: 'Metrics', href: hrefs.metrics },
           { label: 'Configuration', href: hrefs.configuration },
         ]}
       />
@@ -151,13 +161,22 @@ function DetailLayout() {
 }
 
 function OverviewTab() {
-  const { network, projectId } = useNetworkOutlet();
-  return <NetworkOverview network={network} projectId={projectId} />;
+  const { network, projectId, hrefs } = useNetworkOutlet();
+  return <NetworkOverview network={network} projectId={projectId} metricsHref={hrefs.metrics} />;
 }
 
 function ServicesTab() {
   const { network, projectId } = useNetworkOutlet();
   return <NetworkServices projectId={projectId} networkName={network.name} />;
+}
+
+function MetricsTab() {
+  const { network, projectId } = useNetworkOutlet();
+  return (
+    <Suspense fallback={<NetworkMetricsSkeleton />}>
+      <NetworkMetrics projectId={projectId} networkName={network.name} />
+    </Suspense>
+  );
 }
 
 function ConfigurationTab() {
@@ -183,6 +202,7 @@ export default function NetworkDetail() {
       <Route element={<DetailLayout />}>
         <Route index element={<OverviewTab />} />
         <Route path="services" element={<ServicesTab />} />
+        <Route path="metrics" element={<MetricsTab />} />
         <Route path="configuration" element={<ConfigurationTab />} />
         <Route path="*" element={<NotFoundTab />} />
       </Route>

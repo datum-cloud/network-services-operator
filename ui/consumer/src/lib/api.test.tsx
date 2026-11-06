@@ -48,9 +48,36 @@ describe('useNetworkInterfaces', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toContain('/networkinterfaces?limit=100');
+    expect(url).toContain('/networkinterfaces?limit=500');
     expect(url).not.toContain('labelSelector');
     expect(result.current.data?.map((i) => i.name)).toEqual(['a']);
+  });
+
+  it('follows continue tokens until the list is complete', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          metadata: { continue: 'page-2' },
+          items: [{ metadata: { name: 'a' }, spec: { network: { name: 'my-network' } } }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          items: [{ metadata: { name: 'b' }, spec: { network: { name: 'my-network' } } }],
+        }),
+      });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useNetworkInterfaces('demo-project', 'my-network'), { wrapper });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('continue=page-2');
+    expect(result.current.data?.map((i) => i.name)).toEqual(['a', 'b']);
   });
 });
 

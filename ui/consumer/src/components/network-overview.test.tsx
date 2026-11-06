@@ -2,6 +2,7 @@ import { NetworkOverview } from './network-overview';
 import * as api from '../lib/api';
 import type { Network, NetworkInterface, Subnet } from '../schema';
 import { render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -68,10 +69,13 @@ function makeInterface(location: string, name: string): NetworkInterface {
 }
 
 function renderOverview(network = makeNetwork()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
-      <NetworkOverview network={network} projectId="demo-project" />
-    </MemoryRouter>
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <NetworkOverview network={network} projectId="demo-project" />
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 

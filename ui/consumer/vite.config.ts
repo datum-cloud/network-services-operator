@@ -82,6 +82,7 @@ export default defineConfig({
         '@datum-cloud/datum-ui/input': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/label': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/page-title': { singleton: true, requiredVersion: false },
+        '@datum-cloud/datum-ui/select': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/skeleton': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/tabs': { singleton: true, requiredVersion: false },
         '@datum-cloud/datum-ui/toast': { singleton: true, requiredVersion: false },

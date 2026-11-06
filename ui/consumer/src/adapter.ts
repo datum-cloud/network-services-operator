@@ -197,6 +197,7 @@ export interface RawNetworkInterface {
 }
 
 export interface RawNetworkInterfaceList {
+  metadata?: { continue?: string };
   items?: RawNetworkInterface[];
 }
 

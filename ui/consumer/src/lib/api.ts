@@ -12,6 +12,7 @@ import {
 import type {
   RawHTTPProxyList,
   RawNetwork,
+  RawNetworkInterface,
   RawNetworkInterfaceList,
   RawNetworkList,
   RawNetworkLoadBalancer,
@@ -34,6 +35,8 @@ import { useMutation, useQueryClient, type UseMutationResult, useQuery, type Use
 export const PLUGIN_ID = 'network.networking.datumapis.com';
 
 const REFETCH_INTERVAL_MS = 10_000;
+const NETWORKINTERFACE_PAGE_SIZE = 500;
+const NETWORKINTERFACE_MAX_PAGES = 20;
 
 /** One entry of a Kubernetes Status's details.causes, e.g. field "spec.listeners[0].port". */
 export interface ApiErrorCause {
@@ -53,7 +56,7 @@ export class ApiError extends Error {
   }
 }
 
-function getProjectScopedBase(projectId: string): string {
+export function getProjectScopedBase(projectId: string): string {
   return `/api/proxy/apis/resourcemanager.miloapis.com/v1alpha1/projects/${encodeURIComponent(projectId)}/control-plane`;
 }
 
@@ -150,22 +153,32 @@ async function fetchNetworkInterfaces(
   projectId: string,
   networkName: string
 ): Promise<NetworkInterface[]> {
-  const body = await proxyFetch<RawNetworkInterfaceList>(
-    projectId,
-    `${NETWORKINTERFACES_PATH}?limit=100`
-  );
-  return toNetworkInterfaceList(body.items ?? []).filter((iface) => iface.network === networkName);
+  const items: RawNetworkInterface[] = [];
+  let next: string | undefined;
+  for (let page = 0; page < NETWORKINTERFACE_MAX_PAGES; page += 1) {
+    const params = new URLSearchParams({ limit: String(NETWORKINTERFACE_PAGE_SIZE) });
+    if (next) params.set('continue', next);
+    const body = await proxyFetch<RawNetworkInterfaceList>(
+      projectId,
+      `${NETWORKINTERFACES_PATH}?${params.toString()}`
+    );
+    items.push(...(body.items ?? []));
+    next = body.metadata?.continue;
+    if (!next) break;
+  }
+  return toNetworkInterfaceList(items).filter((iface) => iface.network === networkName);
 }
 
 export function useNetworkInterfaces(
   projectId: string | undefined,
-  networkName: string | undefined
+  networkName: string | undefined,
+  options?: { refetchInterval?: number }
 ): UseQueryResult<NetworkInterface[], ApiError> {
   return useQuery({
     queryKey: [PLUGIN_ID, 'networkInterfaces', projectId, networkName],
     enabled: !!projectId && !!networkName,
     queryFn: () => fetchNetworkInterfaces(projectId as string, networkName as string),
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: options?.refetchInterval ?? REFETCH_INTERVAL_MS,
     retry: false,
   });
 }

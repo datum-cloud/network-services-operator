@@ -186,7 +186,14 @@ func (r *InternalDNSCellReconciler) reconcile(
 		if expiry, ok := serviceplan.NextProducerReportExpiry(endpoint, now); ok && expiry < requeue {
 			requeue = max(expiry, time.Second)
 		}
-		_, ready := policyProgrammed(path.policy, endpoint, attachmentPointers, vpc.Status.VPC, now)
+		validUntil, ready := policyProgrammed(path.policy, endpoint, attachmentPointers, vpc.Status.VPC, now)
+		if ready {
+			// Recheck when the earliest acknowledgment lapses, in case its node
+			// stops renewing it.
+			if left := validUntil.Sub(now); left < requeue {
+				requeue = max(left, time.Second)
+			}
+		}
 		if !ready {
 			condition := unreadyPathCondition(path.policy, endpoint, attachmentPointers, vpc.Status.VPC, now)
 			if err := r.report(ctx, networkContext, nil, condition); err != nil {
@@ -610,7 +617,7 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 			&networkv1alpha1.ServiceRoutePolicy{},
 			enqueueInternalDNSContextForRoutePolicy,
 			mcbuilder.WithEngageWithLocalCluster(false),
-			mcbuilder.WithPredicates(routePolicyAcknowledgmentChanged()),
+			mcbuilder.WithPredicates(routePolicyAcknowledgmentChanged(r.now)),
 		)
 	if r.spreadConfigured() {
 		// Only Spread endpoints read producer reports. Watching them only
@@ -684,10 +691,11 @@ func enqueueInternalDNSContextForRoutePolicy(
 
 // routePolicyAcknowledgmentChanged passes policy events that can change
 // readiness: a policy created or deleted, a new generation, a change to its
-// Accepted condition, or a node acknowledgment that changed anything but its
-// expiry. Nodes renew their acknowledgments without changing them; those
-// renewals are filtered out.
-func routePolicyAcknowledgmentChanged() predicate.Predicate {
+// Accepted condition, a node acknowledgment that changed anything but its
+// expiry, or an acknowledgment that had lapsed becoming current again. Nodes
+// renew their acknowledgments without changing them; those renewals are
+// filtered out.
+func routePolicyAcknowledgmentChanged(now func() time.Time) predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldPolicy, ok := e.ObjectOld.(*networkv1alpha1.ServiceRoutePolicy)
@@ -698,12 +706,12 @@ func routePolicyAcknowledgmentChanged() predicate.Predicate {
 			if !ok {
 				return true
 			}
-			return routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy)
+			return routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy, now())
 		},
 	}
 }
 
-func routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy *networkv1alpha1.ServiceRoutePolicy) bool {
+func routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy *networkv1alpha1.ServiceRoutePolicy, now time.Time) bool {
 	if oldPolicy.Generation != newPolicy.Generation ||
 		oldPolicy.Status.ObservedGeneration != newPolicy.Status.ObservedGeneration ||
 		apimeta.IsStatusConditionTrue(oldPolicy.Status.Conditions, networkv1alpha1.ConditionTypeServiceRouteAccepted) !=
@@ -716,6 +724,9 @@ func routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy *networkv1alpha1.Serv
 		if before.NodeName != after.NodeName || before.PolicyUID != after.PolicyUID ||
 			before.ObservedGeneration != after.ObservedGeneration || before.InputDigest != after.InputDigest ||
 			before.Ready != after.Ready {
+			return true
+		}
+		if after.ValidUntil.After(now) && !before.ValidUntil.After(now) {
 			return true
 		}
 	}

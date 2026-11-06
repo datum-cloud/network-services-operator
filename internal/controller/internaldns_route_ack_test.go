@@ -40,8 +40,20 @@ func TestRoutePolicyAcknowledgmentsDiffer(t *testing.T) {
 
 	renewed := base.DeepCopy()
 	renewed.Status.Nodes[0].ValidUntil = metav1.NewTime(now.Add(2 * time.Minute))
-	if routePolicyAcknowledgmentsDiffer(base, renewed) {
+	if routePolicyAcknowledgmentsDiffer(base, renewed, now) {
 		t.Error("an acknowledgment renewal passed the filter")
+	}
+
+	reasonOnly := base.DeepCopy()
+	reasonOnly.Status.Conditions[0].Reason = "StillAccepted"
+	if routePolicyAcknowledgmentsDiffer(base, reasonOnly, now) {
+		t.Error("an Accepted reason change that keeps it true passed the filter")
+	}
+
+	lapsed := base.DeepCopy()
+	lapsed.Status.Nodes[0].ValidUntil = metav1.NewTime(now.Add(-time.Second))
+	if !routePolicyAcknowledgmentsDiffer(lapsed, base, now) {
+		t.Error("a lapsed acknowledgment renewed without other changes was filtered out")
 	}
 
 	for name, change := range map[string]func(*networkv1alpha1.ServiceRoutePolicy){
@@ -58,7 +70,7 @@ func TestRoutePolicyAcknowledgmentsDiffer(t *testing.T) {
 	} {
 		changed := base.DeepCopy()
 		change(changed)
-		if !routePolicyAcknowledgmentsDiffer(base, changed) {
+		if !routePolicyAcknowledgmentsDiffer(base, changed, now) {
 			t.Errorf("%s was filtered out", name)
 		}
 	}
@@ -79,15 +91,18 @@ func TestEnqueueInternalDNSContextForRoutePolicy(t *testing.T) {
 	unmanaged.Labels = nil
 	otherOwner := owned.DeepCopy()
 	otherOwner.OwnerReferences[0].Kind = "Something"
+	noController := owned.DeepCopy()
+	noController.OwnerReferences[0].Controller = nil
 
 	handler := enqueueInternalDNSContextForRoutePolicy(multicluster.ClusterName("cell"), nil)
 	for name, tc := range map[string]struct {
 		policy *networkv1alpha1.ServiceRoutePolicy
 		want   []types.NamespacedName
 	}{
-		"owned":       {owned, []types.NamespacedName{{Namespace: "tenant", Name: "context"}}},
-		"unmanaged":   {unmanaged, nil},
-		"other owner": {otherOwner, nil},
+		"owned":         {owned, []types.NamespacedName{{Namespace: "tenant", Name: "context"}}},
+		"unmanaged":     {unmanaged, nil},
+		"other owner":   {otherOwner, nil},
+		"no controller": {noController, nil},
 	} {
 		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[mcreconcile.Request]())
 		handler.Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: tc.policy}, queue)

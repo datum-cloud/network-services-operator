@@ -601,7 +601,17 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 	r.mgr = mgr
 	r.localReader = mgr.GetLocalManager().GetClient()
 	builder := mcbuilder.ControllerManagedBy(mgr).
-		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false))
+		For(&networkingv1alpha.NetworkContext{}, mcbuilder.WithEngageWithLocalCluster(false)).
+		// Readiness waits for each node's acknowledgment on the policy status.
+		// Recheck as soon as one changes instead of on the next retry, so a
+		// context is not held unready for a whole retry interval after Galactic
+		// has caught up.
+		Watches(
+			&networkv1alpha1.ServiceRoutePolicy{},
+			enqueueInternalDNSContextForRoutePolicy,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(routePolicyAcknowledgmentChanged()),
+		)
 	if r.spreadConfigured() {
 		// Only Spread endpoints read producer reports. Watching them only
 		// then keeps a deployment without Spread from needing their API.
@@ -646,6 +656,70 @@ func enqueueInternalDNSContextForProducerReport(
 			}},
 		}}
 	})
+}
+
+// enqueueInternalDNSContextForRoutePolicy maps a service route policy to the
+// network context that owns it.
+func enqueueInternalDNSContextForRoutePolicy(
+	clusterName multicluster.ClusterName,
+	_ cluster.Cluster,
+) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []mcreconcile.Request {
+		if _, managed := obj.GetLabels()[internalDNSRouteContextLabel]; !managed {
+			return nil
+		}
+		owner := metav1.GetControllerOf(obj)
+		if owner == nil || owner.Kind != "NetworkContext" ||
+			owner.APIVersion != networkingv1alpha.GroupVersion.String() {
+			return nil
+		}
+		return []mcreconcile.Request{{
+			ClusterName: clusterName,
+			Request: ctrl.Request{NamespacedName: client.ObjectKey{
+				Namespace: obj.GetNamespace(), Name: owner.Name,
+			}},
+		}}
+	})
+}
+
+// routePolicyAcknowledgmentChanged passes policy events that can change
+// readiness: a policy created or deleted, a new generation, a change to its
+// Accepted condition, or a node acknowledgment that changed anything but its
+// expiry. Nodes renew their acknowledgments without changing them; those
+// renewals are filtered out.
+func routePolicyAcknowledgmentChanged() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldPolicy, ok := e.ObjectOld.(*networkv1alpha1.ServiceRoutePolicy)
+			if !ok {
+				return true
+			}
+			newPolicy, ok := e.ObjectNew.(*networkv1alpha1.ServiceRoutePolicy)
+			if !ok {
+				return true
+			}
+			return routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy)
+		},
+	}
+}
+
+func routePolicyAcknowledgmentsDiffer(oldPolicy, newPolicy *networkv1alpha1.ServiceRoutePolicy) bool {
+	if oldPolicy.Generation != newPolicy.Generation ||
+		oldPolicy.Status.ObservedGeneration != newPolicy.Status.ObservedGeneration ||
+		apimeta.IsStatusConditionTrue(oldPolicy.Status.Conditions, networkv1alpha1.ConditionTypeServiceRouteAccepted) !=
+			apimeta.IsStatusConditionTrue(newPolicy.Status.Conditions, networkv1alpha1.ConditionTypeServiceRouteAccepted) ||
+		len(oldPolicy.Status.Nodes) != len(newPolicy.Status.Nodes) {
+		return true
+	}
+	for i := range newPolicy.Status.Nodes {
+		before, after := oldPolicy.Status.Nodes[i], newPolicy.Status.Nodes[i]
+		if before.NodeName != after.NodeName || before.PolicyUID != after.PolicyUID ||
+			before.ObservedGeneration != after.ObservedGeneration || before.InputDigest != after.InputDigest ||
+			before.Ready != after.Ready {
+			return true
+		}
+	}
+	return false
 }
 
 // producerReportChanged passes report events that can change a plan: a report

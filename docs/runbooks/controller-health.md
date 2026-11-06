@@ -163,6 +163,8 @@ floor goes to zero. The warning resolves at the first hour without an error.
 signal can hand the floor to that alert: record
 `controller_runtime:reconcile_error_floor:exempt` with the controller's
 `cluster`, `namespace`, `deployment` and `controller` labels, and the floor skips
-it. Use it for a third-party controller whose errors you cannot fix in its code
+it. Aggregate the series to exactly those four labels, for example with
+`group by (cluster, namespace, deployment, controller)`: a series missing any of
+them matches nothing and silently exempts no controller. Use it for a third-party controller whose errors you cannot fix in its code
 and that another alert already judges, never to quiet a controller this
 operator owns.

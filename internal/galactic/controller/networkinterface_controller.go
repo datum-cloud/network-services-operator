@@ -451,6 +451,10 @@ func (r *NetworkInterfaceReconciler) publishAttachmentStatus(
 		ObservedGeneration: attachment.Generation,
 	})
 	if err := r.Status().Update(ctx, attachment); err != nil {
+		// Collected with an interface deleted mid-pass.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("update VPC attachment %s status: %w", client.ObjectKeyFromObject(attachment), err)
 	}
 	return nil
@@ -551,6 +555,9 @@ func (r *NetworkInterfaceReconciler) markPrepared(
 		})
 	}
 	if err := r.Status().Update(ctx, &claim); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("update network interface claim %s status: %w", key, err)
 	}
 	return nil

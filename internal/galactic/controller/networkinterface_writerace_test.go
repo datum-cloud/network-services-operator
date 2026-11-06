@@ -85,3 +85,18 @@ func TestAnInterfaceDeletedMidPassIsNotAnError(t *testing.T) {
 		t.Fatalf("Reconcile error = %v, want nil", err)
 	}
 }
+
+// Any other failure still surfaces as an error.
+func TestOtherStatusWriteFailuresStillSurface(t *testing.T) {
+	if _, err := reconcileWithFailingInterfaceStatus(t, apierrors.NewForbidden(networkInterfaces, "nic", nil)); err == nil {
+		t.Fatal("Reconcile error = nil, want the forbidden write to surface")
+	}
+}
+
+// A create that races the cache retries like a conflict.
+func TestACreateRacingTheCacheRetries(t *testing.T) {
+	result, err := reconcileWithFailingInterfaceStatus(t, apierrors.NewAlreadyExists(networkInterfaces, "nic"))
+	if err != nil || result != (ctrl.Result{Requeue: true}) {
+		t.Fatalf("Reconcile = %+v, %v; want a requeue and no error", result, err)
+	}
+}

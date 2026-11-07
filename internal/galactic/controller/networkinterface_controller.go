@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	cloudv1alpha1 "go.datum.net/galactic/api/cloud/v1alpha1"
 	galacticv1alpha1 "go.datum.net/galactic/api/v1alpha1"
@@ -124,6 +125,19 @@ type NetworkInterfaceReconciler struct {
 // +kubebuilder:rbac:groups=galactic.datumapis.com,resources=trafficpolicies;trafficpolicybindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcile(ctx, req)
+	if apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err) {
+		// The claim controller and galactic write the same interface, claim
+		// and attachment status, and a create can race the cache. Losing that
+		// race only means the cached copy was stale, so read it again rather
+		// than report a controller error.
+		log.FromContext(ctx).V(1).Info("resource changed while reconciling; retrying", "reason", err.Error())
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return result, err
+}
+
+func (r *NetworkInterfaceReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var networkInterface networkingv1alpha.NetworkInterface
 	if err := r.Get(ctx, req.NamespacedName, &networkInterface); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -437,6 +451,10 @@ func (r *NetworkInterfaceReconciler) publishAttachmentStatus(
 		ObservedGeneration: attachment.Generation,
 	})
 	if err := r.Status().Update(ctx, attachment); err != nil {
+		// Collected with an interface deleted mid-pass.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("update VPC attachment %s status: %w", client.ObjectKeyFromObject(attachment), err)
 	}
 	return nil
@@ -490,6 +508,10 @@ func (r *NetworkInterfaceReconciler) markPrepared(
 	}
 	meta.SetStatusCondition(&networkInterface.Status.Conditions, condition)
 	if err := r.Status().Update(ctx, networkInterface); err != nil {
+		// A guest torn down mid-pass leaves nothing to report on.
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("update network interface %s status: %w",
 			client.ObjectKeyFromObject(networkInterface), err)
 	}
@@ -533,6 +555,9 @@ func (r *NetworkInterfaceReconciler) markPrepared(
 		})
 	}
 	if err := r.Status().Update(ctx, &claim); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("update network interface claim %s status: %w", key, err)
 	}
 	return nil

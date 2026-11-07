@@ -46,7 +46,7 @@ jobs:
         with:
           # kustomize v5.5.0 probes helm with `helm version -c`; the -c shorthand
           # was removed in helm 3.13, so pin to the last release that accepts it.
-          version: v3.12.3
+          version: v4.3.1
 
       # The same installer the federated workflow uses. An explicit `make` list
       # here meant the two workflows disagreed about which binaries exist, and

@@ -14,15 +14,12 @@ helmCharts:
     valuesInline:
       role: Agent
       image:
-        tag: "0.55.0-alpine"
+        tag: "0.61.0-alpine"
       tolerations:
         - operator: Exists
       serviceAccount:
         create: true
         name: billing-usage-collector
-      env:
-        - name: BILLING_GATEWAY_URL
-          value: "http://mock-billing-gateway.billing-system.svc.cluster.local:8080"
       customConfig:
         data_dir: "/vector-data-dir"
         sources:
@@ -189,7 +186,7 @@ helmCharts:
             type: http
             inputs:
               - clean_cloudevents
-            uri: "${BILLING_GATEWAY_URL}/v1/usage/events:batchIngest"
+            uri: "http://mock-billing-gateway.billing-system.svc.cluster.local:8080/v1/usage/events:batchIngest"
             method: post
             encoding:
               codec: json

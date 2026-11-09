@@ -122,20 +122,14 @@ export interface AddListenerRequests {
   route: NlbCreateRequests['route'];
 }
 
-/**
- * Adds a listener on its own new address, plus its route. The resourceVersion
- * test makes the patch fail rather than land on an NLB someone else changed.
- */
+/** Adds a listener on its own new address, plus its route. */
 export function toAddListenerRequests(
-  nlb: { name: string; resourceVersion?: string },
+  nlb: { name: string },
   values: NlbListenerValues
 ): AddListenerRequests {
   const listener = nlbListenerName(values);
   return {
     patch: [
-      ...(nlb.resourceVersion
-        ? [{ op: 'test', path: '/metadata/resourceVersion', value: nlb.resourceVersion }]
-        : []),
       {
         op: 'add',
         path: '/spec/exposure/addresses/-',

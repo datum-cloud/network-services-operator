@@ -77,7 +77,7 @@ describe('checkListener', () => {
 });
 
 describe('toAddListenerRequests', () => {
-  it('appends an address and a listener after testing the resourceVersion, and builds the route', () => {
+  it('appends an address and a listener, and builds the route', () => {
     const requests = toAddListenerRequests(nlb, {
       protocol: 'UDP',
       port: 7777,
@@ -86,7 +86,6 @@ describe('toAddListenerRequests', () => {
       healthPort: 'health',
     });
     expect(requests.patch).toEqual([
-      { op: 'test', path: '/metadata/resourceVersion', value: '42' },
       {
         op: 'add',
         path: '/spec/exposure/addresses/-',
@@ -156,7 +155,7 @@ describe('AddListenerDialog', () => {
       expect((patch.headers as Record<string, string>)['Content-Type']).toBe(
         'application/json-patch+json'
       );
-      expect(JSON.parse(patch.body as string)).toHaveLength(3);
+      expect(JSON.parse(patch.body as string)).toHaveLength(2);
       expect(routeUrl).toMatch(/\/networkloadbalancerroutes$/);
       expect(JSON.parse(route.body as string).metadata.name).toBe('edge-nlb-udp-7777');
       await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));

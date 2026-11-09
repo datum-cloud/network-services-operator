@@ -9,9 +9,8 @@ import {
 } from './nlb-overview-model';
 import { StatusBadge } from './status-badge';
 import type { BadgeType, NetworkLoadBalancer } from '../schema';
-import { Badge } from '@datum-cloud/datum-ui/badge';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Card, CardContent } from '@datum-cloud/datum-ui/card';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { DataTable, type DataTableFeatures } from '@datum-cloud/datum-ui/data-table';
 import { useCopyToClipboard } from '@datum-cloud/datum-ui/hooks';
 import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
@@ -51,14 +50,10 @@ function Dot({ type }: { type: BadgeType }) {
 export function NlbStatusPill({ rows }: { rows: ListenerRow[] }) {
   const summary = overviewSummary(rows);
   return (
-    <Badge
-      type={summary.type}
-      theme="light"
-      data-testid="networking-plugin-nlb-summary"
-      className="flex shrink-0 cursor-default items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium">
+    <span data-testid="networking-plugin-nlb-summary" className="nlb-chip shrink-0 cursor-default">
       {summary.pending ? <SpinnerIcon size="xs" aria-hidden /> : <Dot type={summary.type} />}
       {summary.label}
-    </Badge>
+    </span>
   );
 }
 
@@ -89,6 +84,7 @@ function CopyText({ value }: { value: string }) {
 
 const NLB_CSS = `
 .nlb-band { background: var(--sidebar); }
+.nlb-chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); font-family: var(--font-mono); font-size: 11px; line-height: 1; color: var(--card-foreground); box-shadow: 0 1px 2px rgb(0 0 0 / .04); white-space: nowrap; }
 .nlb-flow { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
 .nlb-arrow { display: none; }
 .nlb-backend-grid { display: grid; gap: 0.625rem; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); }
@@ -339,23 +335,26 @@ function ListenersCard({
 
   return (
     <Card size="sm" sectioned className="w-full min-w-0 overflow-hidden">
-      <div className="bg-foreground text-background flex flex-wrap items-center gap-2.5 px-4 py-3">
-        <Icon icon={SplitIcon} size={14} className="opacity-70" />
-        <h2 className="text-sm font-semibold">Listeners</h2>
-        <span className="text-xs opacity-60">One port, one backend</span>
-        <span className="flex-1" />
+      <CardHeader size="sm" bordered>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Icon icon={SplitIcon} size={16} className="text-secondary" />
+          Listeners
+          <span className="text-muted-foreground text-xs font-normal">One port, one backend</span>
+        </CardTitle>
         {actions && (
-          <Button
-            type="primary"
-            theme="solid"
-            size="xs"
-            htmlType="button"
-            icon={<Icon icon={PlusIcon} size={12} />}
-            onClick={actions.onAdd}>
-            Add listener
-          </Button>
+          <CardAction>
+            <Button
+              type="primary"
+              theme="solid"
+              size="xs"
+              htmlType="button"
+              icon={<Icon icon={PlusIcon} size={12} />}
+              onClick={actions.onAdd}>
+              Add listener
+            </Button>
+          </CardAction>
         )}
-      </div>
+      </CardHeader>
       <DataTable.Client data={rows} columns={columns} getRowId={(row) => row.listener.name}>
         <div data-testid="networking-plugin-nlb-listeners">
           <DataTable.Content />
@@ -468,10 +467,10 @@ export function NlbOverview({
 }) {
   return (
     <div className="flex flex-col gap-6">
+      <style>{NLB_CSS}</style>
       <section
         className="nlb-band flex flex-col gap-4 rounded-xl px-5 pt-5 pb-6 md:px-7"
         data-testid="networking-plugin-nlb-overview">
-        <style>{NLB_CSS}</style>
         <div className="flex flex-wrap items-center gap-2.5">
           <Eyebrow>Traffic path</Eyebrow>
           <span className="flex-1" />

@@ -1,7 +1,7 @@
 import { AddListenerDialog } from '../components/add-listener-dialog';
 import { DeleteListenerDialog } from '../components/delete-listener-dialog';
 import { ConfirmDeleteDialog } from '../components/confirm-delete-dialog';
-import { NlbOverview, NlbStatusPill } from '../components/nlb-overview';
+import { NlbOverview } from '../components/nlb-overview';
 import { toListenerRows, type ListenerRow } from '../components/nlb-overview-model';
 import { deleteDescription } from '../components/nlb-table';
 import { NetworkOverviewSkeleton } from '../components/skeletons';
@@ -21,6 +21,7 @@ import {
   BreadcrumbSeparator,
 } from '@datum-cloud/datum-ui/breadcrumb';
 import { Button } from '@datum-cloud/datum-ui/button';
+import { DateTime } from '@datum-cloud/datum-ui/date-time';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { PageTitle } from '@datum-cloud/datum-ui/page-title';
 import { toast } from '@datum-cloud/datum-ui/toast';
@@ -87,10 +88,17 @@ export default function NlbDetail() {
 
       <PageTitle
         title={nlbName ?? ''}
+        description={
+          nlb && (
+            <span className="text-muted-foreground text-sm">
+              Network load balancer · created{' '}
+              <DateTime date={nlb.createdAt} variant="relative" addSuffix />
+            </span>
+          )
+        }
         actions={
           ready && (
             <div className="flex items-center gap-2">
-              <NlbStatusPill rows={rows} />
               <Button
                 type="danger"
                 theme="outline"

@@ -266,6 +266,7 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 	}
 	attachments := []*cloudv1alpha1.VPCAttachment{}
 	var vpc *cloudv1alpha1.VPC
+	var missingAttachment error
 	for i := range interfaces.Items {
 		iface := &interfaces.Items[i]
 		if !isInternalDNSConsumer(iface) || iface.Status.NetworkContextRef.Name != networkContext.Name ||
@@ -276,8 +277,7 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 		key := client.ObjectKey{Namespace: iface.Namespace, Name: iface.Status.AttachmentRef.Name}
 		if err := cl.Get(ctx, key, attachment); err != nil {
 			if apierrors.IsNotFound(err) {
-				// The interface event can reach this cache before the
-				// attachment's does. Its create event requeues the context.
+				missingAttachment = fmt.Errorf("read VPC attachment %s: %w", key, err)
 				continue
 			}
 			return nil, nil, fmt.Errorf("read VPC attachment %s: %w", key, err)
@@ -297,6 +297,9 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 		attachments = append(attachments, attachment)
 	}
 	if vpc == nil || len(attachments) == 0 {
+		if missingAttachment != nil {
+			return nil, nil, missingAttachment
+		}
 		return nil, nil, errNoConsumerInterfaces
 	}
 	return vpc, attachments, nil
@@ -623,10 +626,6 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(routePolicyAcknowledgmentChanged(r.now)),
 		).
-		// The consumer label decides which attachments get the DNS route, so
-		// a new interface must be labeled when it appears. An interface, its
-		// attachment and its VPC can each become visible last, so each one
-		// requeues the context.
 		Watches(
 			&networkingv1alpha.NetworkInterface{},
 			enqueueInternalDNSContextForInterface,
@@ -635,13 +634,13 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 		).
 		Watches(
 			&cloudv1alpha1.VPCAttachment{},
-			enqueueInternalDNSContextsForAttachment,
+			enqueueInternalDNSContextForAttachment,
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(internalDNSAttachmentChanged()),
 		).
 		Watches(
 			&cloudv1alpha1.VPC{},
-			enqueueInternalDNSContextsForVPC,
+			enqueueInternalDNSContextForVPC,
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(internalDNSVPCIdentityChanged()),
 		)

@@ -37,6 +37,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/galactic/galactic"
 	"go.datum.net/network-services-operator/internal/galactic/identifier"
+	"go.datum.net/network-services-operator/internal/internaldns"
 )
 
 func TestReconcileNADPreservesAttachmentIdentifier(t *testing.T) {
@@ -100,7 +101,7 @@ func TestReconcileAttachmentSyncsConsumerLabels(t *testing.T) {
 		},
 	}}
 	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "platform"}}
-	if _, err := r.reconcileAttachment(context.Background(), iface, vpc); err != nil {
+	if _, err := r.reconcileAttachment(context.Background(), iface, vpc, &networkingv1alpha.NetworkContext{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,7 +135,7 @@ func TestReconcileAttachmentCreatesWithConsumerLabels(t *testing.T) {
 		Labels: map[string]string{"compute.datumapis.com/tier": "node"},
 	}}
 	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "platform"}}
-	got, err := r.reconcileAttachment(context.Background(), iface, vpc)
+	got, err := r.reconcileAttachment(context.Background(), iface, vpc, &networkingv1alpha.NetworkContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestReconcileAttachmentLeavesLabelsOutsideLabeledNamespaces(t *testing.T) {
 		Labels: map[string]string{"compute.datumapis.com/internal-dns-tier": "node-b"},
 	}}
 	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "tenant"}}
-	got, err := r.reconcileAttachment(context.Background(), iface, vpc)
+	got, err := r.reconcileAttachment(context.Background(), iface, vpc, &networkingv1alpha.NetworkContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,5 +510,85 @@ func TestHostOnlyPortsApplyToDiscoveredHypervisorGuests(t *testing.T) {
 				t.Errorf("got %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func dnsLabelTestReconciler(t *testing.T) *NetworkInterfaceReconciler {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	return &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme}
+}
+
+func dnsIntentAnnotations() map[string]string {
+	return map[string]string{
+		internaldns.ContextNameAnnotation:        "resolver",
+		internaldns.AccessNameAnnotation:         "resolver-access",
+		internaldns.ServiceDestinationAnnotation: "fd53::53",
+		internaldns.RegionAnnotation:             "us-central",
+	}
+}
+
+func TestReconcileAttachmentLabelsDNSConsumerAtCreation(t *testing.T) {
+	deleting := metav1.Now()
+	for _, tc := range []struct {
+		name    string
+		context networkingv1alpha.NetworkContext
+		want    string
+	}{
+		{"DNS on", networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{
+			Annotations: dnsIntentAnnotations(),
+		}}, "vpc-uid"},
+		{"DNS off", networkingv1alpha.NetworkContext{}, ""},
+		{"intent incomplete", networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{internaldns.ContextNameAnnotation: "resolver"},
+		}}, ""},
+		{"context deleting", networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{
+			Annotations: dnsIntentAnnotations(), DeletionTimestamp: &deleting,
+		}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := dnsLabelTestReconciler(t)
+			iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
+				Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
+			}}
+			vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{
+				Name: "vpc", Namespace: "tenant", UID: types.UID("vpc-uid"),
+			}}
+			got, err := r.reconcileAttachment(context.Background(), iface, vpc, &tc.context)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if label := got.Labels[internaldns.ConsumerVPCLabel]; label != tc.want {
+				t.Fatalf("consumer label = %q, want %q", label, tc.want)
+			}
+		})
+	}
+}
+
+func TestReconcileAttachmentLeavesDNSLabelForTheDNSControllerWhenOff(t *testing.T) {
+	r := dnsLabelTestReconciler(t)
+	iface := &networkingv1alpha.NetworkInterface{ObjectMeta: metav1.ObjectMeta{
+		Name: "nic", Namespace: "tenant", UID: types.UID("iface"),
+	}}
+	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{
+		Name: "vpc", Namespace: "tenant", UID: types.UID("vpc-uid"),
+	}}
+	on := &networkingv1alpha.NetworkContext{ObjectMeta: metav1.ObjectMeta{Annotations: dnsIntentAnnotations()}}
+	if _, err := r.reconcileAttachment(context.Background(), iface, vpc, on); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.reconcileAttachment(context.Background(), iface, vpc, &networkingv1alpha.NetworkContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Labels[internaldns.ConsumerVPCLabel] != "vpc-uid" {
+		t.Fatalf("labels = %v, want the consumer label left in place", got.Labels)
 	}
 }

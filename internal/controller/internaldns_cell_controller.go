@@ -30,11 +30,12 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/internaldns"
 	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
 const (
-	internalDNSConsumerVPCLabel  = "networking.datumapis.com/internal-dns-vpc-uid"
+	internalDNSConsumerVPCLabel  = internaldns.ConsumerVPCLabel
 	internalDNSRouteContextLabel = "networking.datumapis.com/internal-dns-context-uid"
 )
 
@@ -266,16 +267,20 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 	}
 	attachments := []*cloudv1alpha1.VPCAttachment{}
 	var vpc *cloudv1alpha1.VPC
+	var missingAttachment error
 	for i := range interfaces.Items {
 		iface := &interfaces.Items[i]
-		if iface.Status.NetworkContextRef == nil || iface.Status.NetworkContextRef.Name != networkContext.Name ||
-			iface.Status.AttachmentRef == nil || iface.Status.AttachmentRef.APIGroup != "galactic.datumapis.com" ||
-			iface.Status.AttachmentRef.Kind != "VPCAttachment" || !iface.DeletionTimestamp.IsZero() {
+		if !isInternalDNSConsumer(iface) || iface.Status.NetworkContextRef.Name != networkContext.Name ||
+			!iface.DeletionTimestamp.IsZero() {
 			continue
 		}
 		attachment := &cloudv1alpha1.VPCAttachment{}
 		key := client.ObjectKey{Namespace: iface.Namespace, Name: iface.Status.AttachmentRef.Name}
 		if err := cl.Get(ctx, key, attachment); err != nil {
+			if apierrors.IsNotFound(err) {
+				missingAttachment = fmt.Errorf("read VPC attachment %s: %w", key, err)
+				continue
+			}
 			return nil, nil, fmt.Errorf("read VPC attachment %s: %w", key, err)
 		}
 		candidate := &cloudv1alpha1.VPC{}
@@ -293,6 +298,9 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 		attachments = append(attachments, attachment)
 	}
 	if vpc == nil || len(attachments) == 0 {
+		if missingAttachment != nil {
+			return nil, nil, missingAttachment
+		}
 		return nil, nil, errNoConsumerInterfaces
 	}
 	return vpc, attachments, nil
@@ -618,6 +626,24 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 			enqueueInternalDNSContextForRoutePolicy,
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(routePolicyAcknowledgmentChanged(r.now)),
+		).
+		Watches(
+			&networkingv1alpha.NetworkInterface{},
+			enqueueInternalDNSContextForInterface,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(internalDNSInterfaceChanged()),
+		).
+		Watches(
+			&cloudv1alpha1.VPCAttachment{},
+			enqueueInternalDNSContextForAttachment,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(internalDNSAttachmentChanged()),
+		).
+		Watches(
+			&cloudv1alpha1.VPC{},
+			enqueueInternalDNSContextForVPC,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(internalDNSVPCIdentityChanged()),
 		)
 	if r.spreadConfigured() {
 		// Only Spread endpoints read producer reports. Watching them only

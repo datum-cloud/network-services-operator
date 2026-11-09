@@ -40,16 +40,17 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/internaldns"
 )
 
 const (
 	internalDNSFinalizer = "networking.datumapis.com/internal-dns-access"
 
-	InternalDNSContextNameAnnotation        = "networking.datumapis.com/internal-dns-context-name"
-	InternalDNSAccessNameAnnotation         = "networking.datumapis.com/internal-dns-access-name"
-	InternalDNSServiceDestinationAnnotation = "networking.datumapis.com/internal-dns-service-destination"
+	InternalDNSContextNameAnnotation        = internaldns.ContextNameAnnotation
+	InternalDNSAccessNameAnnotation         = internaldns.AccessNameAnnotation
+	InternalDNSServiceDestinationAnnotation = internaldns.ServiceDestinationAnnotation
 	InternalDNSSuffixAnnotation             = "networking.datumapis.com/internal-dns-suffix"
-	InternalDNSRegionAnnotation             = "networking.datumapis.com/internal-dns-region"
+	InternalDNSRegionAnnotation             = internaldns.RegionAnnotation
 
 	internalDNSOwnerNetworkUIDAnnotation = "networking.datumapis.com/internal-dns-network-uid"
 	internalDNSOwnerProjectUIDAnnotation = "networking.datumapis.com/internal-dns-project-uid"

@@ -147,9 +147,10 @@ export function AddListenerDialog({
           }
           return fail(toNlbCreateErrors(error, 'nlb'));
         }
-        setAdded({ protocol: values.protocol, port: values.port });
         refresh();
       }
+      const saved =
+        added ?? (patch.length > 0 ? { protocol: values.protocol, port: values.port } : undefined);
       try {
         if (row.route) {
           await mergePatchNetworkLoadBalancerRoute(
@@ -167,6 +168,7 @@ export function AddListenerDialog({
           await createNetworkLoadBalancerRoute(projectId as string, route);
         }
       } catch (err) {
+        setAdded(saved);
         return fail(toNlbCreateErrors(asApiError(err), 'route'));
       }
       toast.success(`Saved ${values.protocol} ${values.port} on ${nlb.name}`);
@@ -203,12 +205,12 @@ export function AddListenerDialog({
           }
           return fail(toNlbCreateErrors(error, 'nlb'));
         }
-        setAdded({ protocol: values.protocol, port: values.port });
         refresh();
       }
       try {
         await createNetworkLoadBalancerRoute(projectId as string, requests.route);
       } catch (err) {
+        setAdded({ protocol: values.protocol, port: values.port });
         return fail(toNlbCreateErrors(asApiError(err), 'route'));
       }
       toast.success(`Added ${values.protocol} ${values.port} to ${nlb.name}`);

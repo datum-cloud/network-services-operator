@@ -268,14 +268,18 @@ func (r *InternalDNSCellReconciler) consumerVPC(
 	var vpc *cloudv1alpha1.VPC
 	for i := range interfaces.Items {
 		iface := &interfaces.Items[i]
-		if iface.Status.NetworkContextRef == nil || iface.Status.NetworkContextRef.Name != networkContext.Name ||
-			iface.Status.AttachmentRef == nil || iface.Status.AttachmentRef.APIGroup != "galactic.datumapis.com" ||
-			iface.Status.AttachmentRef.Kind != "VPCAttachment" || !iface.DeletionTimestamp.IsZero() {
+		if !isInternalDNSConsumer(iface) || iface.Status.NetworkContextRef.Name != networkContext.Name ||
+			!iface.DeletionTimestamp.IsZero() {
 			continue
 		}
 		attachment := &cloudv1alpha1.VPCAttachment{}
 		key := client.ObjectKey{Namespace: iface.Namespace, Name: iface.Status.AttachmentRef.Name}
 		if err := cl.Get(ctx, key, attachment); err != nil {
+			if apierrors.IsNotFound(err) {
+				// The interface event can reach this cache before the
+				// attachment's does. Its create event requeues the context.
+				continue
+			}
 			return nil, nil, fmt.Errorf("read VPC attachment %s: %w", key, err)
 		}
 		candidate := &cloudv1alpha1.VPC{}
@@ -618,6 +622,28 @@ func (r *InternalDNSCellReconciler) SetupWithManager(mgr mcmanager.Manager) erro
 			enqueueInternalDNSContextForRoutePolicy,
 			mcbuilder.WithEngageWithLocalCluster(false),
 			mcbuilder.WithPredicates(routePolicyAcknowledgmentChanged(r.now)),
+		).
+		// The consumer label decides which attachments get the DNS route, so
+		// a new interface must be labeled when it appears. An interface, its
+		// attachment and its VPC can each become visible last, so each one
+		// requeues the context.
+		Watches(
+			&networkingv1alpha.NetworkInterface{},
+			enqueueInternalDNSContextForInterface,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(internalDNSInterfaceChanged()),
+		).
+		Watches(
+			&cloudv1alpha1.VPCAttachment{},
+			enqueueInternalDNSContextsForAttachment,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(internalDNSAttachmentChanged()),
+		).
+		Watches(
+			&cloudv1alpha1.VPC{},
+			enqueueInternalDNSContextsForVPC,
+			mcbuilder.WithEngageWithLocalCluster(false),
+			mcbuilder.WithPredicates(internalDNSVPCIdentityChanged()),
 		)
 	if r.spreadConfigured() {
 		// Only Spread endpoints read producer reports. Watching them only

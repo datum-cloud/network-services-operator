@@ -1,5 +1,11 @@
 import { ProtocolBadge } from './nlb-empty-state';
-import { overviewSummary, type ListenerRow } from './nlb-overview-model';
+import {
+  backendHealth,
+  backendSummaries,
+  overviewSummary,
+  type BackendSummary,
+  type ListenerRow,
+} from './nlb-overview-model';
 import { StatusBadge } from './status-badge';
 import type { BadgeType, NetworkLoadBalancer } from '../schema';
 import { Badge } from '@datum-cloud/datum-ui/badge';
@@ -11,15 +17,18 @@ import { Icon, SpinnerIcon } from '@datum-cloud/datum-ui/icons';
 import { Skeleton } from '@datum-cloud/datum-ui/skeleton';
 import { MoreActions, type ActionItem } from '@datum-cloud/datum-ui/more-actions';
 import { toast } from '@datum-cloud/datum-ui/toast';
+import { Tooltip } from '@datum-cloud/datum-ui/tooltip';
 import { cn } from '@datum-cloud/datum-ui/utils';
 import type { ColumnDef } from '@tanstack/react-table';
 import {
+  BoxIcon,
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
   GlobeIcon,
   InfoIcon,
   PlusIcon,
+  ServerIcon,
   SplitIcon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -81,9 +90,11 @@ const NLB_CSS = `
 .nlb-band { background: var(--sidebar); }
 .nlb-flow { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
 .nlb-arrow { display: none; }
+.nlb-backend-grid { display: grid; gap: 0.625rem; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); }
 @media (min-width: 64rem) {
   .nlb-flow { grid-template-columns: 14rem 3.5rem minmax(0, 1fr); gap: 0; }
   .nlb-arrow { display: flex; align-self: center; }
+  .nlb-backends { padding-left: 17.5rem; }
 }`;
 
 function Pending({ width = '10rem' }: { width?: string }) {
@@ -353,6 +364,91 @@ function ListenersCard({
   );
 }
 
+function BackendCard({ backend, href }: { backend: BackendSummary; href?: string }) {
+  const health = backendHealth(backend.service);
+  const locations = backend.service?.locations ?? [];
+  const body = (
+    <Card
+      size="sm"
+      className="hover:border-primary h-full w-full transition-colors"
+      data-backend={backend.name}>
+      <CardContent className="flex min-w-0 flex-col gap-2">
+        <span className="flex min-w-0 items-center gap-2">
+          <Icon icon={BoxIcon} size={14} className="shrink-0" />
+          <span className="truncate font-mono text-sm font-semibold">{backend.name}</span>
+          <span className="flex-1" />
+          {href && (
+            <Icon icon={ChevronRightIcon} size={14} className="text-muted-foreground shrink-0" />
+          )}
+        </span>
+        <span className="text-muted-foreground truncate text-xs">
+          NetworkService · port {backend.port}
+        </span>
+        <span className="flex min-w-0 items-center gap-1.5 text-xs">
+          <Dot type={health.type} />
+          {locations.length > 1 ? (
+            <Tooltip
+              message={
+                <span className="flex flex-col gap-0.5">
+                  {locations.map((l) => (
+                    <span key={l.name}>
+                      {l.name}: {l.healthy}/{l.members} healthy
+                      {l.serving ? '' : ', not serving'}
+                    </span>
+                  ))}
+                </span>
+              }>
+              <span className="cursor-help font-medium whitespace-nowrap underline decoration-dotted">
+                {health.label}
+              </span>
+            </Tooltip>
+          ) : (
+            <span className="font-medium whitespace-nowrap">{health.label}</span>
+          )}
+          <span className="flex-1" />
+          <span className="text-muted-foreground truncate">{backend.listeners.join(', ')}</span>
+        </span>
+      </CardContent>
+    </Card>
+  );
+  return href ? (
+    <Link to={href} className="block min-w-0">
+      {body}
+    </Link>
+  ) : (
+    body
+  );
+}
+
+function BackendsStrip({ rows, href }: { rows: ListenerRow[]; href?: string }) {
+  const backends = backendSummaries(rows);
+  if (backends.length === 0) return null;
+  return (
+    <div
+      className="nlb-backends flex flex-col gap-2.5"
+      data-testid="networking-plugin-nlb-backends">
+      <div className="flex flex-wrap items-center gap-2">
+        <Icon icon={ServerIcon} size={13} className="text-muted-foreground" />
+        <Eyebrow>Backends</Eyebrow>
+        <span className="text-muted-foreground text-xs">
+          NetworkServices that listeners forward to
+        </span>
+        <span className="flex-1" />
+        {href && (
+          <Link to={href} className="text-primary text-xs font-medium hover:underline">
+            Manage backends →
+          </Link>
+        )}
+      </div>
+      <div className="nlb-backend-grid">
+        {backends.map((backend) => (
+          <BackendCard key={backend.name} backend={backend} href={href} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function NlbOverview({
   nlb,
   rows,
@@ -384,6 +480,7 @@ export function NlbOverview({
         <FlowArrow />
         <ListenersCard rows={rows} backendHref={servicesHref} actions={listenerActions} />
       </div>
+      <BackendsStrip rows={rows} href={servicesHref} />
     </section>
   );
 }

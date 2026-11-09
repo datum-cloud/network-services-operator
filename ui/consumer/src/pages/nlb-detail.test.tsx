@@ -129,6 +129,19 @@ describe('NlbDetail', () => {
     expect(tcp.getByText('No route')).toBeInTheDocument();
   });
 
+  it('shows each backend once with its health and the listeners that use it', () => {
+    renderPage();
+    const strip = screen.getByTestId('networking-plugin-nlb-backends');
+    const card = within(strip.querySelector('[data-backend="game-server"]') as HTMLElement);
+    expect(card.getByText('5/6 healthy')).toBeInTheDocument();
+    expect(card.getByText('UDP 7777')).toBeInTheDocument();
+    expect(card.getByText('NetworkService · port game')).toBeInTheDocument();
+    expect(within(strip).getByRole('link', { name: 'Manage backends →' })).toHaveAttribute(
+      'href',
+      '/project/demo-project/services/networking/networks/kevnett/services'
+    );
+  });
+
   it('sums up the public addresses beside the listeners', () => {
     mockQuery(useNlbMock, { data: { ...nlb, listeners: [nlb.listeners[0]] } });
     mockQuery(useServicesMock, {

@@ -1,4 +1,5 @@
 import { ProtocolBadge } from './nlb-empty-state';
+import { NlbMetricsPlaceholder } from './nlb-metrics-placeholder';
 import {
   backendHealth,
   backendSummaries,
@@ -466,21 +467,24 @@ export function NlbOverview({
   listenerActions?: ListenerActions;
 }) {
   return (
-    <section
-      className="nlb-band flex flex-col gap-4 rounded-xl px-5 pt-5 pb-6 md:px-7"
-      data-testid="networking-plugin-nlb-overview">
-      <style>{NLB_CSS}</style>
-      <div className="flex flex-wrap items-center gap-2.5">
-        <Eyebrow>Traffic path</Eyebrow>
-        <span className="flex-1" />
-        <NlbStatusPill rows={rows} />
-      </div>
-      <div className="nlb-flow">
-        <AddressesCard nlb={nlb} networkHref={networkHref} />
-        <FlowArrow />
-        <ListenersCard rows={rows} backendHref={servicesHref} actions={listenerActions} />
-      </div>
-      <BackendsStrip rows={rows} href={servicesHref} />
-    </section>
+    <div className="flex flex-col gap-6">
+      <section
+        className="nlb-band flex flex-col gap-4 rounded-xl px-5 pt-5 pb-6 md:px-7"
+        data-testid="networking-plugin-nlb-overview">
+        <style>{NLB_CSS}</style>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Eyebrow>Traffic path</Eyebrow>
+          <span className="flex-1" />
+          <NlbStatusPill rows={rows} />
+        </div>
+        <div className="nlb-flow">
+          <AddressesCard nlb={nlb} networkHref={networkHref} />
+          <FlowArrow />
+          <ListenersCard rows={rows} backendHref={servicesHref} actions={listenerActions} />
+        </div>
+        <BackendsStrip rows={rows} href={servicesHref} />
+      </section>
+      <NlbMetricsPlaceholder />
+    </div>
   );
 }

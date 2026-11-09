@@ -58,7 +58,6 @@ describe('planDeleteListener', () => {
   it('removes the listener and its address at their own indexes, checking each first', () => {
     const plan = planDeleteListener(nlb, udp, []);
     expect(plan.patch).toEqual([
-      { op: 'test', path: '/metadata/resourceVersion', value: '42' },
       { op: 'test', path: '/spec/listeners/2/name', value: 'udp-7777' },
       { op: 'remove', path: '/spec/listeners/2' },
       { op: 'test', path: '/spec/exposure/addresses/2/name', value: 'udp-7777' },
@@ -104,7 +103,6 @@ describe('toEditListenerPatch', () => {
 
   it('replaces the protocol and port in place, keeping the name', () => {
     expect(toEditListenerPatch(nlb, tcp, { protocol: 'UDP', port: 53 })).toEqual([
-      { op: 'test', path: '/metadata/resourceVersion', value: '42' },
       { op: 'test', path: '/spec/listeners/0/name', value: 'tcp-80' },
       { op: 'replace', path: '/spec/listeners/0/protocol', value: 'UDP' },
       { op: 'replace', path: '/spec/listeners/0/port', value: 53 },

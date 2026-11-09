@@ -156,3 +156,41 @@ export function overviewSummary(rows: ListenerRow[]): ListenerStatus {
     return { label: 'Needs attention', type: 'warning' };
   return { label: 'Starting up', type: 'muted', pending: true };
 }
+
+export interface BackendSummary {
+  name: string;
+  port: string;
+  listeners: string[];
+  service?: NetworkService;
+}
+
+export function backendSummaries(rows: ListenerRow[]): BackendSummary[] {
+  const byName = new Map<string, BackendSummary>();
+  for (const row of rows) {
+    if (!row.backend) continue;
+    const label = `${row.listener.protocol} ${row.listener.port}`;
+    const seen = byName.get(row.backend.name);
+    if (seen) seen.listeners.push(label);
+    else {
+      byName.set(row.backend.name, {
+        name: row.backend.name,
+        port: row.backend.port,
+        listeners: [label],
+        service: row.service,
+      });
+    }
+  }
+  return [...byName.values()];
+}
+
+export function backendHealth(service: NetworkService | undefined): {
+  type: BadgeType;
+  label: string;
+} {
+  if (!service) return { type: 'muted', label: 'Not found' };
+  const { healthy, members } = service.summary;
+  if (members === 0) return { type: 'muted', label: 'No endpoints' };
+  const label = `${healthy}/${members} healthy`;
+  if (healthy === members) return { type: 'success', label };
+  return { type: healthy === 0 ? 'danger' : 'warning', label };
+}

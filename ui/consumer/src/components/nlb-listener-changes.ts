@@ -35,12 +35,6 @@ function listenerIndex(nlb: NetworkLoadBalancer, listener: NetworkLoadBalancerLi
   return listener.index ?? nlb.listeners.findIndex((l) => l.name === listener.name);
 }
 
-function versionTest(nlb: NetworkLoadBalancer): object[] {
-  return nlb.resourceVersion
-    ? [{ op: 'test', path: '/metadata/resourceVersion', value: nlb.resourceVersion }]
-    : [];
-}
-
 export interface DeleteListenerPlan {
   /** JSON Patch for the NLB. */
   patch: object[];
@@ -53,7 +47,8 @@ export interface DeleteListenerPlan {
 /**
  * Removes the listener and, when no other listener uses it, its address. The
  * test ops make the patch fail rather than remove the wrong entry if the
- * lists moved since the page read them.
+ * lists moved since the page read them. They check names, not the
+ * resourceVersion, which status updates change all the time.
  */
 export function planDeleteListener(
   nlb: NetworkLoadBalancer,
@@ -62,7 +57,6 @@ export function planDeleteListener(
 ): DeleteListenerPlan {
   const index = listenerIndex(nlb, listener);
   const patch: object[] = [
-    ...versionTest(nlb),
     { op: 'test', path: `/spec/listeners/${index}/name`, value: listener.name },
     { op: 'remove', path: `/spec/listeners/${index}` },
   ];
@@ -104,7 +98,6 @@ export function toEditListenerPatch(
   if (values.protocol === listener.protocol && values.port === listener.port) return [];
   const index = listenerIndex(nlb, listener);
   return [
-    ...versionTest(nlb),
     { op: 'test', path: `/spec/listeners/${index}/name`, value: listener.name },
     { op: 'replace', path: `/spec/listeners/${index}/protocol`, value: values.protocol },
     { op: 'replace', path: `/spec/listeners/${index}/port`, value: values.port },

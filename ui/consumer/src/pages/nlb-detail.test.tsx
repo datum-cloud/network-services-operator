@@ -110,7 +110,8 @@ describe('NlbDetail', () => {
     renderPage();
     // Two listeners on two addresses: the addresses show per listener.
     const udp = within(listenerRow('udp-7777'));
-    expect(udp.getByText('UDP 7777')).toBeInTheDocument();
+    expect(udp.getByText('UDP')).toBeInTheDocument();
+    expect(udp.getByText('7777')).toBeInTheDocument();
     expect(udp.getByText('us-east-1.plea-fried-wgyt2.prism.example')).toBeInTheDocument();
     // Bare, so it pastes into a client; brackets are only for URLs.
     expect(udp.getByText('2001:db8::3')).toBeInTheDocument();
@@ -120,31 +121,43 @@ describe('NlbDetail', () => {
       'href',
       '/project/demo-project/services/networking/networks/kevnett/services'
     );
-    expect(udp.getByText(':health')).toBeInTheDocument();
-    expect(udp.getByText('5/6 endpoints healthy')).toBeInTheDocument();
+    expect(udp.getByText('TCP :health')).toBeInTheDocument();
+    expect(udp.getByText('Degraded')).toBeInTheDocument();
 
     const tcp = within(listenerRow('tcp-80'));
     expect(tcp.getByLabelText('Allocating an address')).toBeInTheDocument();
     expect(tcp.getByText('No route')).toBeInTheDocument();
   });
 
-  it('puts a single listener’s hostname and address in the info strip', () => {
+  it('shows each backend once with its health and the listeners that use it', () => {
+    renderPage();
+    const strip = screen.getByTestId('networking-plugin-nlb-backends');
+    const card = within(strip.querySelector('[data-backend="game-server"]') as HTMLElement);
+    expect(card.getByText('5/6 healthy')).toBeInTheDocument();
+    expect(card.getByText('UDP 7777')).toBeInTheDocument();
+    expect(card.getByText('NetworkService · port game')).toBeInTheDocument();
+    expect(within(strip).getByRole('link', { name: 'Manage backends →' })).toHaveAttribute(
+      'href',
+      '/project/demo-project/services/networking/networks/kevnett/services'
+    );
+  });
+
+  it('sums up the public addresses beside the listeners', () => {
     mockQuery(useNlbMock, { data: { ...nlb, listeners: [nlb.listeners[0]] } });
     mockQuery(useServicesMock, {
       data: [{ ...service, summary: { locations: 2, members: 6, healthy: 6 } }],
     });
     renderPage();
     const info = within(screen.getByTestId('networking-plugin-nlb-info'));
-    expect(info.getByText('us-east-1.plea-fried-wgyt2.prism.example')).toBeInTheDocument();
-    expect(info.getByText('2001:db8::3')).toBeInTheDocument();
     expect(info.getByRole('link', { name: 'kevnett' })).toHaveAttribute(
       'href',
       '/project/demo-project/services/networking/networks/kevnett'
     );
-    expect(
-      within(screen.getByTestId('networking-plugin-nlb-listeners')).queryByText('Address')
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId('networking-plugin-nlb-summary')).toHaveTextContent('Forwarding');
+    expect(info.getByText('Follows backends · 2 cities')).toBeInTheDocument();
+    expect(info.getByText('IPv4 coming soon')).toBeInTheDocument();
+    expect(screen.getByTestId('networking-plugin-nlb-summary')).toHaveTextContent(
+      'Forwarding on 1 listener'
+    );
   });
 
   it('says why a listener isn’t serving, and names the serving port probe', () => {
@@ -168,7 +181,7 @@ describe('NlbDetail', () => {
     renderPage();
     const udp = within(listenerRow('udp-7777'));
     expect(udp.getByText('No reachable backends')).toBeInTheDocument();
-    expect(udp.getByText('· serving port', { exact: false })).toBeInTheDocument();
+    expect(udp.getByText('TCP · serving port')).toBeInTheDocument();
   });
 
   it('links back to the list and sums up the listeners', () => {

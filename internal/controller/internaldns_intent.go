@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/internaldns"
 )
 
 // errInternalDNSIntentUnverified means a NetworkContext's DNS annotations do
@@ -30,10 +31,7 @@ var errInternalDNSAccessNotAccepted = fmt.Errorf("%w: DNS has not accepted the a
 // cell needs to program a DNS service path. A cell withdraws any path it has
 // for a context whose intent is incomplete.
 func internalDNSIntentComplete(annotations map[string]string) bool {
-	return annotations[InternalDNSContextNameAnnotation] != "" &&
-		annotations[InternalDNSAccessNameAnnotation] != "" &&
-		annotations[InternalDNSServiceDestinationAnnotation] != "" &&
-		annotations[InternalDNSRegionAnnotation] != ""
+	return internaldns.IntentComplete(annotations)
 }
 
 // verifyInternalDNSIntent checks the DNS annotations on a project

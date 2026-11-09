@@ -40,6 +40,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/galactic/galactic"
 	"go.datum.net/network-services-operator/internal/galactic/identifier"
+	"go.datum.net/network-services-operator/internal/internaldns"
 )
 
 const (
@@ -164,7 +165,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	mode := internetEgressMode(&networkContext)
 
-	attachment, err := r.reconcileAttachment(ctx, &networkInterface, &vpc)
+	attachment, err := r.reconcileAttachment(ctx, &networkInterface, &vpc, &networkContext)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -201,6 +202,7 @@ func claimFulfilled(networkInterface *networkingv1alpha.NetworkInterface) bool {
 // that speaks both the workload vocabulary and the data plane's.
 func (r *NetworkInterfaceReconciler) reconcileAttachment(
 	ctx context.Context, networkInterface *networkingv1alpha.NetworkInterface, vpc *cloudv1alpha1.VPC,
+	networkContext *networkingv1alpha.NetworkContext,
 ) (*cloudv1alpha1.VPCAttachment, error) {
 	attachment := &cloudv1alpha1.VPCAttachment{
 		ObjectMeta: metav1.ObjectMeta{Name: networkInterface.Name, Namespace: networkInterface.Namespace},
@@ -208,6 +210,13 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
 		if slices.Contains(r.LabeledNamespaces, networkInterface.Namespace) {
 			attachment.Labels = withConsumerLabels(attachment.Labels, networkInterface.Labels)
+		}
+		if networkContext.DeletionTimestamp.IsZero() && vpc.UID != "" &&
+			internaldns.IntentComplete(networkContext.Annotations) {
+			if attachment.Labels == nil {
+				attachment.Labels = map[string]string{}
+			}
+			attachment.Labels[internaldns.ConsumerVPCLabel] = string(vpc.UID)
 		}
 		attachment.Spec.VPC = cloudv1alpha1.VPCRef{Name: vpc.Name}
 		attachment.Spec.InterfaceRef = &cloudv1alpha1.NetworkInterfaceRef{Name: networkInterface.Name}

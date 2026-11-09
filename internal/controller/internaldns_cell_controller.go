@@ -30,11 +30,12 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/internaldns"
 	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
 const (
-	internalDNSConsumerVPCLabel  = "networking.datumapis.com/internal-dns-vpc-uid"
+	internalDNSConsumerVPCLabel  = internaldns.ConsumerVPCLabel
 	internalDNSRouteContextLabel = "networking.datumapis.com/internal-dns-context-uid"
 )
 

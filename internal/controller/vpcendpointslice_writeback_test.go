@@ -504,7 +504,7 @@ func TestAReachabilityChangePublishesASliceThatHasJustBeenPutBehindAProxy(t *tes
 	requests := edgeReachabilityNamespace(r.ctx, &record)
 	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{Name: r.namespace}}}, requests)
 
-	_, err := r.writeBack.reconcileReachability(r.ctx, requests[0])
+	_, err := r.writeBack.reconcileNamespace(r.ctx, requests[0])
 	require.NoError(t, err)
 
 	_, found = r.hubCopy()
@@ -593,4 +593,36 @@ func TestACopyFromAnotherLocationIsLeftToItsOwnCell(t *testing.T) {
 	copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel] = "elsewhere"
 
 	require.Empty(t, r.writeBack.copySource(r.ctx, copied))
+}
+
+// A slice can reach the cell before federation has made its hub namespace.
+// The namespace appearing on the hub is what publishes it.
+func TestASliceIsPublishedOnceItsHubNamespaceAppears(t *testing.T) {
+	r := newReachability(t)
+
+	ns := &corev1.Namespace{}
+	ns.Name = r.namespace + "-late"
+	ns.Labels = map[string]string{
+		downstreamclient.UpstreamOwnerNamespaceLabel:   "proj-" + scenarioSuffix(t),
+		downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-" + testProject,
+	}
+	require.NoError(t, r.cell.Create(r.ctx, ns))
+	r.namespace = ns.Name
+	r.sliceOnCell()
+
+	r.publish(liveSliceName)
+	_, found := r.hubCopy()
+	require.False(t, found)
+
+	hubNamespace := &corev1.Namespace{}
+	hubNamespace.Name = ns.Name
+	require.NoError(t, r.hub.Create(r.ctx, hubNamespace))
+
+	requests := cellNamespace(r.ctx, hubNamespace)
+	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{Name: ns.Name}}}, requests)
+	_, err := r.writeBack.reconcileNamespace(r.ctx, requests[0])
+	require.NoError(t, err)
+
+	_, found = r.hubCopy()
+	require.True(t, found, "the hub namespace appearing publishes the slice")
 }

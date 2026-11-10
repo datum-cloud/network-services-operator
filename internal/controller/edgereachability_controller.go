@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,11 +17,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
@@ -98,7 +102,7 @@ func (r *EdgeReachabilityReconciler) record(
 	if err != nil {
 		// The hub namespace is made by the federation that carries a project's
 		// work out. Nothing here should invent one, and a namespace that is not
-		// there yet holds nothing to withdraw.
+		// there yet holds nothing to withdraw. Its creation records it.
 		if apierrors.IsNotFound(err) {
 			logger.Info("the hub has no namespace to record edge reachability in yet",
 				"namespace", namespace)
@@ -216,12 +220,47 @@ func (r *EdgeReachabilityReconciler) SetupWithManager(mgr mcmanager.Manager) err
 
 	r.mgr = mgr
 
+	hubNamespaces, _, err := mcsource.TypedKind(
+		&corev1.Namespace{},
+		enqueueEdgeReachabilityForHubNamespace,
+		predicate.TypedFuncs[*corev1.Namespace]{
+			CreateFunc: func(event.TypedCreateEvent[*corev1.Namespace]) bool { return true },
+		},
+	).ForCluster("", r.DownstreamCluster)
+	if err != nil {
+		return fmt.Errorf("failed to watch namespaces on the hub: %w", err)
+	}
+
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha.HTTPProxy{}).
+		WatchesRawSource(hubNamespaces).
 		Watches(&networkingv1alpha.NetworkService{}, enqueueEdgeReachabilityForNamespace()).
 		Watches(&networkingv1alpha.NetworkInterface{}, enqueueEdgeReachabilityForNamespace()).
 		Named("edgereachability").
 		Complete(r)
+}
+
+// enqueueEdgeReachabilityForHubNamespace enqueues the record of the project
+// namespace a hub namespace was made for, since a record can only be written
+// once its hub namespace exists.
+func enqueueEdgeReachabilityForHubNamespace(
+	_ multicluster.ClusterName,
+	_ cluster.Cluster,
+) handler.TypedEventHandler[*corev1.Namespace, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(_ context.Context, namespace *corev1.Namespace) []mcreconcile.Request {
+		clusterLabel := namespace.Labels[downstreamclient.UpstreamOwnerClusterNameLabel]
+		upstreamNamespace := namespace.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]
+		if clusterLabel == "" || upstreamNamespace == "" {
+			return nil
+		}
+		return []mcreconcile.Request{{
+			ClusterName: multicluster.ClusterName(downstreamclient.UpstreamClusterNameFromLabel(clusterLabel)),
+			Request: ctrl.Request{NamespacedName: client.ObjectKey{
+				Namespace: upstreamNamespace,
+				Name:      networkingv1alpha.EdgeReachabilityName,
+			}},
+		}}
+	})
 }
 
 // enqueueEdgeReachabilityForNamespace enqueues the one record a namespace

@@ -11,6 +11,7 @@ import (
 	"maps"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,10 +28,12 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	"go.miloapis.com/locations/pkg/locationidentity"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
-	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
 const (
@@ -178,7 +181,8 @@ func (r *VPCEndpointSliceWriteBackReconciler) publish(
 
 	if err := writeFederatedEndpointSlice(ctx, hub, desired); err != nil {
 		// The hub namespace is made by the federation that carries a
-		// project's work to this cell. Nothing here should invent one.
+		// project's work to this cell. Nothing here should invent one; its
+		// creation on the hub is what publishes this slice.
 		if apierrors.IsNotFound(err) {
 			logger.Info("the hub has no namespace to publish this vpc endpointslice into yet",
 				"namespace", slice.Namespace)
@@ -459,6 +463,9 @@ func (r *VPCEndpointSliceWriteBackReconciler) republishNamespace(ctx context.Con
 	return errors.Join(errs...)
 }
 
+// location is the location this cell publishes as, or empty while it has none.
+// A ServingLocation being delivered is what publishes the slices held until
+// then.
 func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (string, error) {
 	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
 	if err != nil {
@@ -500,9 +507,43 @@ func edgeReachabilityNamespace(_ context.Context, record *networkingv1alpha.Edge
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: record.Namespace}}}
 }
 
-// reconcileReachability republishes a namespace's slices when the hub's
-// reachability record for it changes.
-func (r *VPCEndpointSliceWriteBackReconciler) reconcileReachability(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+// cellNamespace maps a cell namespace to itself. Its labels name the project a
+// copy is routed to, so a namespace that gains them can publish what it holds.
+func cellNamespace(_ context.Context, namespace *corev1.Namespace) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: namespace.Name}}}
+}
+
+// everyNamespace maps an object to one request that stands for every namespace.
+func everyNamespace[T client.Object](context.Context, T) []reconcile.Request {
+	return []reconcile.Request{{}}
+}
+
+// reconcileLocation republishes everything, and collects what has nothing
+// behind it, once the location the cell publishes as is known or changes.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileLocation(ctx context.Context, _ reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, errors.Join(r.republishNamespace(ctx, ""), r.sweep(ctx))
+}
+
+// servesKind reports whether the cluster a manager reads serves a kind. A
+// watch on a kind that is not served never syncs, and holds the manager with it.
+func servesKind(mgr ctrl.Manager, obj client.Object) (bool, error) {
+	gvk, err := mgr.GetClient().GroupVersionKindFor(obj)
+	if err != nil {
+		return false, err
+	}
+	if _, err := mgr.GetRESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+		if locationsNotServed(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed checking whether %s is served: %w", gvk.Kind, err)
+	}
+	return true, nil
+}
+
+// reconcileNamespace republishes a namespace's slices when its reachability
+// record or its namespace appears on the hub, or its project labels on the
+// cell change. An empty name stands for every namespace.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileNamespace(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
 	return ctrl.Result{}, r.republishNamespace(ctx, req.Name)
 }
 
@@ -572,8 +613,51 @@ func (r *VPCEndpointSliceWriteBackReconciler) SetupWithManager(mgr mcmanager.Man
 			handler.TypedEnqueueRequestsFromMapFunc(edgeReachabilityNamespace),
 		)).
 		Named("vpcendpointslice_writeback_reachability").
-		Complete(reconcile.Func(r.reconcileReachability)); err != nil {
+		Complete(reconcile.Func(r.reconcileNamespace)); err != nil {
 		return fmt.Errorf("unable to watch edge reachability on the hub: %w", err)
+	}
+
+	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+		WatchesRawSource(source.Kind(
+			r.HubCluster.GetCache(),
+			&corev1.Namespace{},
+			handler.TypedEnqueueRequestsFromMapFunc(cellNamespace),
+			predicate.TypedFuncs[*corev1.Namespace]{
+				CreateFunc: func(event.TypedCreateEvent[*corev1.Namespace]) bool { return true },
+			},
+		)).
+		Named("vpcendpointslice_writeback_hub_namespaces").
+		Complete(reconcile.Func(r.reconcileNamespace)); err != nil {
+		return fmt.Errorf("unable to watch namespaces on the hub: %w", err)
+	}
+
+	servingLocations, err := servesKind(mgr.GetLocalManager(), &locationsv1alpha1.ServingLocation{})
+	if err != nil {
+		return err
+	}
+	if servingLocations {
+		if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+			WatchesRawSource(source.Kind(
+				mgr.GetLocalManager().GetCache(),
+				&locationsv1alpha1.ServingLocation{},
+				handler.TypedEnqueueRequestsFromMapFunc(everyNamespace[*locationsv1alpha1.ServingLocation]),
+			)).
+			Named("vpcendpointslice_writeback_location").
+			Complete(reconcile.Func(r.reconcileLocation)); err != nil {
+			return fmt.Errorf("unable to watch this cell's serving location: %w", err)
+		}
+	}
+
+	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+		WatchesRawSource(source.Kind(
+			mgr.GetLocalManager().GetCache(),
+			&corev1.Namespace{},
+			handler.TypedEnqueueRequestsFromMapFunc(cellNamespace),
+			predicate.TypedLabelChangedPredicate[*corev1.Namespace]{},
+		)).
+		Named("vpcendpointslice_writeback_namespaces").
+		Complete(reconcile.Func(r.reconcileNamespace)); err != nil {
+		return fmt.Errorf("unable to watch the cell's namespaces: %w", err)
 	}
 
 	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).

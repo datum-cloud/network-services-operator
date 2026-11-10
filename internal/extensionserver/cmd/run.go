@@ -280,6 +280,10 @@ func run(o options) {
 		log.Error("set up connector re-translation controller", "err", err)
 		os.Exit(1)
 	}
+	if err := (&retrigger.VPCBindingReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		log.Error("set up vpc binding re-translation controller", "err", err)
+		os.Exit(1)
+	}
 
 	// --- mTLS config ---
 	// LoadServerTLSConfig uses GetCertificate (re-reads on each handshake) so

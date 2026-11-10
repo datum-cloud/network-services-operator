@@ -98,12 +98,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // non-existent Gateway is ignored: EG translates a Gateway when it is created,
 // reading the (already fresh) extension cache, so there is nothing to nudge yet.
 func (r *Reconciler) touchGateway(ctx context.Context, key client.ObjectKey, value string) error {
+	return touchGatewayAnnotation(ctx, r.Client, key, ConnectorReadyAnnotationKey, value)
+}
+
+func touchGatewayAnnotation(ctx context.Context, cl client.Client, key client.ObjectKey, annotation, value string) error {
 	gw := &gatewayv1.Gateway{}
 	gw.Namespace = key.Namespace
 	gw.Name = key.Name
 
-	body := fmt.Appendf(nil, `{"metadata":{"annotations":{%q:%q}}}`, ConnectorReadyAnnotationKey, value)
-	if err := r.Client.Patch(ctx, gw, client.RawPatch(types.MergePatchType, body)); err != nil {
+	body := fmt.Appendf(nil, `{"metadata":{"annotations":{%q:%q}}}`, annotation, value)
+	if err := cl.Patch(ctx, gw, client.RawPatch(types.MergePatchType, body)); err != nil {
 		return client.IgnoreNotFound(err)
 	}
 	return nil

@@ -717,6 +717,31 @@ func TestGatewayConfig_ValidateALPNProtocols(t *testing.T) {
 
 // An HTTP/2 window outside Envoy's range is refused at start: the edge would
 // keep its defaults, and nothing the operator reads would say so.
+func TestGatewayConfig_ValidateHTTPMaxRequestTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		max     *metav1.Duration
+		wantSub string
+	}{
+		{name: "unset"},
+		{name: "at the proxy default", max: &metav1.Duration{Duration: time.Hour}},
+		{name: "above the proxy default", max: &metav1.Duration{Duration: 2 * time.Hour}},
+		{name: "below the proxy default", max: &metav1.Duration{Duration: 10 * time.Minute}, wantSub: "httpMaxRequestTimeout 10m0s is below"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &NetworkServicesOperator{}
+			cfg.Gateway.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout = tt.max
+			err := cfg.Validate()
+			if tt.wantSub == "" && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if tt.wantSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantSub)) {
+				t.Fatalf("expected an error containing %q, got %v", tt.wantSub, err)
+			}
+		})
+	}
+}
+
 func TestGatewayConfig_ValidateHTTP2Windows(t *testing.T) {
 	tests := []struct {
 		name, stream, connection, wantSub string

@@ -126,6 +126,19 @@ spec:
                       - endpoint: http://drip-origin.default.svc.cluster.local:8080
                     timeouts:
                       request: 5s
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: partial-timeout
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://drip-origin.default.svc.cluster.local:8080
+                    timeouts:
+                      backendRequest: 5m
         - assert:
             cluster: nso-standard
             resource:
@@ -137,6 +150,18 @@ spec:
                 rules:
                   - timeouts:
                       request: 1h
+        - assert:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: partial-timeout
+              spec:
+                rules:
+                  - timeouts:
+                      request: 1h
+                      backendRequest: 5m
         - assert:
             cluster: nso-standard
             timeout: 120s

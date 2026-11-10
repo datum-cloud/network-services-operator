@@ -37,6 +37,7 @@ var _ admission.Defaulter[*networkingv1alpha.HTTPProxy] = &HTTPProxyCustomDefaul
 
 func (d *HTTPProxyCustomDefaulter) Default(ctx context.Context, httpProxy *networkingv1alpha.HTTPProxy) error {
 	_ = display.EnsureHTTPProxyAnnotations(httpProxy, oldHTTPProxy(ctx))
+	validation.DefaultHTTPProxyRuleTimeouts(httpProxy)
 	return nil
 }
 

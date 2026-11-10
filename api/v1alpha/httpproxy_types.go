@@ -281,6 +281,8 @@ type HTTPProxyRule struct {
 	Timeouts *gatewayv1.HTTPRouteTimeouts `json:"timeouts,omitempty"`
 }
 
+const HTTPProxyDefaultRequestTimeout = "1h"
+
 // +kubebuilder:validation:XValidation:message="endpoint is required unless instance or networkService is set; instance and networkService are mutually exclusive with each other and with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector) && !has(self.networkService)) : (has(self.networkService) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))"
 // +kubebuilder:validation:XValidation:message="backend TLS is not supported for networkService backends",rule="has(self.networkService) ? !has(self.tls) : true"
 type HTTPProxyRuleBackend struct {

@@ -33,15 +33,24 @@ type HTTPProxyValidationOptions struct {
 	MaxRequestTimeout time.Duration
 }
 
-// HTTPProxyOptions derives the HTTPProxy rules from operator settings. The
-// timeout cap is the one BackendTrafficPolicy already enforces, so a timeout
-// set on the proxy and one set on a policy meet the same limit.
 func HTTPProxyOptions(gatewayConfig config.GatewayConfig) HTTPProxyValidationOptions {
 	opts := HTTPProxyValidationOptions{Hostnames: CustomHostnameOptions(gatewayConfig)}
 	if max := gatewayConfig.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout; max != nil {
 		opts.MaxRequestTimeout = max.Duration
 	}
 	return opts
+}
+
+func DefaultHTTPProxyRuleTimeouts(httpProxy *networkingv1alpha.HTTPProxy) {
+	for i := range httpProxy.Spec.Rules {
+		rule := &httpProxy.Spec.Rules[i]
+		if rule.Timeouts == nil {
+			rule.Timeouts = &gatewayv1.HTTPRouteTimeouts{}
+		}
+		if rule.Timeouts.Request == nil {
+			rule.Timeouts.Request = ptr.To(gatewayv1.Duration(networkingv1alpha.HTTPProxyDefaultRequestTimeout))
+		}
+	}
 }
 
 func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy, opts HTTPProxyValidationOptions) field.ErrorList {
@@ -152,10 +161,6 @@ func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.
 	return allErrs
 }
 
-// validateHTTPProxyRuleTimeouts refuses a timeout above the operator's cap and
-// refuses zero, which Gateway API defines as no timeout at all. Envoy Gateway
-// drops the route's idle timeout along with a disabled request timeout, so a
-// zero would leave an abandoned stream open for good.
 func validateHTTPProxyRuleTimeouts(timeouts *gatewayv1.HTTPRouteTimeouts, fldPath *field.Path, maxRequestTimeout time.Duration) field.ErrorList {
 	if timeouts == nil {
 		return nil

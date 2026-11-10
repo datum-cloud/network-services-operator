@@ -824,6 +824,42 @@ func TestValidateHTTPProxyTimeouts(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPProxyRuleTimeouts(t *testing.T) {
+	scenarios := map[string]struct {
+		timeouts *gatewayv1.HTTPRouteTimeouts
+		expected *gatewayv1.HTTPRouteTimeouts
+	}{
+		"unset gets the default": {
+			expected: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("1h"))},
+		},
+		"only backendRequest set gets the default request": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{BackendRequest: ptr.To(gatewayv1.Duration("5m"))},
+			expected: &gatewayv1.HTTPRouteTimeouts{
+				Request:        ptr.To(gatewayv1.Duration("1h")),
+				BackendRequest: ptr.To(gatewayv1.Duration("5m")),
+			},
+		},
+		"request set is kept": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("30s"))},
+			expected: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("30s"))},
+		},
+	}
+
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			proxy := &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{{Timeouts: scenario.timeouts}},
+				},
+			}
+			DefaultHTTPProxyRuleTimeouts(proxy)
+			if delta := cmp.Diff(scenario.expected, proxy.Spec.Rules[0].Timeouts); delta != "" {
+				t.Errorf("unexpected timeouts, diff: %s", delta)
+			}
+		})
+	}
+}
+
 func rulePath() *field.Path {
 	return field.NewPath("spec", "rules").Index(0)
 }

@@ -504,8 +504,7 @@ func TestAReachabilityChangePublishesASliceThatHasJustBeenPutBehindAProxy(t *tes
 	requests := edgeReachabilityNamespace(r.ctx, &record)
 	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{Name: r.namespace}}}, requests)
 
-	reachability := &vpcEndpointSliceReachabilityReconciler{writeBack: r.writeBack}
-	_, err := reachability.Reconcile(r.ctx, requests[0])
+	_, err := r.writeBack.reconcileReachability(r.ctx, requests[0])
 	require.NoError(t, err)
 
 	_, found = r.hubCopy()
@@ -556,4 +555,42 @@ func TestALabelTheSourceDropsLeavesTheCopy(t *testing.T) {
 
 	copied, _ = r.hubCopy()
 	require.NotContains(t, copied.Labels, "example.com/extra", "the dropped label leaves the copy")
+}
+
+// Nothing on the cell changes when a copy is deleted on the hub, so the copy's
+// own deletion is what has to bring it back.
+func TestACopyDeletedOnTheHubComesBack(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.publish(liveSliceName)
+
+	copied, found := r.hubCopy()
+	require.True(t, found, "the cell's slice reaches the hub")
+	require.NoError(t, r.hub.Delete(r.ctx, copied))
+
+	requests := r.writeBack.copySource(r.ctx, copied)
+	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Namespace: r.namespace,
+		Name:      liveSliceName,
+	}}}, requests)
+
+	_, err := r.writeBack.reconcileCopy(r.ctx, requests[0])
+	require.NoError(t, err)
+
+	_, found = r.hubCopy()
+	require.True(t, found, "the deleted copy is published again")
+}
+
+// Every cell publishes into the same hub namespaces, so a cell must only act on
+// the copies it published itself.
+func TestACopyFromAnotherLocationIsLeftToItsOwnCell(t *testing.T) {
+	r := newReachability(t)
+	r.sliceOnCell()
+	r.publish(liveSliceName)
+
+	copied, found := r.hubCopy()
+	require.True(t, found, "the cell's slice reaches the hub")
+	copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel] = "elsewhere"
+
+	require.Empty(t, r.writeBack.copySource(r.ctx, copied))
 }

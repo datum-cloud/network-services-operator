@@ -500,14 +500,37 @@ func edgeReachabilityNamespace(_ context.Context, record *networkingv1alpha.Edge
 	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: record.Namespace}}}
 }
 
-// vpcEndpointSliceReachabilityReconciler republishes a namespace's slices when
-// the hub's reachability record for it changes.
-type vpcEndpointSliceReachabilityReconciler struct {
-	writeBack *VPCEndpointSliceWriteBackReconciler
+// reconcileReachability republishes a namespace's slices when the hub's
+// reachability record for it changes.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileReachability(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, r.republishNamespace(ctx, req.Name)
 }
 
-func (r *vpcEndpointSliceReachabilityReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
-	return ctrl.Result{}, r.writeBack.republishNamespace(ctx, req.Name)
+// copySource maps a copy this cell published to the slice it came from, so a
+// copy deleted or edited on the hub is put back as the cell says it should be.
+func (r *VPCEndpointSliceWriteBackReconciler) copySource(ctx context.Context, copied *discoveryv1.EndpointSlice) []reconcile.Request {
+	if copied.Labels[VPCEndpointSliceProjectionLabel] != "true" {
+		return nil
+	}
+	source := copied.Annotations[VPCEndpointSliceSourceNameAnnotation]
+	if source == "" {
+		return nil
+	}
+	location, err := r.location(ctx)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed resolving the location of a changed vpc endpointslice copy",
+			"namespace", copied.Namespace, jsonKeyName, copied.Name)
+		return nil
+	}
+	if location == "" || copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel] != location {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: copied.Namespace, Name: source}}}
+}
+
+// reconcileCopy republishes the slice behind a copy that changed on the hub.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileCopy(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, r.publish(ctx, r.localReader, req.NamespacedName)
 }
 
 // vpcPodEndpointSlicePredicate passes the slices this write-back carries. An
@@ -549,8 +572,19 @@ func (r *VPCEndpointSliceWriteBackReconciler) SetupWithManager(mgr mcmanager.Man
 			handler.TypedEnqueueRequestsFromMapFunc(edgeReachabilityNamespace),
 		)).
 		Named("vpcendpointslice_writeback_reachability").
-		Complete(&vpcEndpointSliceReachabilityReconciler{writeBack: r}); err != nil {
+		Complete(reconcile.Func(r.reconcileReachability)); err != nil {
 		return fmt.Errorf("unable to watch edge reachability on the hub: %w", err)
+	}
+
+	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+		WatchesRawSource(source.Kind(
+			r.HubCluster.GetCache(),
+			&discoveryv1.EndpointSlice{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.copySource),
+		)).
+		Named("vpcendpointslice_writeback_copies").
+		Complete(reconcile.Func(r.reconcileCopy)); err != nil {
+		return fmt.Errorf("unable to watch published vpc endpointslices on the hub: %w", err)
 	}
 
 	return mcbuilder.ControllerManagedBy(mgr).

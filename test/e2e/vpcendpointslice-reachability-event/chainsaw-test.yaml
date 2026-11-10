@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A cell carries a VPC pod's EndpointSlice to the hub only once the control
+# plane's reachability record says a proxy sends traffic to it. Putting a pod
+# behind a proxy changes that record on the hub and nothing on the cell, so the
+# cell has to act on the record's own change. Every deadline here is well under
+# a minute, so a cell that only noticed on a periodic pass fails.
+#
+# The scenario owns its namespace on both planes and writes the reachability
+# record itself, so no control-plane reconcile can rewrite it mid-test.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vpcendpointslice-reachability-event
+spec:
+  cluster: nso-standard
+  steps:
+    - name: A slice nothing serves stays on the cell
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: vpc-reachability-e2e
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: cluster-project-alpha
+                  meta.datumapis.com/upstream-namespace: default
+        - apply:
+            cluster: nso-hub
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: vpc-reachability-e2e
+        - apply:
+            cluster: nso-hub
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: EdgeReachability
+              metadata:
+                name: default
+                namespace: vpc-reachability-e2e
+              spec:
+                addresses:
+                  - fd20:0:e2e::99
+        - apply:
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: reachability-pod
+                namespace: vpc-reachability-e2e
+                labels:
+                  galactic.datum.net/tenant-id: e2ereach-a1
+                annotations:
+                  galactic.datum.net/tenant-id: e2ereach-a1
+                  galactic.datum.net/srv6-sid: "2001:db8:e2e::"
+              addressType: IPv6
+              endpoints:
+                - addresses:
+                    - fd20:0:e2e::1
+                  conditions:
+                    ready: true
+        - sleep:
+            duration: 10s
+        - error:
+            cluster: nso-hub
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: vpc-us-central-1-reachability-pod
+                namespace: vpc-reachability-e2e
+      catch: &diagnose
+        - script:
+            content: |
+              kubectl -n vpc-reachability-e2e get endpointslice -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/component=cell-controller-manager --tail=100
+        - script:
+            cluster: nso-hub
+            content: |
+              kubectl -n vpc-reachability-e2e get endpointslice,edgereachability -o yaml
+
+    - name: Putting the pod behind a proxy publishes it within seconds
+      try:
+        - patch:
+            cluster: nso-hub
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: EdgeReachability
+              metadata:
+                name: default
+                namespace: vpc-reachability-e2e
+              spec:
+                addresses:
+                  - fd20:0:e2e::1
+                  - fd20:0:e2e::99
+        - assert:
+            cluster: nso-hub
+            timeout: 10s
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: vpc-us-central-1-reachability-pod
+                namespace: vpc-reachability-e2e
+                labels:
+                  networking.datumapis.com/location: us-central-1
+              addressType: IPv6
+              (endpoints[0].addresses[0]): fd20:0:e2e::1
+      catch: *diagnose
+
+    - name: A copy deleted on the hub comes back within seconds
+      try:
+        - delete:
+            cluster: nso-hub
+            ref:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              name: vpc-us-central-1-reachability-pod
+              namespace: vpc-reachability-e2e
+        - assert:
+            cluster: nso-hub
+            timeout: 10s
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: vpc-us-central-1-reachability-pod
+                namespace: vpc-reachability-e2e
+      catch: *diagnose
+
+    - name: Taking the pod out from behind the proxy withdraws it within seconds
+      try:
+        - patch:
+            cluster: nso-hub
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: EdgeReachability
+              metadata:
+                name: default
+                namespace: vpc-reachability-e2e
+              spec:
+                addresses:
+                  - fd20:0:e2e::99
+        - error:
+            cluster: nso-hub
+            timeout: 10s
+            resource:
+              apiVersion: discovery.k8s.io/v1
+              kind: EndpointSlice
+              metadata:
+                name: vpc-us-central-1-reachability-pod
+                namespace: vpc-reachability-e2e
+      catch: *diagnose

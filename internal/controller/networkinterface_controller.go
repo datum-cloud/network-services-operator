@@ -50,7 +50,14 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req mcreconc
 	logger.V(1).Info("reconciling network interface")
 	defer logger.V(1).Info("reconcile complete")
 
-	return ctrl.Result{}, r.reconcileInterface(ctx, cl.GetClient(), req.NamespacedName)
+	err = r.reconcileInterface(ctx, cl.GetClient(), req.NamespacedName)
+	if retryResult, expected := networkInterfaceClaimWriteRace(err); expected {
+		// The claim controller writes the same interface. Losing that race
+		// only means the cached copy was stale, so read it again.
+		logger.V(1).Info("resource changed while reconciling; retrying")
+		return retryResult, nil
+	}
+	return ctrl.Result{}, err
 }
 
 func (r *NetworkInterfaceReconciler) reconcileInterface(
@@ -66,6 +73,10 @@ func (r *NetworkInterfaceReconciler) reconcileInterface(
 	if iface.DeletionTimestamp.IsZero() {
 		if controllerutil.AddFinalizer(&iface, networkInterfaceFinalizer) {
 			if err := cl.Update(ctx, &iface); err != nil {
+				// Deleted since the cache last saw it: nothing left to guard.
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
 				return fmt.Errorf("failed adding finalizer: %w", err)
 			}
 		}

@@ -74,6 +74,9 @@ connection of its own, not 404. The test negotiates TLS for one site, asks for
 another, and expects 421, while each site still serves 200 on its own and an
 unknown hostname over plain HTTP still gets 404.
 
+### A late private-network record still reaches the edge
+When a workload runs in another location, the record that tells the edge which private network it lives in arrives after the proxy's route. The edge must bind the route to that network as soon as the record lands, not when something unrelated rebuilds it. The test holds the record back, then delivers it with nothing else changed, for a new proxy and again after an upgrade moves the backend to a new address, and requires the binding within 45 seconds each time. Without the fix the binding never appears and every request to the proxy fails.
+
 ## Running them
 
 The scenarios run against the production-fidelity environment:

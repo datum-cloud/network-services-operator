@@ -188,37 +188,8 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 						NodeID:     nodeID,
 					}
 
-				case backend.Instance != nil:
-					// The referenced EndpointSlice is expected in the same
-					// local (downstream) namespace this HTTPProxy replica
-					// lives in — galactic-cni (#854) publishes it directly
-					// into the edge cluster, same as this HTTPProxy replica
-					// itself, not into an upstream namespace.
-					var resolved tenantResolution
-					var endpointSlice discoveryv1.EndpointSlice
-					if lookupErr := cl.Get(ctx, client.ObjectKey{
-						Namespace: proxy.Namespace,
-						Name:      backend.Instance.Name,
-					}, &endpointSlice); lookupErr == nil {
-						resolved.tenantID = endpointSlice.Labels[VPCPodTenantIDLabel]
-					}
-
-					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
-					ruleTenants = append(ruleTenants, resolved)
-
-				case backend.NetworkService != nil:
-					// A networkService backend names no EndpointSlice, so
-					// its tenant is joined by member address instead. The
-					// slice the HTTPProxy controller synthesized for this
-					// backend is named for the proxy and the rule/backend
-					// position, which is what makes it addressable from the
-					// replica alone.
-					owner := client.ObjectKey{
-						Namespace: proxy.Namespace,
-						Name:      fmt.Sprintf("%s-%d-%d", proxy.Name, ruleIndex, backendIndex),
-					}
-
-					resolved := tenantForAddresses(addressesByOwner[owner], tenantByAddress)
+				case backend.Instance != nil, backend.NetworkService != nil:
+					resolved := backendTenant(ctx, cl, proxy, ruleIndex, backendIndex, tenantByAddress, addressesByOwner)
 					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
 					ruleTenants = append(ruleTenants, resolved)
 				}
@@ -234,6 +205,85 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 		}
 	}
 	return nil
+}
+
+func backendTenant(
+	ctx context.Context,
+	cl client.Client,
+	proxy *networkingv1alpha.HTTPProxy,
+	ruleIndex, backendIndex int,
+	tenantByAddress map[string]string,
+	addressesByOwner map[client.ObjectKey][]string,
+) tenantResolution {
+	backend := proxy.Spec.Rules[ruleIndex].Backends[backendIndex]
+	switch {
+	case backend.Instance != nil:
+		var endpointSlice discoveryv1.EndpointSlice
+		if err := cl.Get(ctx, client.ObjectKey{
+			Namespace: proxy.Namespace,
+			Name:      backend.Instance.Name,
+		}, &endpointSlice); err != nil {
+			return tenantResolution{}
+		}
+		return tenantResolution{tenantID: endpointSlice.Labels[VPCPodTenantIDLabel]}
+	case backend.NetworkService != nil:
+		return tenantForAddresses(addressesByOwner[NetworkServiceBackendSliceKey(proxy, ruleIndex, backendIndex)], tenantByAddress)
+	}
+	return tenantResolution{}
+}
+
+// NetworkServiceBackendSliceKey names the EndpointSlice the HTTPProxy
+// controller synthesizes for a networkService backend, as its edge copy
+// records it in UpstreamOwnerNameLabel.
+func NetworkServiceBackendSliceKey(proxy *networkingv1alpha.HTTPProxy, ruleIndex, backendIndex int) client.ObjectKey {
+	return client.ObjectKey{
+		Namespace: proxy.Namespace,
+		Name:      fmt.Sprintf("%s-%d-%d", proxy.Name, ruleIndex, backendIndex),
+	}
+}
+
+// VPCBackendTenants returns the tenant each VPC backend of proxy resolves to,
+// keyed by backend, exactly as BuildPolicyIndexFromClient resolves them. A
+// proxy with no VPC backend returns an empty map.
+func VPCBackendTenants(ctx context.Context, cl client.Client, proxy *networkingv1alpha.HTTPProxy) (map[VPCPodBackendKey]string, error) {
+	tenants := map[VPCPodBackendKey]string{}
+	if !HasVPCBackend(proxy) {
+		return tenants, nil
+	}
+
+	var sliceList discoveryv1.EndpointSliceList
+	if err := cl.List(ctx, &sliceList); err != nil {
+		return nil, fmt.Errorf("list EndpointSlices: %w", err)
+	}
+	tenantByAddress, addressesByOwner := endpointSliceAddressMaps(&sliceList)
+
+	for ruleIndex, rule := range proxy.Spec.Rules {
+		for backendIndex, backend := range rule.Backends {
+			if backend.Instance == nil && backend.NetworkService == nil {
+				continue
+			}
+			key := VPCPodBackendKey{
+				Namespace:     proxy.Namespace,
+				HTTPProxyName: proxy.Name,
+				RuleIndex:     ruleIndex,
+				BackendIndex:  backendIndex,
+			}
+			tenants[key] = backendTenant(ctx, cl, proxy, ruleIndex, backendIndex, tenantByAddress, addressesByOwner).tenantID
+		}
+	}
+	return tenants, nil
+}
+
+// HasVPCBackend reports whether any backend of proxy reaches a VPC workload.
+func HasVPCBackend(proxy *networkingv1alpha.HTTPProxy) bool {
+	for _, rule := range proxy.Spec.Rules {
+		for _, backend := range rule.Backends {
+			if backend.Instance != nil || backend.NetworkService != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // endpointSliceAddressMaps builds the two lookups a networkService backend's

@@ -57,7 +57,7 @@ rules:
       - patch
   # The edge re-translation controller patches a trigger annotation onto
   # Gateways to make Envoy Gateway re-translate when a Connector's liveness
-  # changes. The TPP Programmed report also caches Gateway and HTTPRoute
+  # or an HTTPProxy backend's VPC changes. The TPP Programmed report also caches Gateway and HTTPRoute
   # metadata, to remove a claim when its target no longer exists.
   - apiGroups:
       - gateway.networking.k8s.io

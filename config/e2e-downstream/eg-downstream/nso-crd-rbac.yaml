@@ -13,6 +13,7 @@ rules:
       - networking.datumapis.com
     resources:
       - trafficprotectionpolicies
+      - httpproxyvpcbindings
       - connectors
     verbs:
       - get

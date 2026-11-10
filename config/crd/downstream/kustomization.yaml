@@ -5,7 +5,8 @@
 #
 # Gateway data plane: the GatewayResourceReplicator mirrors
 # TrafficProtectionPolicy, HTTPProxy and Connector downstream, and the
-# extension server's cache reads them locally.
+# extension server's cache reads them locally. The extension server writes
+# HTTPProxyVPCBinding on the edge itself, for Envoy Gateway to watch.
 #
 # Edge reachability: the control plane records, on the hub, which of a project's
 # workload addresses are behind a proxy, and the cells publishing into that
@@ -35,6 +36,7 @@ resources:
   - ../bases/networking.datumapis.com_edgereachabilities.yaml
   - ../bases/networking.datumapis.com_trafficprotectionpolicies.yaml
   - ../bases/networking.datumapis.com_httpproxies.yaml
+  - ../bases/networking.datumapis.com_httpproxyvpcbindings.yaml
   - ../bases/networking.datumapis.com_connectors.yaml
 
   # Network presence: hub stores bindings and mirrored contexts, cells receive

@@ -37,6 +37,9 @@ helmCharts:
               - group: networking.datumapis.com
                 version: v1alpha
                 kind: TrafficProtectionPolicy
+              - group: networking.datumapis.com
+                version: v1alpha
+                kind: HTTPProxyVPCBinding
             resources:
               - group: networking.datumapis.com
                 version: v1alpha1

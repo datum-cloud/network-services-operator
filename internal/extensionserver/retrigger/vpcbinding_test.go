@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -81,29 +82,66 @@ func reconcileBinding(t *testing.T, cl client.Client) {
 	require.NoError(t, err)
 }
 
-func gatewayBinding(t *testing.T, cl client.Client) string {
+func readBinding(t *testing.T, cl client.Client) *networkingv1alpha.HTTPProxyVPCBinding {
 	t.Helper()
-	var gw gatewayv1.Gateway
-	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testProxy}, &gw))
-	return gw.Annotations[VPCBindingAnnotationKey]
+	var binding networkingv1alpha.HTTPProxyVPCBinding
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testProxy}, &binding))
+	return &binding
 }
 
-func TestVPCBinding_LateTenantSliceChangesGatewayAnnotation(t *testing.T) {
+func TestVPCBinding_LateTenantSliceUpdatesBinding(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
 		WithObjects(networkServiceProxy(testProxy), gateway(), backendCopy(testProxy, testMember)).
 		Build()
 
 	reconcileBinding(t, cl)
-	unbound := gatewayBinding(t, cl)
-	require.NotEmpty(t, unbound)
+	unbound := readBinding(t, cl)
+	require.Len(t, unbound.Spec.TargetRefs, 1)
+	assert.Equal(t, gatewayv1.LocalPolicyTargetReference{
+		Group: gatewayv1.GroupName, Kind: "Gateway", Name: testProxy,
+	}, unbound.Spec.TargetRefs[0].LocalPolicyTargetReference)
+	assert.Equal(t, []networkingv1alpha.HTTPProxyVPCBindingBackend{{Rule: 0, Backend: 0}}, unbound.Spec.Backends)
+	require.Len(t, unbound.OwnerReferences, 1)
+	assert.Equal(t, testProxy, unbound.OwnerReferences[0].Name)
 
 	require.NoError(t, cl.Create(context.Background(), tenantSlice("vpc-us-east-1-pod", "fd00:0::10")))
 	reconcileBinding(t, cl)
-	bound := gatewayBinding(t, cl)
-	assert.NotEqual(t, unbound, bound)
+	bound := readBinding(t, cl)
+	assert.Equal(t, []networkingv1alpha.HTTPProxyVPCBindingBackend{{Rule: 0, Backend: 0, TenantID: testTenant}}, bound.Spec.Backends)
 
 	reconcileBinding(t, cl)
-	assert.Equal(t, bound, gatewayBinding(t, cl))
+	assert.Equal(t, bound.ResourceVersion, readBinding(t, cl).ResourceVersion)
+}
+
+func TestVPCBinding_ProxyLosingVPCBackendDeletesBinding(t *testing.T) {
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
+		WithObjects(networkServiceProxy(testProxy), gateway()).
+		Build()
+	reconcileBinding(t, cl)
+	readBinding(t, cl)
+
+	var proxy networkingv1alpha.HTTPProxy
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testProxy}, &proxy))
+	proxy.Spec = proxyRefersConnector().Spec
+	require.NoError(t, cl.Update(context.Background(), &proxy))
+	reconcileBinding(t, cl)
+
+	var binding networkingv1alpha.HTTPProxyVPCBinding
+	err := cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testProxy}, &binding)
+	assert.True(t, apierrors.IsNotFound(err))
+}
+
+func TestVPCBinding_RemovesLegacyGatewayAnnotation(t *testing.T) {
+	gw := gateway()
+	gw.Annotations = map[string]string{legacyVPCBindingAnnotationKey: "abc", "keep": "me"}
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
+		WithObjects(networkServiceProxy(testProxy), gw).
+		Build()
+	reconcileBinding(t, cl)
+
+	var got gatewayv1.Gateway
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testProxy}, &got))
+	assert.Equal(t, map[string]string{"keep": "me"}, got.Annotations)
 }
 
 func TestVPCBinding_InstanceBackendResolvesFromNamedSlice(t *testing.T) {
@@ -159,10 +197,11 @@ func TestVPCBinding_ProxyWithoutVPCBackendIgnored(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
 		WithObjects(proxyRefersConnector(), gateway()).
 		Build()
-
-	assert.False(t, vpcBackendPredicate().Create(event.CreateEvent{Object: proxyRefersConnector()}))
 	reconcileBinding(t, cl)
-	assert.Empty(t, gatewayBinding(t, cl))
+
+	var bindings networkingv1alpha.HTTPProxyVPCBindingList
+	require.NoError(t, cl.List(context.Background(), &bindings))
+	assert.Empty(t, bindings.Items)
 }
 
 func TestVPCBinding_NoGateway_NoError(t *testing.T) {

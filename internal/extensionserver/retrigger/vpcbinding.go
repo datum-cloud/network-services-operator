@@ -3,41 +3,45 @@
 package retrigger
 
 import (
+	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"slices"
-	"strings"
 
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
 
-// VPCBindingAnnotationKey is patched onto a Gateway to make Envoy Gateway
-// re-translate when the VPC an HTTPProxy's backends resolve to changes.
-const VPCBindingAnnotationKey = "networking.datumapis.com/vpc-binding-generation"
+// legacyVPCBindingAnnotationKey is the Gateway annotation an earlier version
+// stamped. Envoy Gateway never read it, so it is only removed.
+const legacyVPCBindingAnnotationKey = "networking.datumapis.com/vpc-binding-generation"
 
-// VPCBindingReconciler stamps each HTTPProxy's Gateway with the VPC its
-// backends resolve to on this edge.
+// VPCBindingReconciler records, in an HTTPProxyVPCBinding next to each
+// HTTPProxy, the VPC each of its backends resolves to on this edge.
 //
-// Envoy Gateway ignores the tenant-labelled EndpointSlices the VPC binding is
-// resolved from, because they name no Service. A slice that reaches the edge
-// after the route was translated would otherwise leave the route unbound
-// until an unrelated change re-translated it.
+// Envoy Gateway watches HTTPProxyVPCBinding as an extension policy, so a
+// change re-runs translation and the extension hook. It ignores the
+// tenant-labelled EndpointSlices the VPC is resolved from, because they name
+// no Service, so a slice that reaches the edge after the route was translated
+// would otherwise leave the route unbound until an unrelated change.
 type VPCBindingReconciler struct {
 	Client client.Client
 }
@@ -47,8 +51,16 @@ func (r *VPCBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.Client.Get(ctx, req.NamespacedName, &proxy); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	if err := r.removeLegacyAnnotation(ctx, req.NamespacedName); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	binding := &networkingv1alpha.HTTPProxyVPCBinding{
+		ObjectMeta: metav1.ObjectMeta{Namespace: proxy.Namespace, Name: proxy.Name},
+	}
 	if !extcache.HasVPCBackend(&proxy) {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, client.IgnoreNotFound(r.Client.Delete(ctx, binding))
 	}
 
 	tenants, err := extcache.VPCBackendTenants(ctx, r.Client, &proxy)
@@ -56,33 +68,64 @@ func (r *VPCBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	value := vpcBindingValue(tenants)
-	if err := touchGatewayAnnotation(ctx, r.Client, req.NamespacedName, VPCBindingAnnotationKey, value); err != nil {
-		return ctrl.Result{}, fmt.Errorf("touch gateway %s: %w", req.NamespacedName, err)
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, binding, func() error {
+		binding.Spec = vpcBindingSpec(&proxy, tenants)
+		return controllerutil.SetControllerReference(&proxy, binding, r.Client.Scheme())
+	})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("write vpc binding %s: %w", req.NamespacedName, err)
 	}
-	log.FromContext(ctx).V(1).Info("stamped gateway with vpc binding", "gateway", req.NamespacedName, "binding", value)
+	if result != controllerutil.OperationResultNone {
+		log.FromContext(ctx).V(1).Info("wrote vpc binding", "binding", req.NamespacedName, "result", result)
+	}
 	return ctrl.Result{}, nil
 }
 
-func vpcBindingValue(tenants map[extcache.VPCPodBackendKey]string) string {
-	entries := make([]string, 0, len(tenants))
-	for key, tenant := range tenants {
-		entries = append(entries, fmt.Sprintf("%d/%d=%s", key.RuleIndex, key.BackendIndex, tenant))
+func (r *VPCBindingReconciler) removeLegacyAnnotation(ctx context.Context, key client.ObjectKey) error {
+	gw := extcache.GatewayMetadata()
+	if err := r.Client.Get(ctx, key, gw); err != nil {
+		return client.IgnoreNotFound(err)
 	}
-	slices.Sort(entries)
-	sum := sha256.Sum256([]byte(strings.Join(entries, ",")))
-	return hex.EncodeToString(sum[:])[:16]
+	if _, ok := gw.Annotations[legacyVPCBindingAnnotationKey]; !ok {
+		return nil
+	}
+	body := fmt.Appendf(nil, `{"metadata":{"annotations":{%q:null}}}`, legacyVPCBindingAnnotationKey)
+	return client.IgnoreNotFound(r.Client.Patch(ctx, gw, client.RawPatch(types.MergePatchType, body)))
+}
+
+func vpcBindingSpec(proxy *networkingv1alpha.HTTPProxy, tenants map[extcache.VPCPodBackendKey]string) networkingv1alpha.HTTPProxyVPCBindingSpec {
+	spec := networkingv1alpha.HTTPProxyVPCBindingSpec{
+		TargetRefs: []gatewayv1alpha2.LocalPolicyTargetReferenceWithSectionName{{
+			LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+				Group: gatewayv1.GroupName,
+				Kind:  "Gateway",
+				Name:  gatewayv1.ObjectName(proxy.Name),
+			},
+		}},
+	}
+	for key, tenant := range tenants {
+		spec.Backends = append(spec.Backends, networkingv1alpha.HTTPProxyVPCBindingBackend{
+			Rule:     int32(key.RuleIndex),
+			Backend:  int32(key.BackendIndex),
+			TenantID: tenant,
+		})
+	}
+	slices.SortFunc(spec.Backends, func(a, b networkingv1alpha.HTTPProxyVPCBindingBackend) int {
+		return cmp.Or(cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Backend, b.Backend))
+	})
+	return spec
 }
 
 func (r *VPCBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha.HTTPProxy{}, builder.WithPredicates(vpcBackendPredicate())).
+		For(&networkingv1alpha.HTTPProxy{}).
+		Owns(&networkingv1alpha.HTTPProxyVPCBinding{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
 			&discoveryv1.EndpointSlice{},
 			handler.EnqueueRequestsFromMapFunc(r.proxiesForEndpointSlice),
 			builder.WithPredicates(endpointSlicePredicate()),
 		).
-		Named("extension-server-vpc-binding-retrigger").
+		Named("extension-server-vpc-binding").
 		Complete(r)
 }
 
@@ -197,11 +240,4 @@ func endpointSlicePredicate() predicate.Predicate {
 			return vpcBindingInputChanged(oldSlice, newSlice)
 		},
 	}
-}
-
-func vpcBackendPredicate() predicate.Predicate {
-	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		proxy, ok := obj.(*networkingv1alpha.HTTPProxy)
-		return ok && extcache.HasVPCBackend(proxy)
-	})
 }

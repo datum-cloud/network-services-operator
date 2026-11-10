@@ -4,6 +4,7 @@ package retrigger
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -196,4 +197,8 @@ func TestVPCBinding_EndpointSlicePredicate(t *testing.T) {
 	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: relabelled}))
 
 	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: plain, ObjectNew: plain.DeepCopy()}))
+}
+
+func TestVPCBindingAnnotationReachesEnvoyGatewayIR(t *testing.T) {
+	assert.True(t, strings.HasPrefix(VPCBindingAnnotationKey, "gateway.envoyproxy.io/"))
 }

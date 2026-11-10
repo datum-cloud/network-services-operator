@@ -10,7 +10,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/workqueue"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -288,4 +292,30 @@ func TestNoRecordIsWrittenWithoutAHubNamespace(t *testing.T) {
 		Name:      networkingv1alpha.EdgeReachabilityName,
 	}, &record)
 	require.Error(t, err)
+}
+
+// A record cannot be written before its hub namespace exists, so the namespace
+// being made on the hub is what has to bring the record back.
+func TestAHubNamespaceAppearingRecordsItsProject(t *testing.T) {
+	namespace := &corev1.Namespace{}
+	namespace.Name = "ns-0b6f"
+	namespace.Labels = map[string]string{
+		"meta.datumapis.com/upstream-cluster-name": "cluster-_project-alpha",
+		"meta.datumapis.com/upstream-namespace":    "default",
+	}
+
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[mcreconcile.Request]())
+	defer queue.ShutDown()
+	enqueueEdgeReachabilityForHubNamespace("", nil).Create(context.Background(),
+		event.TypedCreateEvent[*corev1.Namespace]{Object: namespace}, queue)
+
+	require.Equal(t, 1, queue.Len())
+	got, _ := queue.Get()
+	require.Equal(t, mcreconcile.Request{
+		ClusterName: "project-alpha",
+		Request: ctrl.Request{NamespacedName: client.ObjectKey{
+			Namespace: "default",
+			Name:      networkingv1alpha.EdgeReachabilityName,
+		}},
+	}, got)
 }

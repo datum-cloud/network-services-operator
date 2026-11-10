@@ -18,16 +18,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
+	"go.miloapis.com/locations/pkg/locationidentity"
+
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
-	"go.miloapis.com/locations/pkg/locationidentity"
 )
 
 const (
@@ -50,19 +55,13 @@ const (
 	karmadaManagedLabel = "karmada.io/managed"
 )
 
-// vpcEndpointSliceSweepInterval paces the collection of copies whose source
-// went while the cell could not see the hub. Nothing replays a deletion.
-const vpcEndpointSliceSweepInterval = 10 * time.Minute
+// vpcEndpointSliceSweepRetryLimit caps the wait between attempts at the
+// startup sweep while the hub or the cell cannot yet be read.
+const vpcEndpointSliceSweepRetryLimit = time.Minute
 
 // vpcEndpointSliceFieldManager owns the fields the write-back sets on a copy,
 // and no others.
 const vpcEndpointSliceFieldManager = "network-services-operator/vpc-endpointslice-writeback"
-
-// vpcEndpointSliceResyncInterval paces the pass that acts on a change only the
-// hub saw. A pod put behind a proxy, or taken out from behind one, moves a
-// record on the hub and nothing in the cell. Without a pass of its own, a pod
-// would wait for an unrelated local event before the edge could reach it.
-const vpcEndpointSliceResyncInterval = time.Minute
 
 // VPCEndpointSliceWriteBackReconciler publishes the per-pod EndpointSlices
 // galactic-cni writes in a cell to the federation hub, so the propagation
@@ -181,7 +180,9 @@ func (r *VPCEndpointSliceWriteBackReconciler) publish(
 
 	if err := writeFederatedEndpointSlice(ctx, hub, desired); err != nil {
 		// The hub namespace is made by the federation that carries a
-		// project's work to this cell. Nothing here should invent one.
+		// project's work to this cell, and the cell's own namespace is
+		// propagated from it, so a missing one is a project being torn down.
+		// Nothing here should invent one.
 		if apierrors.IsNotFound(err) {
 			logger.Info("the hub has no namespace to publish this vpc endpointslice into yet",
 				"namespace", slice.Namespace)
@@ -433,14 +434,19 @@ func (r *VPCEndpointSliceWriteBackReconciler) sweep(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// resync republishes every vpc slice the cell holds, so a reachability record
-// that has changed on the hub is acted on without waiting for the pod to change.
-// publish decides both directions, so this both restores a copy that was
-// withheld and removes one that is no longer served.
-func (r *VPCEndpointSliceWriteBackReconciler) resync(ctx context.Context) error {
+// republishNamespace republishes every vpc slice the cell holds in a
+// namespace, so a reachability record that changed on the hub is acted on
+// without waiting for the pod to change. A pod put behind a proxy, or taken out
+// from behind one, moves the record and nothing in the cell. publish decides
+// both directions, so this both restores a copy that was withheld and removes
+// one that is no longer served.
+func (r *VPCEndpointSliceWriteBackReconciler) republishNamespace(ctx context.Context, namespace string) error {
 	var held discoveryv1.EndpointSliceList
-	if err := r.localReader.List(ctx, &held, client.HasLabels{VPCPodTenantIDLabel}); err != nil {
-		return fmt.Errorf("failed listing vpc endpointslices: %w", err)
+	if err := r.localReader.List(ctx, &held,
+		client.InNamespace(namespace),
+		client.HasLabels{VPCPodTenantIDLabel},
+	); err != nil {
+		return fmt.Errorf("failed listing vpc endpointslices in %q: %w", namespace, err)
 	}
 
 	var errs []error
@@ -457,6 +463,9 @@ func (r *VPCEndpointSliceWriteBackReconciler) resync(ctx context.Context) error 
 	return errors.Join(errs...)
 }
 
+// location is the location this cell publishes as, or empty while it has none.
+// A ServingLocation being delivered is what publishes the slices held until
+// then.
 func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (string, error) {
 	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
 	if err != nil {
@@ -469,28 +478,93 @@ func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (str
 	return identity.Reference.Name, nil
 }
 
-// Start runs the sweep on a timer for as long as the manager runs.
+// Start sweeps once, when the process starts, retrying until it succeeds.
+//
+// A deletion is only missed while nothing is watching: a deletion seen while
+// the hub is unreachable stays queued and is retried until it lands. So the
+// only gap is a restart, and that is where the sweep runs.
 func (r *VPCEndpointSliceWriteBackReconciler) Start(ctx context.Context) error {
-	sweeps := time.NewTicker(vpcEndpointSliceSweepInterval)
-	defer sweeps.Stop()
-
-	resyncs := time.NewTicker(vpcEndpointSliceResyncInterval)
-	defer resyncs.Stop()
-
+	wait := time.Second
 	for {
+		err := r.sweep(ctx)
+		if err == nil {
+			return nil
+		}
+		log.FromContext(ctx).Error(err, "failed sweeping published vpc endpointslices", "retryIn", wait.String())
+
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-sweeps.C:
-			if err := r.sweep(ctx); err != nil {
-				log.FromContext(ctx).Error(err, "failed sweeping published vpc endpointslices")
-			}
-		case <-resyncs.C:
-			if err := r.resync(ctx); err != nil {
-				log.FromContext(ctx).Error(err, "failed resyncing published vpc endpointslices")
-			}
+		case <-time.After(wait):
 		}
+		wait = min(2*wait, vpcEndpointSliceSweepRetryLimit)
 	}
+}
+
+// edgeReachabilityNamespace maps a reachability record on the hub to the
+// namespace whose slices it decides.
+func edgeReachabilityNamespace(_ context.Context, record *networkingv1alpha.EdgeReachability) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: record.Namespace}}}
+}
+
+// everyNamespace maps an object to one request that stands for every namespace.
+func everyNamespace[T client.Object](context.Context, T) []reconcile.Request {
+	return []reconcile.Request{{}}
+}
+
+// reconcileLocation republishes everything, and collects what has nothing
+// behind it, once the location the cell publishes as is known or changes.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileLocation(ctx context.Context, _ reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, errors.Join(r.republishNamespace(ctx, ""), r.sweep(ctx))
+}
+
+// servesKind reports whether the cluster a manager reads serves a kind. A
+// watch on a kind that is not served never syncs, and holds the manager with it.
+func servesKind(mgr ctrl.Manager, obj client.Object) (bool, error) {
+	gvk, err := mgr.GetClient().GroupVersionKindFor(obj)
+	if err != nil {
+		return false, err
+	}
+	if _, err := mgr.GetRESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+		if locationsNotServed(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed checking whether %s is served: %w", gvk.Kind, err)
+	}
+	return true, nil
+}
+
+// reconcileNamespace republishes a namespace's slices when its reachability
+// record on the hub changes. An empty name stands for every namespace.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileNamespace(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, r.republishNamespace(ctx, req.Name)
+}
+
+// copySource maps a copy this cell published to the slice it came from, so a
+// copy deleted or edited on the hub is put back as the cell says it should be.
+func (r *VPCEndpointSliceWriteBackReconciler) copySource(ctx context.Context, copied *discoveryv1.EndpointSlice) []reconcile.Request {
+	if copied.Labels[VPCEndpointSliceProjectionLabel] != "true" {
+		return nil
+	}
+	source := copied.Annotations[VPCEndpointSliceSourceNameAnnotation]
+	if source == "" {
+		return nil
+	}
+	location, err := r.location(ctx)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed resolving the location of a changed vpc endpointslice copy",
+			"namespace", copied.Namespace, jsonKeyName, copied.Name)
+		return nil
+	}
+	if location == "" || copied.Labels[networkingv1alpha.NetworkInterfaceLocationLabel] != location {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: copied.Namespace, Name: source}}}
+}
+
+// reconcileCopy republishes the slice behind a copy that changed on the hub.
+func (r *VPCEndpointSliceWriteBackReconciler) reconcileCopy(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, r.publish(ctx, r.localReader, req.NamespacedName)
 }
 
 // vpcPodEndpointSlicePredicate passes the slices this write-back carries. An
@@ -523,6 +597,45 @@ func (r *VPCEndpointSliceWriteBackReconciler) SetupWithManager(mgr mcmanager.Man
 
 	if err := mgr.GetLocalManager().Add(r); err != nil {
 		return fmt.Errorf("unable to add the vpc endpointslice sweep: %w", err)
+	}
+
+	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+		WatchesRawSource(source.Kind(
+			r.HubCluster.GetCache(),
+			&networkingv1alpha.EdgeReachability{},
+			handler.TypedEnqueueRequestsFromMapFunc(edgeReachabilityNamespace),
+		)).
+		Named("vpcendpointslice_writeback_reachability").
+		Complete(reconcile.Func(r.reconcileNamespace)); err != nil {
+		return fmt.Errorf("unable to watch edge reachability on the hub: %w", err)
+	}
+
+	servingLocations, err := servesKind(mgr.GetLocalManager(), &locationsv1alpha1.ServingLocation{})
+	if err != nil {
+		return err
+	}
+	if servingLocations {
+		if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+			WatchesRawSource(source.Kind(
+				mgr.GetLocalManager().GetCache(),
+				&locationsv1alpha1.ServingLocation{},
+				handler.TypedEnqueueRequestsFromMapFunc(everyNamespace[*locationsv1alpha1.ServingLocation]),
+			)).
+			Named("vpcendpointslice_writeback_location").
+			Complete(reconcile.Func(r.reconcileLocation)); err != nil {
+			return fmt.Errorf("unable to watch this cell's serving location: %w", err)
+		}
+	}
+
+	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+		WatchesRawSource(source.Kind(
+			r.HubCluster.GetCache(),
+			&discoveryv1.EndpointSlice{},
+			handler.TypedEnqueueRequestsFromMapFunc(r.copySource),
+		)).
+		Named("vpcendpointslice_writeback_copies").
+		Complete(reconcile.Func(r.reconcileCopy)); err != nil {
+		return fmt.Errorf("unable to watch published vpc endpointslices on the hub: %w", err)
 	}
 
 	return mcbuilder.ControllerManagedBy(mgr).

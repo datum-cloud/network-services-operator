@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -481,9 +482,9 @@ func TestACopyIsCollectedWhenItStopsServingAProxy(t *testing.T) {
 	require.False(t, found, "a copy nothing serves is collected")
 }
 
-// Nothing in a cell watches the hub, so a pod put behind a proxy has no local
-// event to act on. The resync is the only thing that brings it back.
-func TestTheResyncPublishesASliceThatHasJustBeenPutBehindAProxy(t *testing.T) {
+// A pod put behind a proxy changes the hub's reachability record and nothing in
+// the cell. The record's own change is what brings the slice back.
+func TestAReachabilityChangePublishesASliceThatHasJustBeenPutBehindAProxy(t *testing.T) {
 	r := newReachability(t)
 	r.sliceOnCell()
 	r.recordEdgeReachability()
@@ -500,10 +501,15 @@ func TestTheResyncPublishesASliceThatHasJustBeenPutBehindAProxy(t *testing.T) {
 	record.Spec.Addresses = []string{liveAddress}
 	require.NoError(t, r.hub.Update(r.ctx, &record))
 
-	require.NoError(t, r.writeBack.resync(r.ctx))
+	requests := edgeReachabilityNamespace(r.ctx, &record)
+	require.Equal(t, []reconcile.Request{{NamespacedName: client.ObjectKey{Name: r.namespace}}}, requests)
+
+	reachability := &vpcEndpointSliceReachabilityReconciler{writeBack: r.writeBack}
+	_, err := reachability.Reconcile(r.ctx, requests[0])
+	require.NoError(t, err)
 
 	_, found = r.hubCopy()
-	require.True(t, found, "the resync is what acts on a change only the hub saw")
+	require.True(t, found, "the record's change is what acts on a change only the hub saw")
 }
 
 // hubClaimLabel is the label Karmada writes onto every object its propagation
@@ -512,7 +518,7 @@ const hubClaimLabel = "clusterpropagationpolicy.karmada.io/permanent-id"
 
 // The hub claims a copy by writing its own label onto it. A publish must leave
 // that label alone: removing it makes the hub write it back, so the copy would
-// change twice on every resync while its source does not change at all.
+// change twice on every republish while its source does not change at all.
 func TestTheHubsClaimOnACopySurvivesThePublish(t *testing.T) {
 	r := newReachability(t)
 	r.sliceOnCell()

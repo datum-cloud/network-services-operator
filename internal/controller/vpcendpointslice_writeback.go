@@ -18,8 +18,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -50,19 +53,13 @@ const (
 	karmadaManagedLabel = "karmada.io/managed"
 )
 
-// vpcEndpointSliceSweepInterval paces the collection of copies whose source
-// went while the cell could not see the hub. Nothing replays a deletion.
-const vpcEndpointSliceSweepInterval = 10 * time.Minute
+// vpcEndpointSliceSweepRetryLimit caps the wait between attempts at the
+// startup sweep while the hub or the cell cannot yet be read.
+const vpcEndpointSliceSweepRetryLimit = time.Minute
 
 // vpcEndpointSliceFieldManager owns the fields the write-back sets on a copy,
 // and no others.
 const vpcEndpointSliceFieldManager = "network-services-operator/vpc-endpointslice-writeback"
-
-// vpcEndpointSliceResyncInterval paces the pass that acts on a change only the
-// hub saw. A pod put behind a proxy, or taken out from behind one, moves a
-// record on the hub and nothing in the cell. Without a pass of its own, a pod
-// would wait for an unrelated local event before the edge could reach it.
-const vpcEndpointSliceResyncInterval = time.Minute
 
 // VPCEndpointSliceWriteBackReconciler publishes the per-pod EndpointSlices
 // galactic-cni writes in a cell to the federation hub, so the propagation
@@ -433,14 +430,19 @@ func (r *VPCEndpointSliceWriteBackReconciler) sweep(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// resync republishes every vpc slice the cell holds, so a reachability record
-// that has changed on the hub is acted on without waiting for the pod to change.
-// publish decides both directions, so this both restores a copy that was
-// withheld and removes one that is no longer served.
-func (r *VPCEndpointSliceWriteBackReconciler) resync(ctx context.Context) error {
+// republishNamespace republishes every vpc slice the cell holds in a
+// namespace, so a reachability record that changed on the hub is acted on
+// without waiting for the pod to change. A pod put behind a proxy, or taken out
+// from behind one, moves the record and nothing in the cell. publish decides
+// both directions, so this both restores a copy that was withheld and removes
+// one that is no longer served.
+func (r *VPCEndpointSliceWriteBackReconciler) republishNamespace(ctx context.Context, namespace string) error {
 	var held discoveryv1.EndpointSliceList
-	if err := r.localReader.List(ctx, &held, client.HasLabels{VPCPodTenantIDLabel}); err != nil {
-		return fmt.Errorf("failed listing vpc endpointslices: %w", err)
+	if err := r.localReader.List(ctx, &held,
+		client.InNamespace(namespace),
+		client.HasLabels{VPCPodTenantIDLabel},
+	); err != nil {
+		return fmt.Errorf("failed listing vpc endpointslices in %q: %w", namespace, err)
 	}
 
 	var errs []error
@@ -469,28 +471,43 @@ func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (str
 	return identity.Reference.Name, nil
 }
 
-// Start runs the sweep on a timer for as long as the manager runs.
+// Start sweeps once, when the process starts, retrying until it succeeds.
+//
+// A deletion is only missed while nothing is watching: a deletion seen while
+// the hub is unreachable stays queued and is retried until it lands. So the
+// only gap is a restart, and that is where the sweep runs.
 func (r *VPCEndpointSliceWriteBackReconciler) Start(ctx context.Context) error {
-	sweeps := time.NewTicker(vpcEndpointSliceSweepInterval)
-	defer sweeps.Stop()
-
-	resyncs := time.NewTicker(vpcEndpointSliceResyncInterval)
-	defer resyncs.Stop()
-
+	wait := time.Second
 	for {
+		err := r.sweep(ctx)
+		if err == nil {
+			return nil
+		}
+		log.FromContext(ctx).Error(err, "failed sweeping published vpc endpointslices", "retryIn", wait.String())
+
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-sweeps.C:
-			if err := r.sweep(ctx); err != nil {
-				log.FromContext(ctx).Error(err, "failed sweeping published vpc endpointslices")
-			}
-		case <-resyncs.C:
-			if err := r.resync(ctx); err != nil {
-				log.FromContext(ctx).Error(err, "failed resyncing published vpc endpointslices")
-			}
+		case <-time.After(wait):
 		}
+		wait = min(2*wait, vpcEndpointSliceSweepRetryLimit)
 	}
+}
+
+// edgeReachabilityNamespace maps a reachability record on the hub to the
+// namespace whose slices it decides.
+func edgeReachabilityNamespace(_ context.Context, record *networkingv1alpha.EdgeReachability) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: record.Namespace}}}
+}
+
+// vpcEndpointSliceReachabilityReconciler republishes a namespace's slices when
+// the hub's reachability record for it changes.
+type vpcEndpointSliceReachabilityReconciler struct {
+	writeBack *VPCEndpointSliceWriteBackReconciler
+}
+
+func (r *vpcEndpointSliceReachabilityReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
+	return ctrl.Result{}, r.writeBack.republishNamespace(ctx, req.Name)
 }
 
 // vpcPodEndpointSlicePredicate passes the slices this write-back carries. An
@@ -523,6 +540,17 @@ func (r *VPCEndpointSliceWriteBackReconciler) SetupWithManager(mgr mcmanager.Man
 
 	if err := mgr.GetLocalManager().Add(r); err != nil {
 		return fmt.Errorf("unable to add the vpc endpointslice sweep: %w", err)
+	}
+
+	if err := ctrl.NewControllerManagedBy(mgr.GetLocalManager()).
+		WatchesRawSource(source.Kind(
+			r.HubCluster.GetCache(),
+			&networkingv1alpha.EdgeReachability{},
+			handler.TypedEnqueueRequestsFromMapFunc(edgeReachabilityNamespace),
+		)).
+		Named("vpcendpointslice_writeback_reachability").
+		Complete(&vpcEndpointSliceReachabilityReconciler{writeBack: r}); err != nil {
+		return fmt.Errorf("unable to watch edge reachability on the hub: %w", err)
 	}
 
 	return mcbuilder.ControllerManagedBy(mgr).

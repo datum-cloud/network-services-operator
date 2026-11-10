@@ -60,54 +60,50 @@ func backendCopy(proxy string, addresses ...string) *discoveryv1.EndpointSlice {
 	}
 }
 
-func tenantSlice(name, tenant string, addresses ...string) *discoveryv1.EndpointSlice {
+func tenantSlice(name string, addresses ...string) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "galactic-system",
-			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenant},
+			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: testTenant},
 		},
 		AddressType: discoveryv1.AddressTypeIPv6,
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: addresses}},
 	}
 }
 
-func gatewayNamed(name string) *gatewayv1.Gateway {
-	return &gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}}
-}
-
-func reconcileBinding(t *testing.T, cl client.Client, proxy string) {
+func reconcileBinding(t *testing.T, cl client.Client) {
 	t.Helper()
 	r := &VPCBindingReconciler{Client: cl}
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: client.ObjectKey{Namespace: testNS, Name: proxy},
+		NamespacedName: client.ObjectKey{Namespace: testNS, Name: testProxy},
 	})
 	require.NoError(t, err)
 }
 
-func gatewayBinding(t *testing.T, cl client.Client, name string) string {
+func gatewayBinding(t *testing.T, cl client.Client) string {
 	t.Helper()
 	var gw gatewayv1.Gateway
-	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: name}, &gw))
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Namespace: testNS, Name: testProxy}, &gw))
 	return gw.Annotations[VPCBindingAnnotationKey]
 }
 
 func TestVPCBinding_LateTenantSliceChangesGatewayAnnotation(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
-		WithObjects(networkServiceProxy(testProxy), gatewayNamed(testProxy), backendCopy(testProxy, testMember)).
+		WithObjects(networkServiceProxy(testProxy), gateway(), backendCopy(testProxy, testMember)).
 		Build()
 
-	reconcileBinding(t, cl, testProxy)
-	unbound := gatewayBinding(t, cl, testProxy)
+	reconcileBinding(t, cl)
+	unbound := gatewayBinding(t, cl)
 	require.NotEmpty(t, unbound)
 
-	require.NoError(t, cl.Create(context.Background(), tenantSlice("vpc-us-east-1-pod", testTenant, "fd00:0::10")))
-	reconcileBinding(t, cl, testProxy)
-	bound := gatewayBinding(t, cl, testProxy)
+	require.NoError(t, cl.Create(context.Background(), tenantSlice("vpc-us-east-1-pod", "fd00:0::10")))
+	reconcileBinding(t, cl)
+	bound := gatewayBinding(t, cl)
 	assert.NotEqual(t, unbound, bound)
 
-	reconcileBinding(t, cl, testProxy)
-	assert.Equal(t, bound, gatewayBinding(t, cl, testProxy))
+	reconcileBinding(t, cl)
+	assert.Equal(t, bound, gatewayBinding(t, cl))
 }
 
 func TestVPCBinding_InstanceBackendResolvesFromNamedSlice(t *testing.T) {
@@ -121,7 +117,7 @@ func TestVPCBinding_InstanceBackendResolvesFromNamedSlice(t *testing.T) {
 			}},
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).WithObjects(proxy, gatewayNamed(testProxy)).Build()
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).WithObjects(proxy, gateway()).Build()
 
 	tenants, err := extcache.VPCBackendTenants(context.Background(), cl, proxy)
 	require.NoError(t, err)
@@ -129,7 +125,7 @@ func TestVPCBinding_InstanceBackendResolvesFromNamedSlice(t *testing.T) {
 		{Namespace: testNS, HTTPProxyName: testProxy}: "",
 	}, tenants)
 
-	slice := tenantSlice("pod-slice", testTenant, testMember)
+	slice := tenantSlice("pod-slice", testMember)
 	slice.Namespace = testNS
 	require.NoError(t, cl.Create(context.Background(), slice))
 	tenants, err = extcache.VPCBackendTenants(context.Background(), cl, proxy)
@@ -152,7 +148,7 @@ func TestVPCBinding_TenantSliceMapsOnlyToProxiesSharingAMember(t *testing.T) {
 		Build()
 
 	r := &VPCBindingReconciler{Client: cl}
-	requests := r.proxiesForEndpointSlice(context.Background(), tenantSlice("vpc-us-east-1-pod", testTenant, testMember))
+	requests := r.proxiesForEndpointSlice(context.Background(), tenantSlice("vpc-us-east-1-pod", testMember))
 	assert.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKey{Namespace: testNS, Name: testProxy}}}, requests)
 
 	requests = r.proxiesForEndpointSlice(context.Background(), backendCopy(testOtherProxy, "fd00::99"))
@@ -165,21 +161,21 @@ func TestVPCBinding_ProxyWithoutVPCBackendIgnored(t *testing.T) {
 		Build()
 
 	assert.False(t, vpcBackendPredicate().Create(event.CreateEvent{Object: proxyRefersConnector()}))
-	reconcileBinding(t, cl, testProxy)
-	assert.Empty(t, gatewayBinding(t, cl, testProxy))
+	reconcileBinding(t, cl)
+	assert.Empty(t, gatewayBinding(t, cl))
 }
 
 func TestVPCBinding_NoGateway_NoError(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
 		WithObjects(networkServiceProxy(testProxy)).
 		Build()
-	reconcileBinding(t, cl, testProxy)
+	reconcileBinding(t, cl)
 }
 
 func TestVPCBinding_EndpointSlicePredicate(t *testing.T) {
 	p := endpointSlicePredicate()
 	plain := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Name: "svc-abc", Namespace: testNS}}
-	tenant := tenantSlice("vpc-us-east-1-pod", testTenant, testMember)
+	tenant := tenantSlice("vpc-us-east-1-pod", testMember)
 
 	assert.False(t, p.Create(event.CreateEvent{Object: plain}))
 	assert.True(t, p.Create(event.CreateEvent{Object: tenant}))

@@ -33,6 +33,7 @@ var inScopeAPIFiles = []string{
 // file has to be argued into one list or the other.
 var outOfScopeAPIFiles = map[string]string{
 	"edgereachability_types.go":                 "hub-side record of which addresses an edge should reach; no customer-facing status",
+	"httpproxyvpcbinding_types.go":              "edge-only record of the VPC each proxy backend resolves to; no customer-facing status",
 	"groupversion_info.go":                      "scheme registration, no reasons",
 	"internaldns_types.go":                      "private resolver access is a network surface, not load balancer status",
 	"locationbinding_types.go":                  "placement plumbing behind a location, never named by a load balancer",

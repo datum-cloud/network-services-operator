@@ -33,6 +33,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"portrange_types.go":                        "shared interval value type, no status reasons",
 	"domain_types.go":                           "load balancer hostnames; the ALB agent's",
 	"edgereachability_types.go":                 "hub-side record with no customer-facing status",
+	"httpproxyvpcbinding_types.go":              "edge-only record with no customer-facing status",
 	"groupversion_info.go":                      "scheme registration, no reasons",
 	"httpproxy_types.go":                        "load balancers; the ALB agent's",
 	"internaldns_types.go":                      "internal DNS service configuration, no status reasons",

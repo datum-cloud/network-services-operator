@@ -29,7 +29,11 @@ import (
 
 // VPCBindingAnnotationKey is patched onto a Gateway to make Envoy Gateway
 // re-translate when the VPC an HTTPProxy's backends resolve to changes.
-const VPCBindingAnnotationKey = "networking.datumapis.com/vpc-binding-generation"
+//
+// Envoy Gateway copies only gateway.envoyproxy.io/ annotations into its
+// listener metadata. Any other annotation leaves the translated IR unchanged,
+// so the xDS translation and the extension hook never run.
+const VPCBindingAnnotationKey = "gateway.envoyproxy.io/datum-vpc-binding"
 
 // VPCBindingReconciler stamps each HTTPProxy's Gateway with the VPC its
 // backends resolve to on this edge.

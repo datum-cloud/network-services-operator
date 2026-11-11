@@ -47,9 +47,11 @@ func main() {
 	buildinfo.SetVersion(version)
 
 	var addr string
+	var tlsOpts mcpserver.TLSOptions
 
 	flag.StringVar(&addr, "addr", mcpserver.EnvOr("NETWORK_MCP_ADDR", ":8080"),
 		"address to serve MCP on")
+	tlsOpts.BindFlags(flag.CommandLine, "NETWORK_MCP")
 
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
@@ -75,7 +77,7 @@ func main() {
 	}
 
 	setupLog.Info("listening", "addr", addr, "mcp", "/mcp", "docs", docs.Paths())
-	err = mcpserver.Serve(addr,
+	err = mcpserver.Serve(ctrl.SetupSignalHandler(), addr, tlsOpts,
 		&mcp.Implementation{Name: serverName, Version: serverVersion}, docs,
 		func(s *mcp.Server, r *http.Request) { networkagent.RegisterTools(s, depsFromRequest(r, baseConfig)) })
 	if err != nil {

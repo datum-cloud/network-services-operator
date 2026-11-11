@@ -32,7 +32,7 @@ spec:
     sources:
     - type: LLMDocs
       title: Application Load Balancer model and how to read its status
-      url: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/llms-full.txt
+      url: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/llms-full.txt
     concepts:
     - gvk:
         group: networking.datumapis.com
@@ -53,7 +53,7 @@ spec:
   tools:
     mcpServers:
     - name: alb
-      endpoint: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/mcp
+      endpoint: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/mcp
       toolSelector:
         include:
         - alb_list
@@ -75,34 +75,34 @@ spec:
   skills:
   - name: alb-not-serving
     description: Triage an Application Load Balancer that is not working, from symptom to root cause and who has to act
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/alb-not-serving.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/alb-not-serving.md
   - name: hostname-not-working
     description: Work a hostname that does not reach a load balancer through claim, ownership, DNS record and certificate, in the order each gates the next
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/hostname-not-working.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/hostname-not-working.md
   - name: domain-verification
     description: 'Prove ownership of a domain: the exact record to create, and why RecordNotFound is usually not a typo'
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/domain-verification.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/domain-verification.md
   - name: dns-delegation
     description: Decide whether Datum answers DNS for a domain or the customer does, and handle DNSAuthorityMissing and nameserver mismatches
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/dns-delegation.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/dns-delegation.md
   - name: certificate-not-issued
     description: Tell a certificate that is the cause from one that is a symptom of DNS that has not landed
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/certificate-not-issued.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/certificate-not-issued.md
   - name: backend-not-reachable
     description: 'Diagnose origins that cannot be reached: a missing network service or port name, a selector matching nothing, locations out of rotation'
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/backend-not-reachable.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/backend-not-reachable.md
   - name: edge-propagation
     description: Handle a load balancer that reports ready but is not serving, and know when that stops being propagation
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/edge-propagation.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/edge-propagation.md
   - name: traffic-protection-triage
     description: Traffic protection that is off, not attached, or blocking real traffic, and how to turn it on without breaking a live site
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/traffic-protection-triage.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/traffic-protection-triage.md
   - name: access-log-triage
     description: 'Read what actually arrived: response codes, response flags, and why no traffic is not a fault'
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/access-log-triage.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/access-log-triage.md
   - name: alb-create
     description: 'Create a load balancer: prerequisites, what is settled at create, and render, plan, show, confirm, then apply'
-    source: http://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/alb-create.md
+    source: https://network-services-operator-alb-mcp.datum-system.svc.cluster.local:8080/runbooks/alb-create.md
   authority:
     reads:
     - gvk:

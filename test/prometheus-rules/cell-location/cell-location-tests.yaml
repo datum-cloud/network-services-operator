@@ -1,0 +1,36 @@
+rule_files:
+  - cell-location-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'nso_cell_location_identity_waiting{cluster="lab",namespace="nso-system",pod="cell-controller-manager-0",reason="NoLocationIdentity"}'
+        values: '0 0 1x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: CellLocationUnresolved
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: CellLocationUnresolved
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              cluster: lab
+              namespace: nso-system
+              pod: cell-controller-manager-0
+              reason: NoLocationIdentity
+            exp_annotations:
+              summary: "cell-controller-manager-0 in lab/nso-system cannot tell which location it serves"
+              description: "Pod 'cell-controller-manager-0' in cluster 'lab', namespace 'nso-system' has not been able to work out its location for 10 minutes (NoLocationIdentity). Until it can, it allocates no interface addresses and publishes no workload records to the edge, so HTTP proxies to workloads in this location cannot reach them from other locations."
+              runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/cell-location.md#celllocationunresolved"
+
+  - interval: 1m
+    input_series:
+      - series: 'nso_cell_location_identity_waiting{cluster="lab",namespace="nso-system",pod="cell-controller-manager-0",reason="NoLocationIdentity"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: CellLocationUnresolved
+        exp_alerts: []

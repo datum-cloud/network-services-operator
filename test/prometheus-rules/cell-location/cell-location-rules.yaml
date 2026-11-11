@@ -1,0 +1,13 @@
+groups:
+- name: nso-cell-location
+  interval: 30s
+  rules:
+  - alert: CellLocationUnresolved
+    expr: max by (cluster, namespace, pod, reason) (nso_cell_location_identity_waiting) == 1
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "{{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace }} cannot tell which location it serves"
+      description: "Pod '{{ $labels.pod }}' in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' has not been able to work out its location for 10 minutes ({{ $labels.reason }}). Until it can, it allocates no interface addresses and publishes no workload records to the edge, so HTTP proxies to workloads in this location cannot reach them from other locations."
+      runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/cell-location.md#celllocationunresolved"

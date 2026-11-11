@@ -468,9 +468,12 @@ func (r *VPCEndpointSliceWriteBackReconciler) republishNamespace(ctx context.Con
 // then.
 func (r *VPCEndpointSliceWriteBackReconciler) location(ctx context.Context) (string, error) {
 	identity, err := resolveLocationIdentity(ctx, r.localReader, r.Location)
+	reportLocationIdentity(identity, err)
 	if err != nil {
 		var unresolved *locationidentity.LocationUnresolved
 		if errors.As(err, &unresolved) {
+			log.FromContext(ctx).Error(err, "not publishing vpc endpointslices until this cell knows its location",
+				"reason", unresolved.Reason)
 			return "", nil
 		}
 		return "", err

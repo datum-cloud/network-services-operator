@@ -25,7 +25,7 @@ spec:
     sources:
     - type: LLMDocs
       title: Networks and network services, and how to read their status
-      url: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/llms-full.txt
+      url: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/llms-full.txt
     concepts:
     - gvk:
         group: networking.datumapis.com
@@ -46,7 +46,7 @@ spec:
   tools:
     mcpServers:
     - name: network
-      endpoint: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/mcp
+      endpoint: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/mcp
       toolSelector:
         include:
         - network_list
@@ -60,25 +60,25 @@ spec:
   skills:
   - name: network-create
     description: 'Create a network: the one or two choices there are, why IPv4 is not one, and render, plan, show, confirm, then apply'
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-create.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-create.md
   - name: network-service-create
     description: 'Create a network service for a workload: selecting its instances, naming ports, and render, plan, show, confirm, then apply'
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-service-create.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-service-create.md
   - name: network-not-ready
     description: A network that is not ready, from IPv6Required (the customer's) to address allocation failures (Datum's)
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-not-ready.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-not-ready.md
   - name: network-location-triage
     description: A network not reaching a location, or one location's instances waiting on it while others are fine
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-location-triage.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-location-triage.md
   - name: network-interface-triage
     description: An instance's network interface not addressed, an IPv4 request on an IPv6-only network, or a kept interface refusing a workload
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-interface-triage.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-interface-triage.md
   - name: network-service-not-serving
     description: A network service sending traffic nowhere, matching nothing, spanning two networks, or with no ready instances
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-service-not-serving.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-service-not-serving.md
   - name: network-deletion-stuck
     description: Deleting a network that does not finish because instances or kept interfaces still hold addresses in it
-    source: http://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-deletion-stuck.md
+    source: https://network-services-operator-network-mcp.datum-system.svc.cluster.local:8080/runbooks/network-deletion-stuck.md
   authority:
     reads:
     - gvk:

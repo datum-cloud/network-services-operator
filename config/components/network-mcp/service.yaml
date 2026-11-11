@@ -1,6 +1,7 @@
 # Cluster-internal only: the assistant reaches /mcp over this Service's DNS
-# name, and no Gateway or HTTPRoute fronts it. The pod serves plain HTTP and the
-# network layer owns transport security.
+# name, and no Gateway or HTTPRoute fronts it. The pod serves HTTPS with a
+# certificate issued for this name; the port keeps the name network policies
+# and probes already select it by.
 apiVersion: v1
 kind: Service
 metadata:

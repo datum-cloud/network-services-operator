@@ -10,7 +10,7 @@ and why.
 | File | What it is |
 | --- | --- |
 | `service_account.yaml` | An intentionally unbound `ServiceAccount`. No `Role` or binding is ever attached to it — see the comments in that file for why. |
-| `deployment.yaml` | Runs the `alb-mcp` binary from the operator's own image (`command: [/alb-mcp]`), exposing `/mcp`, `/llms-full.txt`, `/runbooks/*` and `/healthz` on port 8080. |
+| `deployment.yaml` | Runs the `alb-mcp` binary from the operator's own image (`command: [/alb-mcp]`), exposing `/mcp`, `/llms-full.txt`, `/runbooks/*` and `/healthz` over HTTPS on port 8080. |
 | `service.yaml` | A `ClusterIP` Service in front of the Deployment. Cluster-internal only; no Gateway or HTTPRoute fronts it. |
 
 ## Deployment
@@ -24,7 +24,24 @@ It is **not** applied by the operator's own deployment overlays. It is deployed
 from the infra repo, alongside the assistant platform's capability document,
 which names this Service's `/mcp`, `/llms-full.txt` and `/runbooks/` URLs.
 
-Two things there have to move with it, and both fail silently if they do not:
+## Transport
+
+The server answers HTTPS only. The assistant refuses to send a caller's bearer
+token to a plain `http://` endpoint, so the Deployment mounts a certificate from
+the `datum-control-plane` ClusterIssuer through the cert-manager CSI driver and
+passes it as `--tls-cert-file` and `--tls-key-file`. The binary re-reads the
+files when the driver renews them, so a rotation needs no restart. Run without
+both flags, as in local development, it serves plain HTTP.
+
+The certificate names the Service as Datum deploys it:
+`network-services-operator-alb-mcp` in `datum-system`. Kustomize rewrites the
+Service's own name and namespace but not the volume attributes that name it, so
+a deployment using a different `namePrefix` or namespace has to patch
+`csi.cert-manager.io/common-name` and `csi.cert-manager.io/dns-names` to match,
+along with the URLs in `../assistant-capability/service-agent-configuration.yaml`.
+
+Two more things there have to move with it, and both fail silently if they do
+not:
 
 - The assistant forwards the calling user's bearer token only to hosts on an
   allow-list. This Service's host has to be on it, without a port, or every tool

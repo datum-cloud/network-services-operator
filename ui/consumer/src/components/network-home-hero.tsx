@@ -53,8 +53,10 @@ function createErrorMessage(error: ApiError): string {
 // watches the created network so the user sees it come up.
 //
 // The plugin ships no stylesheet, so every utility class here has to exist in
-// the portal's compiled CSS. That is why the layout splits at md and avoids
-// arbitrary values.
+// the portal's compiled CSS, which is why it avoids arbitrary values. The
+// layout follows the portal's `main` container, not the window: the content
+// column narrows when a dock panel is open, and the two halves stack then. On
+// a portal without those container classes the card just stays stacked.
 export default function NetworkHomeHero() {
   const { projectId } = useParams<{ projectId: string }>();
   const mutation = useCreateNetwork(projectId);
@@ -71,7 +73,7 @@ export default function NetworkHomeHero() {
 
   return (
     <Card sectioned data-testid="networking-plugin-home-hero" className="overflow-hidden">
-      <div className="flex flex-col md:flex-row">
+      <div className="flex flex-col @3xl/main:flex-row">
         <div className="flex min-w-0 flex-1 flex-col gap-5 p-6 sm:p-8">
           <p
             className="flex items-center gap-2 text-xs font-semibold tracking-wider uppercase"
@@ -130,7 +132,9 @@ export default function NetworkHomeHero() {
             </ConformAdapter>
           )}
 
-          <p className="bg-muted text-muted-foreground rounded-md px-4 py-3 text-xs">
+          {/* In dark, muted is the card's own colour, so the note uses the darker
+              page background there, like the attachment tiles beside it. */}
+          <p className="bg-muted dark:bg-background text-muted-foreground rounded-md px-4 py-3 text-xs">
             Prefer the CLI? Pass{' '}
             <code className="text-foreground font-mono">--network &lt;name&gt;</code> to{' '}
             <code className="text-foreground font-mono">datumctl compute deploy</code> to put
@@ -140,13 +144,14 @@ export default function NetworkHomeHero() {
 
         <aside
           aria-labelledby={attachesId}
-          className="bg-muted/50 border-border flex flex-col gap-3 border-t p-6 sm:p-8 md:w-2/5 md:border-t-0 md:border-l">
+          className="bg-muted/50 border-border flex flex-col gap-3 border-t p-6 sm:p-8 @3xl/main:w-2/5 @3xl/main:border-t-0 @3xl/main:border-l">
           <h3
             id={attachesId}
             className="text-muted-foreground mb-1 text-xs font-semibold tracking-wider uppercase">
             What attaches to it
           </h3>
-          <ul className="flex flex-col gap-3">
+          {/* Two across while stacked under the form, one column beside it. */}
+          <ul className="grid grid-cols-1 gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-1">
             {ATTACHMENTS.map((item) => (
               <li
                 key={item.title}

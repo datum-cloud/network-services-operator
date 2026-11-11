@@ -7,6 +7,7 @@
 package mcpserver
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -17,10 +18,12 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sync/errgroup"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"go.datum.net/network-services-operator/internal/cmd/alb/util"
@@ -32,6 +35,7 @@ const (
 	ProjectHeader = "X-Datum-Project"
 
 	readHeaderTimeout = 10 * time.Second
+	shutdownTimeout   = 20 * time.Second
 
 	// misconfiguredClientNote closes every error a request can fail with before
 	// a read is attempted. All of them are the calling client's configuration,
@@ -40,6 +44,8 @@ const (
 	misconfiguredClientNote = "The person who asked did nothing wrong and re-authenticating will not " +
 		"help: this is a configuration problem for whoever operates that client"
 )
+
+var serveLog = ctrl.Log.WithName("mcpserver")
 
 // CheckControlPlaneEndpoint refuses to start when the configuration resolved to
 // the API server of the cluster this process runs in.
@@ -166,12 +172,27 @@ func BearerToken(r *http.Request) string {
 }
 
 // Serve answers every URL a capability document names from one process: MCP at
-// /mcp, the knowledge and skills from docs, and liveness at /healthz.
+// /mcp, the knowledge and skills from docs, and liveness at /healthz. It serves
+// HTTPS when tlsOpts names a certificate and plain HTTP otherwise, and returns
+// once ctx is cancelled and in-flight requests have drained.
 //
 // The MCP handler is stateless and builds a server per request, bound to that
 // caller's identity and project, so nothing is shared between callers.
-func Serve(addr string, impl *mcp.Implementation, docs *KnowledgeHandler,
-	register func(*mcp.Server, *http.Request)) error {
+func Serve(ctx context.Context, addr string, tlsOpts TLSOptions, impl *mcp.Implementation,
+	docs *KnowledgeHandler, register func(*mcp.Server, *http.Request)) error {
+	if err := tlsOpts.Validate(); err != nil {
+		return err
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", addr, err)
+	}
+	return serve(ctx, listener, tlsOpts, newHandler(impl, docs, register))
+}
+
+func newHandler(impl *mcp.Implementation, docs *KnowledgeHandler,
+	register func(*mcp.Server, *http.Request)) http.Handler {
 	handler := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			s := mcp.NewServer(impl, nil)
@@ -189,17 +210,48 @@ func Serve(addr string, impl *mcp.Implementation, docs *KnowledgeHandler,
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprintln(w, "ok")
 	})
+	return mux
+}
 
+func serve(ctx context.Context, listener net.Listener, tlsOpts TLSOptions, handler http.Handler) error {
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
+	listen := func() error { return server.Serve(listener) }
 
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serving on %s: %w", addr, err)
+	group, ctx := errgroup.WithContext(ctx)
+
+	if tlsOpts.Enabled() {
+		tlsConfig, watcher, err := tlsOpts.watchedConfig()
+		if err != nil {
+			_ = listener.Close()
+			return err
+		}
+		server.TLSConfig = tlsConfig
+		listen = func() error { return server.ServeTLS(listener, "", "") }
+		group.Go(func() error { return watcher.Start(ctx) })
 	}
-	return nil
+
+	serveLog.Info("serving", "scheme", tlsOpts.Scheme(), "addr", listener.Addr().String())
+
+	group.Go(func() error {
+		if err := listen(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serving on %s: %w", listener.Addr(), err)
+		}
+		return nil
+	})
+	group.Go(func() error {
+		<-ctx.Done()
+		drainCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(drainCtx); err != nil {
+			return server.Close()
+		}
+		return nil
+	})
+
+	return group.Wait()
 }
 
 // EnvOr returns the environment variable key, or fallback when it is unset.

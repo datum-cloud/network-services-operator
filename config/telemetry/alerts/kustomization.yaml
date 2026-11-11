@@ -6,3 +6,4 @@ resources:
   - controller-health.yaml
   - trafficprotectionpolicies.yaml
   - server-config.yaml
+  - cell-location.yaml

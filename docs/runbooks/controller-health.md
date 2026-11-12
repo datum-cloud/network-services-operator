@@ -21,8 +21,10 @@ assuming the problem is in NSO.
 
 An alert carries the `service` and `team` that own its deployment when the
 platform's owner map, `deployment:datum_service:info`, names that deployment.
-An alert without them belongs to a deployment the map does not name, or to a
-pod that no Deployment owns.
+When that map does not name the deployment, the alert takes the owner of its
+namespace from `namespace:datum_service:info`. An alert without either belongs
+to a deployment and a namespace that neither map names, or to a pod that no
+Deployment owns.
 
 ## Alert timing
 

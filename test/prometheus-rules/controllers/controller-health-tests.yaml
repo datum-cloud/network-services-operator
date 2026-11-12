@@ -357,6 +357,91 @@ tests:
           description: The 'gateway' controller in cluster 'prod', namespace 'nso-system' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook.
           runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorfloor
 
+  # The namespace step: a deployment the owner map does not name takes its namespace's owner from
+  # namespace:datum_service:info, the platform's next step after the deployment. A deployment both maps name keeps
+  # the deployment's owner and fires once. A deployment named in neither map still fires, without an owner, so no
+  # alert is lost.
+  - interval: 1m
+    input_series:
+    - series: controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system",pod="nso-controller-manager-7d9f8b6c4-x2k9p"}
+      values: 0+9x60
+    - series: controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system",pod="nso-controller-manager-7d9f8b6c4-x2k9p"}
+      values: 0+1x60
+    - series: deployment:datum_service:info{cluster="prod",namespace="nso-system",deployment="nso-controller-manager",datum_service="network-services",team="platform"}
+      values: 1x60
+    - series: controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system",pod="other-manager-5c6d7e8f9-q1w2e"}
+      values: 0+9x60
+    - series: controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="nso-system",pod="other-manager-5c6d7e8f9-q1w2e"}
+      values: 0+1x60
+    - series: controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="lonely-system",pod="lonely-manager-5c6d7e8f9-a1b2c"}
+      values: 0+9x60
+    - series: controller_runtime_reconcile_total{controller="gateway",result="success",cluster="prod",namespace="lonely-system",pod="lonely-manager-5c6d7e8f9-a1b2c"}
+      values: 0+1x60
+    - series: namespace:datum_service:info{cluster="prod",namespace="nso-system",datum_service="alb",team="delivery"}
+      values: 1x60
+    alert_rule_test:
+    - eval_time: 30m
+      alertname: ControllerReconcileErrorRatioCritical
+      exp_alerts:
+      - exp_labels:
+          severity: critical
+          controller: gateway
+          cluster: prod
+          namespace: nso-system
+          deployment: nso-controller-manager
+          service: network-services
+          team: platform
+        exp_annotations:
+          summary: Controller gateway in prod/nso-system/nso-controller-manager reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled
+          description: More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis.
+          runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical
+      - exp_labels:
+          severity: critical
+          controller: gateway
+          cluster: prod
+          namespace: nso-system
+          deployment: other-manager
+          service: alb
+          team: delivery
+        exp_annotations:
+          summary: Controller gateway in prod/nso-system/other-manager reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled
+          description: More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis.
+          runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical
+      - exp_labels:
+          severity: critical
+          controller: gateway
+          cluster: prod
+          namespace: lonely-system
+          deployment: lonely-manager
+        exp_annotations:
+          summary: Controller gateway in prod/lonely-system/lonely-manager reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled
+          description: More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'lonely-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis.
+          runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical
+
+  # The floor warning takes the namespace's owner the same way.
+  - interval: 5m
+    input_series:
+    - series: controller_runtime_reconcile_total{controller="gateway",result="error",cluster="prod",namespace="nso-system",pod="other-manager-5c6d7e8f9-q1w2e"}
+      values: 0+1x320
+    - series: namespace:datum_service:info{cluster="prod",namespace="nso-system",datum_service="alb",team="delivery"}
+      values: 1x320
+    alert_rule_test:
+    - eval_time: 25h
+      alertname: ControllerReconcileErrorFloor
+      exp_alerts:
+      - exp_labels:
+          severity: warning
+          controller: gateway
+          cluster: prod
+          namespace: nso-system
+          deployment: other-manager
+          service: alb
+          team: delivery
+        exp_annotations:
+          summary: Controller gateway in prod/nso-system/other-manager has had reconcile errors in each of the last 24 hours
+          description: The 'gateway' controller in cluster 'prod', namespace 'nso-system' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook.
+          runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorfloor
+
   # An owner entry that appears while an alert fires gives the alert a new label set, so it is a new alert: the
   # owned one waits out its own `for`, and `keep_firing_for` holds the unowned one for 30 minutes, so both fire
   # for a while and neither gap nor page is lost.

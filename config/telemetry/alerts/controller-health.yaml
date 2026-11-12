@@ -28,7 +28,9 @@ spec:
       expr: |
         max without (datum_service) (label_replace(controller_runtime:reconcile_stalled:warning * on (cluster, namespace, deployment) group_left (datum_service, team) deployment:datum_service:info, "service", "$1", "datum_service", "(.*)"))
         or
-        (controller_runtime:reconcile_stalled:warning unless on (cluster, namespace, deployment) deployment:datum_service:info)
+        max without (datum_service) (label_replace((controller_runtime:reconcile_stalled:warning unless on (cluster, namespace, deployment) deployment:datum_service:info) * on (cluster, namespace) group_left (datum_service, team) namespace:datum_service:info, "service", "$1", "datum_service", "(.*)"))
+        or
+        (controller_runtime:reconcile_stalled:warning unless on (cluster, namespace, deployment) deployment:datum_service:info unless on (cluster, namespace) namespace:datum_service:info)
       for: 15m
       keep_firing_for: 30m
       labels:
@@ -46,7 +48,9 @@ spec:
       expr: |
         max without (datum_service) (label_replace(controller_runtime:reconcile_stalled:critical * on (cluster, namespace, deployment) group_left (datum_service, team) deployment:datum_service:info, "service", "$1", "datum_service", "(.*)"))
         or
-        (controller_runtime:reconcile_stalled:critical unless on (cluster, namespace, deployment) deployment:datum_service:info)
+        max without (datum_service) (label_replace((controller_runtime:reconcile_stalled:critical unless on (cluster, namespace, deployment) deployment:datum_service:info) * on (cluster, namespace) group_left (datum_service, team) namespace:datum_service:info, "service", "$1", "datum_service", "(.*)"))
+        or
+        (controller_runtime:reconcile_stalled:critical unless on (cluster, namespace, deployment) deployment:datum_service:info unless on (cluster, namespace) namespace:datum_service:info)
       for: 10m
       keep_firing_for: 30m
       labels:
@@ -65,7 +69,9 @@ spec:
       expr: |
         max without (datum_service) (label_replace(controller_runtime:reconcile_error_floor:24h * on (cluster, namespace, deployment) group_left (datum_service, team) deployment:datum_service:info, "service", "$1", "datum_service", "(.*)"))
         or
-        (controller_runtime:reconcile_error_floor:24h unless on (cluster, namespace, deployment) deployment:datum_service:info)
+        max without (datum_service) (label_replace((controller_runtime:reconcile_error_floor:24h unless on (cluster, namespace, deployment) deployment:datum_service:info) * on (cluster, namespace) group_left (datum_service, team) namespace:datum_service:info, "service", "$1", "datum_service", "(.*)"))
+        or
+        (controller_runtime:reconcile_error_floor:24h unless on (cluster, namespace, deployment) deployment:datum_service:info unless on (cluster, namespace) namespace:datum_service:info)
       labels:
         severity: warning
       annotations:

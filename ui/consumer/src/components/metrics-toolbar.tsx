@@ -8,6 +8,8 @@ import {
   type MetricsControls,
 } from '../lib/metrics-controls';
 import { PLUGIN_ID } from '../lib/api';
+import { Button } from '@datum-cloud/datum-ui/button';
+import { ButtonGroup, ButtonGroupText } from '@datum-cloud/datum-ui/button-group';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { MultiSelect } from '@datum-cloud/datum-ui/multi-select';
 import { DateTimeRangePicker, getBrowserTimezone } from '@datum-cloud/datum-ui/picker';
@@ -19,7 +21,8 @@ import { RefreshCwIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 const CONTROL_HEIGHT = 'h-8 min-h-8';
-const SELECT_MIN_WIDTH = { minWidth: '4rem' };
+const GROUP_CLASS = cn('w-full sm:w-fit', CONTROL_HEIGHT);
+const GROUP_TRIGGER_CLASS = cn('bg-card flex-1 sm:w-auto sm:flex-initial', CONTROL_HEIGHT);
 
 export interface FilterOption {
   value: string;
@@ -43,24 +46,22 @@ function RefreshControl({ controls }: { controls: MetricsControls }) {
   };
 
   return (
-    <div
-      className={cn('border-input bg-card flex shrink-0 items-stretch overflow-hidden rounded-lg border', CONTROL_HEIGHT)}>
+    <ButtonGroup className={GROUP_CLASS}>
       <Tooltip message={auto ? `Refreshing every ${controls.refresh}` : 'Refresh metrics'}>
-        <button
-          type="button"
+        <Button
+          type="quaternary"
+          theme="outline"
+          size="icon"
           aria-label="Refresh metrics"
           data-testid="networking-plugin-metrics-refresh"
-          className="hover:bg-muted inline-flex h-full w-9 shrink-0 items-center justify-center border-r disabled:opacity-50"
+          className="border-input-border bg-card text-muted-foreground dark:border-input-border dark:text-muted-foreground h-auto w-9 shrink-0 rounded-r-none"
           onClick={refresh}
           disabled={spinning}>
           <Icon icon={RefreshCwIcon} className={cn('size-4', (spinning || auto) && 'animate-spin')} />
-        </button>
+        </Button>
       </Tooltip>
       <Select value={controls.refresh} onValueChange={controls.setRefresh}>
-        <SelectTrigger
-          aria-label="Auto refresh"
-          style={SELECT_MIN_WIDTH}
-          className="h-full min-h-0 w-auto rounded-l-none border-0 bg-transparent px-2 py-0 shadow-none focus:ring-0">
+        <SelectTrigger aria-label="Auto refresh" className={GROUP_TRIGGER_CLASS}>
           <SelectValue placeholder="Auto refresh" />
         </SelectTrigger>
         <SelectContent>
@@ -71,7 +72,7 @@ function RefreshControl({ controls }: { controls: MetricsControls }) {
           ))}
         </SelectContent>
       </Select>
-    </div>
+    </ButtonGroup>
   );
 }
 
@@ -150,14 +151,10 @@ export function MetricsToolbar({
           triggerClassName={cn(CONTROL_HEIGHT, 'py-0 text-sm')}
         />
         <div className="flex shrink-0 items-center gap-2">
-          <div
-            className={cn('border-input bg-card flex shrink-0 items-stretch overflow-hidden rounded-lg border', CONTROL_HEIGHT)}>
-            <span className="text-foreground inline-flex items-center border-r px-3 text-xs font-medium">Step</span>
+          <ButtonGroup className={GROUP_CLASS}>
+            <ButtonGroupText>Step</ButtonGroupText>
             <Select value={controls.step} onValueChange={controls.setStep}>
-              <SelectTrigger
-                aria-label="Step"
-                style={SELECT_MIN_WIDTH}
-                className="h-full min-h-0 w-auto rounded-l-none border-0 bg-transparent px-2 py-0 shadow-none focus:ring-0">
+              <SelectTrigger aria-label="Step" className={GROUP_TRIGGER_CLASS}>
                 <SelectValue placeholder="Step" />
               </SelectTrigger>
               <SelectContent>
@@ -168,7 +165,7 @@ export function MetricsToolbar({
                 ))}
               </SelectContent>
             </Select>
-          </div>
+          </ButtonGroup>
           <RefreshControl controls={controls} />
         </div>
       </div>

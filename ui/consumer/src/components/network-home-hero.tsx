@@ -73,8 +73,8 @@ export default function NetworkHomeHero() {
 
   return (
     <Card sectioned data-testid="networking-plugin-home-hero" className="overflow-hidden">
-      <div className="flex flex-col @3xl/main:flex-row">
-        <div className="flex min-w-0 flex-1 flex-col gap-5 p-6 sm:p-8">
+      <div className="grid divide-y @3xl/main:grid-cols-2 @3xl/main:divide-x @3xl/main:divide-y-0">
+        <div className="flex min-w-0 flex-col gap-5 p-6 sm:p-8">
           <p
             className="flex items-center gap-2 text-xs font-semibold tracking-wider uppercase"
             style={ACCENT_TEXT}>
@@ -144,14 +144,13 @@ export default function NetworkHomeHero() {
 
         <aside
           aria-labelledby={attachesId}
-          className="bg-muted/50 border-border flex flex-col gap-3 border-t p-6 sm:p-8 @3xl/main:w-2/5 @3xl/main:border-t-0 @3xl/main:border-l">
+          className="bg-muted/50 flex min-w-0 flex-col gap-3 p-6 sm:p-8">
           <h3
             id={attachesId}
             className="text-muted-foreground mb-1 text-xs font-semibold tracking-wider uppercase">
             What attaches to it
           </h3>
-          {/* Two across while stacked under the form, one column beside it. */}
-          <ul className="grid grid-cols-1 gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-1">
+          <ul className="flex flex-col gap-3">
             {ATTACHMENTS.map((item) => (
               <li
                 key={item.title}

@@ -275,7 +275,7 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		return ctrl.Result{}, addErr
 	}
 
-	if errs := validation.ValidateHTTPProxy(&httpProxy, validation.HTTPProxyValidationOptions{Hostnames: validation.CustomHostnameOptions(r.Config.Gateway)}); len(errs) > 0 {
+	if errs := validation.ValidateHTTPProxy(&httpProxy, validation.HTTPProxyOptions(r.Config.Gateway)); len(errs) > 0 {
 		acceptedCondition.Status = metav1.ConditionFalse
 		acceptedCondition.Reason = networkingv1alpha.HTTPProxyReasonInvalid
 		acceptedCondition.Message = fmt.Sprintf("The HTTPProxy is invalid and cannot be programmed: %s", errs.ToAggregate())
@@ -1370,6 +1370,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			Matches:     rule.Matches,
 			Filters:     ruleFilters,
 			BackendRefs: backendRefs,
+			Timeouts:    rule.Timeouts,
 		}
 	}
 

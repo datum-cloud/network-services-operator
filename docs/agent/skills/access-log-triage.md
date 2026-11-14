@@ -56,11 +56,12 @@ Then widen the window, or send a request yourself and look again.
   is down, refusing connections, or too slow.
 - `429`: rate limited.
 
-**Durations near 15 seconds** mean the response limit, not a slow origin. A
-response must finish within about 15 seconds of the request reaching the edge.
-A request whose origin had not started answering by then comes back `504`. One
-whose origin had started keeps its status, `200` included, and is cut off
-mid-transfer. So a `200` at about 15000 ms is a large download or a stream that
+**Durations at the route's timeout** mean the response limit, not a slow
+origin. A response must finish within the rule's `timeouts.request`, one hour
+by default, of the request reaching the edge. A request whose origin had not
+started answering by then comes back `504`. One whose origin had started keeps
+its status, `200` included, and is cut off mid-transfer. So a `200` at about
+3600000 ms, or at whatever the rule sets, is a large download or a stream that
 was cut short, not a success. WebSockets are not cut.
 
 The limit can be raised to at most one hour. `HTTPProxy` has no field for it.

@@ -14,6 +14,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/config"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 )
 
@@ -26,6 +27,30 @@ const (
 // HTTPProxy may declare.
 type HTTPProxyValidationOptions struct {
 	Hostnames HostnameOptions
+
+	// MaxRequestTimeout caps every rule's request and backendRequest timeouts.
+	// Zero leaves them uncapped.
+	MaxRequestTimeout time.Duration
+}
+
+func HTTPProxyOptions(gatewayConfig config.GatewayConfig) HTTPProxyValidationOptions {
+	opts := HTTPProxyValidationOptions{Hostnames: CustomHostnameOptions(gatewayConfig)}
+	if max := gatewayConfig.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout; max != nil {
+		opts.MaxRequestTimeout = max.Duration
+	}
+	return opts
+}
+
+func DefaultHTTPProxyRuleTimeouts(httpProxy *networkingv1alpha.HTTPProxy) {
+	for i := range httpProxy.Spec.Rules {
+		rule := &httpProxy.Spec.Rules[i]
+		if rule.Timeouts == nil {
+			rule.Timeouts = &gatewayv1.HTTPRouteTimeouts{}
+		}
+		if rule.Timeouts.Request == nil {
+			rule.Timeouts.Request = ptr.To(gatewayv1.Duration(networkingv1alpha.HTTPProxyDefaultRequestTimeout))
+		}
+	}
 }
 
 func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy, opts HTTPProxyValidationOptions) field.ErrorList {
@@ -48,7 +73,7 @@ func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy, opts HTTPProxyVal
 		allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), httpProxy.Name, msg))
 	}
 
-	allErrs = append(allErrs, validateHTTPProxyRules(httpProxy, field.NewPath("spec", "rules"))...)
+	allErrs = append(allErrs, validateHTTPProxyRules(httpProxy, field.NewPath("spec", "rules"), opts)...)
 	allErrs = append(allErrs, validateHTTPProxyHealthCheck(httpProxy.Spec.HealthCheck, field.NewPath("spec", "healthCheck"))...)
 
 	return allErrs
@@ -115,22 +140,45 @@ func validateHostHeaderOverride(filters []gatewayv1.HTTPRouteFilter, fldPath *fi
 	return validateProgrammableHostname(override.Value, hostHeaderPath)
 }
 
-func validateHTTPProxyRules(httpProxy *networkingv1alpha.HTTPProxy, fldPath *field.Path) field.ErrorList {
+func validateHTTPProxyRules(httpProxy *networkingv1alpha.HTTPProxy, fldPath *field.Path, opts HTTPProxyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	for i, rule := range httpProxy.Spec.Rules {
-		allErrs = append(allErrs, validateHTTPProxyRule(rule, fldPath.Index(i))...)
+		allErrs = append(allErrs, validateHTTPProxyRule(rule, fldPath.Index(i), opts)...)
 	}
 
 	return allErrs
 }
 
-func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path) field.ErrorList {
+func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path, opts HTTPProxyValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	allErrs = append(allErrs, validateFilters(rule.Filters, supportedHTTPRouteRuleFilters, fldPath.Child("filters"))...)
 	allErrs = append(allErrs, validateHostHeaderOverride(rule.Filters, fldPath.Child("filters"))...)
 	allErrs = append(allErrs, validateHTTPProxyRuleBackends(rule, fldPath.Child("backends"))...)
+	allErrs = append(allErrs, validateHTTPProxyRuleTimeouts(rule.Timeouts, fldPath.Child("timeouts"), opts.MaxRequestTimeout)...)
+
+	return allErrs
+}
+
+func validateHTTPProxyRuleTimeouts(timeouts *gatewayv1.HTTPRouteTimeouts, fldPath *field.Path, maxRequestTimeout time.Duration) field.ErrorList {
+	if timeouts == nil {
+		return nil
+	}
+
+	var upperLimit *time.Duration
+	if maxRequestTimeout > 0 {
+		upperLimit = &maxRequestTimeout
+	}
+	lowerLimit := ptr.To(time.Nanosecond)
+
+	allErrs := field.ErrorList{}
+	if timeouts.Request != nil {
+		allErrs = append(allErrs, validateGatewayDuration(fldPath.Child("request"), timeouts.Request, lowerLimit, upperLimit)...)
+	}
+	if timeouts.BackendRequest != nil {
+		allErrs = append(allErrs, validateGatewayDuration(fldPath.Child("backendRequest"), timeouts.BackendRequest, lowerLimit, upperLimit)...)
+	}
 
 	return allErrs
 }

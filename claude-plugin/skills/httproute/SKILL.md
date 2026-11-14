@@ -334,7 +334,7 @@ datumctl apply -f header-injection.yaml --project my-project
 - Use `sectionName` in `spec.parentRefs[]` to bind a route to a specific listener when a Gateway has both HTTP and HTTPS listeners; binding only to `http` is the standard pattern for redirect routes
 - `gateway.networking.k8s.io/v1` is stable GA — unlike the `gateway.envoyproxy.io` policy CRDs it is not subject to breaking alpha changes
 - Policy attachments from the alb skill (`SecurityPolicy`, `BackendTrafficPolicy`, `TrafficProtectionPolicy`) reference `HTTPRoute` resources by name via `targetRefs` — create the HTTPRoute first before attaching policies
-- This skill is for HTTPRoutes you write yourself. An Application Load Balancer's HTTPRoute is generated from its `HTTPProxy` and rewritten on every change, so edits to it, `timeouts` included, are reverted. To let a load balancer's responses run longer than 15 seconds, attach a `BackendTrafficPolicy` to its Gateway as the [alb skill](../alb/SKILL.md) describes
+- This skill is for HTTPRoutes you write yourself. An Application Load Balancer's HTTPRoute is generated from its `HTTPProxy` and rewritten on every change, so edits to it, `timeouts` included, are reverted. Set a load balancer's response limit with `timeouts.request` on the `HTTPProxy` rule instead, as the [alb skill](../alb/SKILL.md) describes
 - Run `datumctl diff -f` before `apply` for any changes
 - `--dry-run=server` validates the manifest against the API before committing
 - `delete` has no confirmation prompt — always verify the resource name first

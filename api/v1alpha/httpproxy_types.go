@@ -266,7 +266,22 @@ type HTTPProxyRule struct {
 	// +kubebuilder:validation:MinItems=0
 	// +kubebuilder:validation:MaxItems=16
 	Backends []HTTPProxyRuleBackend `json:"backends,omitempty"`
+
+	// Timeouts bound how long a request matching this rule may take.
+	//
+	// The request timeout runs from the request reaching the edge until the
+	// last byte of the response is sent, so a streaming response or a large
+	// download must finish within it. It defaults to one hour, and the operator
+	// caps it at a configured maximum. It cannot be disabled.
+	//
+	// See documentation for the `timeouts` field in the `HTTPRouteRule` type at
+	// https://gateway-api.sigs.k8s.io/reference/spec/#httprouterule
+	//
+	// +kubebuilder:default={request: "1h"}
+	Timeouts *gatewayv1.HTTPRouteTimeouts `json:"timeouts,omitempty"`
 }
+
+const HTTPProxyDefaultRequestTimeout = "1h"
 
 // +kubebuilder:validation:XValidation:message="endpoint is required unless instance or networkService is set; instance and networkService are mutually exclusive with each other and with endpoint and connector",rule="has(self.instance) ? (!has(self.endpoint) && !has(self.connector) && !has(self.networkService)) : (has(self.networkService) ? (!has(self.endpoint) && !has(self.connector)) : has(self.endpoint))"
 // +kubebuilder:validation:XValidation:message="backend TLS is not supported for networkService backends",rule="has(self.networkService) ? !has(self.tls) : true"

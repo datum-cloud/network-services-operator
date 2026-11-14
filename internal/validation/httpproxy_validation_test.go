@@ -3,6 +3,7 @@ package validation
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -752,6 +753,108 @@ func TestValidateHTTPProxy(t *testing.T) {
 			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
 			if delta != "" {
 				t.Errorf("Testcase %s - expected errors '%v', got '%v', diff: '%v'", name, scenario.expectedErrors, errs, delta)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPProxyTimeouts(t *testing.T) {
+	timeoutsPath := rulePath().Child("timeouts")
+	scenarios := map[string]struct {
+		timeouts       *gatewayv1.HTTPRouteTimeouts
+		expectedErrors field.ErrorList
+	}{
+		"unset": {
+			expectedErrors: field.ErrorList{},
+		},
+		"within the maximum": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{
+				Request:        ptr.To(gatewayv1.Duration("30m")),
+				BackendRequest: ptr.To(gatewayv1.Duration("5m")),
+			},
+			expectedErrors: field.ErrorList{},
+		},
+		"at the maximum": {
+			timeouts:       &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("1h"))},
+			expectedErrors: field.ErrorList{},
+		},
+		"request above the maximum": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("2h"))},
+			expectedErrors: field.ErrorList{
+				field.Invalid(timeoutsPath.Child("request"), "", ""),
+			},
+		},
+		"backendRequest above the maximum": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{BackendRequest: ptr.To(gatewayv1.Duration("90m"))},
+			expectedErrors: field.ErrorList{
+				field.Invalid(timeoutsPath.Child("backendRequest"), "", ""),
+			},
+		},
+		"zero disables the timeout and is refused": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{
+				Request:        ptr.To(gatewayv1.Duration("0s")),
+				BackendRequest: ptr.To(gatewayv1.Duration("0s")),
+			},
+			expectedErrors: field.ErrorList{
+				field.Invalid(timeoutsPath.Child("request"), "", ""),
+				field.Invalid(timeoutsPath.Child("backendRequest"), "", ""),
+			},
+		},
+	}
+
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			proxy := &networkingv1alpha.HTTPProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{
+						{
+							Backends: []networkingv1alpha.HTTPProxyRuleBackend{{Endpoint: "http://example.com"}},
+							Timeouts: scenario.timeouts,
+						},
+					},
+				},
+			}
+			errs := ValidateHTTPProxy(proxy, HTTPProxyValidationOptions{MaxRequestTimeout: time.Hour})
+			delta := cmp.Diff(scenario.expectedErrors, errs, cmpopts.IgnoreFields(field.Error{}, "BadValue", "Detail"))
+			if delta != "" {
+				t.Errorf("expected errors '%v', got '%v', diff: '%v'", scenario.expectedErrors, errs, delta)
+			}
+		})
+	}
+}
+
+func TestDefaultHTTPProxyRuleTimeouts(t *testing.T) {
+	scenarios := map[string]struct {
+		timeouts *gatewayv1.HTTPRouteTimeouts
+		expected *gatewayv1.HTTPRouteTimeouts
+	}{
+		"unset gets the default": {
+			expected: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("1h"))},
+		},
+		"only backendRequest set gets the default request": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{BackendRequest: ptr.To(gatewayv1.Duration("5m"))},
+			expected: &gatewayv1.HTTPRouteTimeouts{
+				Request:        ptr.To(gatewayv1.Duration("1h")),
+				BackendRequest: ptr.To(gatewayv1.Duration("5m")),
+			},
+		},
+		"request set is kept": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("30s"))},
+			expected: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("30s"))},
+		},
+	}
+
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			proxy := &networkingv1alpha.HTTPProxy{
+				Spec: networkingv1alpha.HTTPProxySpec{
+					Rules: []networkingv1alpha.HTTPProxyRule{{Timeouts: scenario.timeouts}},
+				},
+			}
+			DefaultHTTPProxyRuleTimeouts(proxy)
+			if delta := cmp.Diff(scenario.expected, proxy.Spec.Rules[0].Timeouts); delta != "" {
+				t.Errorf("unexpected timeouts, diff: %s", delta)
 			}
 		})
 	}

@@ -20,7 +20,7 @@ An Application Load Balancer is a **product built from several objects**, not a 
 - Add routes and the origins behind them, by URL or by network service
 - Split a route's traffic across several origins by weight, choose the load balancing algorithm, and turn on passive health checks
 - Configure traffic protection (WAF), request headers and basic authentication
-- Raise the 15-second response limit for streams and large downloads
+- Set how long a response may run, up to an hour, per route
 - Read access logs for one load balancer
 - Preview every change before applying it
 - Attach advanced Envoy Gateway policies the plugin does not cover
@@ -233,43 +233,36 @@ Datum attaches a `BackendTrafficPolicy` of its own to the load balancer's routin
 
 A Gateway takes one `BackendTrafficPolicy`. Put rate limiting, circuit breaking and the response limit below in the same policy.
 
-### Responses that run longer than 15 seconds
+### Responses that run longer than an hour
 
-A response must finish within about 15 seconds of the request reaching the edge. After that the edge ends it:
+Every route rule carries `timeouts.request`: the time from the request reaching the edge to the last byte of the response. It defaults to `1h`, so streams, large downloads and slow APIs run for up to an hour before the edge ends them:
 
 - If the origin has not started answering, the client gets a `504`.
-- If the origin has started, the response is cut off mid-transfer with whatever status it began with. Large downloads stop partway, and Server-Sent Events, LLM token streams, log tails and long polls close.
+- If the origin has started, the response is cut off mid-transfer with whatever status it began with.
 
-WebSockets are not cut. In `alb logs`, a cut response shows a `DURATION` of about 15000 ms.
+WebSockets are not cut. In `alb logs`, a cut response shows a `DURATION` equal to the rule's timeout.
 
-`HTTPProxy` has no timeout field. Raise the limit, up to `1h`, with `timeout.http.requestTimeout` on the load balancer's Gateway:
+The plugin does not set the timeout. Set it per rule in the `HTTPProxy` manifest, between `1ns` and `1h`. A lower value makes a hung origin fail fast; `0s` is refused, since it would also switch off the idle timeout and leave abandoned streams open:
 
 ```yaml
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: BackendTrafficPolicy
+apiVersion: networking.datumapis.com/v1alpha
+kind: HTTPProxy
 metadata:
   name: my-app
   namespace: default
 spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: Gateway
-      name: my-app
-  timeout:
-    http:
-      requestTimeout: 1h
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backends:
+        - endpoint: https://origin.example.com
+      timeouts:
+        request: 10m
 ```
 
-**Target the Gateway, never the HTTPRoute.** An HTTPRoute takes one `BackendTrafficPolicy`, and Datum attaches its own to the HTTPRoute when the load balancer has a network service origin, an algorithm or health checks. The older of the two wins and the other is rejected as `Conflicted`:
-
-- If Datum's is older, yours does nothing and responses are still cut at 15 seconds.
-- If yours is older, Datum's is rejected and the load balancer silently loses its algorithm and health checks, while still reporting `Programmed`.
-
-A Gateway-level policy merges with Datum's, so both apply. Editing `timeouts` on the generated HTTPRoute does not work either: Datum rewrites that route from the `HTTPProxy` and the edit is reverted.
-
-`requestTimeout` covers everything from the request arriving to the last byte sent, so set it longer than the longest stream or download. A value above `1h` is rejected with `duration must be less than or equal to 1h0m0s`.
-
-To confirm it worked, check that `datumctl describe backendtrafficpolicy my-app` shows `Accepted` and not `Conflicted`, then make a request that runs past 15 seconds and check that it completes. To restore the default, delete the policy, or remove the `timeout` block if the policy carries other settings.
+A value above `1h` is rejected with `duration must be less than or equal to 1h0m0s`. A `BackendTrafficPolicy` `requestTimeout` does not change a load balancer's limit any more: the rule's timeout takes precedence. Remove one you attached for that purpose.
 
 ### Authentication beyond basic auth
 
@@ -302,7 +295,7 @@ Failures print a named exit code — `exit status 6 # ALB_INVALID`. The names ar
 - The portal manages one route: the pool of origins on `/`, with weights, the algorithm and health checks. Those are the same fields `datumctl alb` writes, so either can change them. Once a load balancer has a second route, a path match or a per-origin filter, the portal locks its origins, weights, algorithm, health checks, TLS, redirect and Host override and points to `datumctl`; hostnames, protection and auth stay editable there. Tell the user to expect that lock after you add a route
 - Traffic protection takes paranoia 1 to 4 here; the portal offers only 1 and 2
 - Attach a `BackendTrafficPolicy` to the load balancer's Gateway, never its HTTPRoute. A route-level policy collides with the one Datum attaches for health checks and load balancing
-- Responses end after about 15 seconds unless a `BackendTrafficPolicy` raises the limit, up to 1 hour
+- Responses end after 1 hour by default. Lower it per rule with `timeouts.request` in the manifest; it cannot go above 1 hour or be switched off
 - Run `datumctl diff -f` before `apply`, and validate with `--dry-run=server`
 - `delete` has no confirmation prompt — verify the name first. Deleting a load balancer also removes its traffic protection policy and basic auth
 - Start traffic protection in `mode: Observe` on a live site, watch real traffic, then move to `Enforce`. Raise paranoia one level at a time; above 2 the false-positive rate climbs sharply

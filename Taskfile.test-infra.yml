@@ -115,7 +115,7 @@ tasks:
     vars:
       KIND_TOOL_VERSION: v0.32.0
       KARMADACTL_VERSION: v1.15.2
-      KUSTOMIZE_VERSION: v5.5.0
+      KUSTOMIZE_VERSION: v5.8.3
       CMCTL_VERSION: v2.1.1
       CHAINSAW_VERSION: v0.2.15
     cmds:

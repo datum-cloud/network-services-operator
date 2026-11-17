@@ -221,3 +221,22 @@ func TestGateway_EmptyList(t *testing.T) {
 	got := aggregate(t, luavm.New(false, 1), rule, desired(rule), nil)
 	assert.Equal(t, want, got.Object)
 }
+
+func TestGateway_AllWaitingStillCarriesLastTransitionTime(t *testing.T) {
+	a := gatewayStatus(1, "Unknown")
+	a["conditions"].([]any)[1].(map[string]any)["lastTransitionTime"] = "1970-01-01T00:00:00Z"
+	b := gatewayStatus(2, "Unknown")
+	c := programmed(runGateway(t, []workv1alpha2.AggregatedStatusItem{item("edge-a", a), item("edge-b", b)}))
+	require.NotNil(t, c)
+	assert.Equal(t, "Unknown", c["status"])
+	assert.Equal(t, "Waiting on edge-a, edge-b", c["message"])
+	assert.Equal(t, "2026-01-02T00:00:00Z", c["lastTransitionTime"])
+}
+
+func TestGateway_NoReportedTimeFallsBackToEpoch(t *testing.T) {
+	c := programmed(runGateway(t, []workv1alpha2.AggregatedStatusItem{
+		item("edge-a", map[string]any{"conditions": []any{map[string]any{"type": "Programmed", "status": "Unknown"}}}),
+	}))
+	require.NotNil(t, c)
+	assert.Equal(t, "1970-01-01T00:00:00Z", c["lastTransitionTime"])
+}

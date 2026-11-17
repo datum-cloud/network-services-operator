@@ -51,24 +51,23 @@ spec:
             if it.status ~= nil then
               c = conditionByType(pick(it.status), typ)
             end
+            if c ~= nil and c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+              latest = c.lastTransitionTime
+            end
             if c == nil or c.status == nil or c.status == "Unknown" then
               waiting[#waiting + 1] = it.clusterName
             else
               if first == nil then
                 first = c
               end
-              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
-                latest = c.lastTransitionTime
-              end
               if c.status ~= "True" then
                 falses[#falses + 1] = { cluster = it.clusterName, cond = c }
               end
             end
           end
-          local out = { type = typ }
+          local out = { type = typ, lastTransitionTime = latest or "1970-01-01T00:00:00Z" }
           if first ~= nil then
             out.observedGeneration = first.observedGeneration
-            out.lastTransitionTime = latest
           end
           if #falses > 0 then
             out.status = "False"
@@ -232,24 +231,23 @@ spec:
             if it.status ~= nil then
               c = conditionByType(pick(it.status), typ)
             end
+            if c ~= nil and c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+              latest = c.lastTransitionTime
+            end
             if c == nil or c.status == nil or c.status == "Unknown" then
               waiting[#waiting + 1] = it.clusterName
             else
               if first == nil then
                 first = c
               end
-              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
-                latest = c.lastTransitionTime
-              end
               if c.status ~= "True" then
                 falses[#falses + 1] = { cluster = it.clusterName, cond = c }
               end
             end
           end
-          local out = { type = typ }
+          local out = { type = typ, lastTransitionTime = latest or "1970-01-01T00:00:00Z" }
           if first ~= nil then
             out.observedGeneration = first.observedGeneration
-            out.lastTransitionTime = latest
           end
           if #falses > 0 then
             out.status = "False"
@@ -418,24 +416,23 @@ spec:
             if it.status ~= nil then
               c = conditionByType(pick(it.status), typ)
             end
+            if c ~= nil and c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+              latest = c.lastTransitionTime
+            end
             if c == nil or c.status == nil or c.status == "Unknown" then
               waiting[#waiting + 1] = it.clusterName
             else
               if first == nil then
                 first = c
               end
-              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
-                latest = c.lastTransitionTime
-              end
               if c.status ~= "True" then
                 falses[#falses + 1] = { cluster = it.clusterName, cond = c }
               end
             end
           end
-          local out = { type = typ }
+          local out = { type = typ, lastTransitionTime = latest or "1970-01-01T00:00:00Z" }
           if first ~= nil then
             out.observedGeneration = first.observedGeneration
-            out.lastTransitionTime = latest
           end
           if #falses > 0 then
             out.status = "False"
@@ -604,24 +601,23 @@ spec:
             if it.status ~= nil then
               c = conditionByType(pick(it.status), typ)
             end
+            if c ~= nil and c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+              latest = c.lastTransitionTime
+            end
             if c == nil or c.status == nil or c.status == "Unknown" then
               waiting[#waiting + 1] = it.clusterName
             else
               if first == nil then
                 first = c
               end
-              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
-                latest = c.lastTransitionTime
-              end
               if c.status ~= "True" then
                 falses[#falses + 1] = { cluster = it.clusterName, cond = c }
               end
             end
           end
-          local out = { type = typ }
+          local out = { type = typ, lastTransitionTime = latest or "1970-01-01T00:00:00Z" }
           if first ~= nil then
             out.observedGeneration = first.observedGeneration
-            out.lastTransitionTime = latest
           end
           if #falses > 0 then
             out.status = "False"
@@ -734,24 +730,23 @@ spec:
             if it.status ~= nil then
               c = conditionByType(pick(it.status), typ)
             end
+            if c ~= nil and c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+              latest = c.lastTransitionTime
+            end
             if c == nil or c.status == nil or c.status == "Unknown" then
               waiting[#waiting + 1] = it.clusterName
             else
               if first == nil then
                 first = c
               end
-              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
-                latest = c.lastTransitionTime
-              end
               if c.status ~= "True" then
                 falses[#falses + 1] = { cluster = it.clusterName, cond = c }
               end
             end
           end
-          local out = { type = typ }
+          local out = { type = typ, lastTransitionTime = latest or "1970-01-01T00:00:00Z" }
           if first ~= nil then
             out.observedGeneration = first.observedGeneration
-            out.lastTransitionTime = latest
           end
           if #falses > 0 then
             out.status = "False"
@@ -920,24 +915,23 @@ spec:
             if it.status ~= nil then
               c = conditionByType(pick(it.status), typ)
             end
+            if c ~= nil and c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+              latest = c.lastTransitionTime
+            end
             if c == nil or c.status == nil or c.status == "Unknown" then
               waiting[#waiting + 1] = it.clusterName
             else
               if first == nil then
                 first = c
               end
-              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
-                latest = c.lastTransitionTime
-              end
               if c.status ~= "True" then
                 falses[#falses + 1] = { cluster = it.clusterName, cond = c }
               end
             end
           end
-          local out = { type = typ }
+          local out = { type = typ, lastTransitionTime = latest or "1970-01-01T00:00:00Z" }
           if first ~= nil then
             out.observedGeneration = first.observedGeneration
-            out.lastTransitionTime = latest
           end
           if #falses > 0 then
             out.status = "False"

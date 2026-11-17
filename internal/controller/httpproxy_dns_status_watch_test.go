@@ -35,7 +35,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // TestHTTPProxyHostnameStatusFollowsDNSRecordSet checks that a hostname's
@@ -99,7 +99,7 @@ func TestHTTPProxyHostnameStatusFollowsDNSRecordSet(t *testing.T) {
 
 func startDNSStatusEnv(t *testing.T) (*rest.Config, *runtime.Scheme) {
 	t.Helper()
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "go.miloapis.com/dns-operator").Output()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "go.miloapis.com/dns").Output()
 	require.NoError(t, err)
 	env := &envtest.Environment{
 		CRDDirectoryPaths: append([]string{

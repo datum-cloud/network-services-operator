@@ -12,7 +12,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsutil "go.datum.net/network-services-operator/internal/util/dns"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // A hostname whose DNS record cannot be programmed either waits on Datum, while

@@ -10,7 +10,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // NormalizeNameserver normalizes a nameserver hostname by lowercasing,

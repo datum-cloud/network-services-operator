@@ -19,7 +19,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"go.datum.net/network-services-operator/internal/config"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // TestHostnameRemoval_ReapsRecordInSameReconcile is a regression test for

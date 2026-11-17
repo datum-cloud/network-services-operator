@@ -9939,9 +9939,9 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
 ```
 
-## go.miloapis.com/dns-operator/api/v1alpha1
+## go.miloapis.com/dns/api/v1alpha1
 
-* Name: go.miloapis.com/dns-operator/api/v1alpha1
+* Name: go.miloapis.com/dns/api/v1alpha1
 * License: Unknown
 
 ```

@@ -1067,6 +1067,11 @@ tasks:
       - |
         {{.KUSTOMIZE}} build --load-restrictor LoadRestrictionsNone config/crd/downstream | \
           kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply -f -
+      # Gateway API kinds are federated through the hub too. Production's hub
+      # carries these CRDs out of band, so apply the same set the edge gets.
+      - |
+        kubectl --kubeconfig {{.KARMADA_KUBECONFIG}} --context karmada-apiserver apply --server-side=true --force-conflicts \
+          -f config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/charts/crds/crds/gatewayapi-crds.yaml
       # ServingLocation is federated through the hub too, and the locations
       # service, not config/crd/downstream, owns its CRD.
       - |
@@ -1111,7 +1116,7 @@ tasks:
     vars:
       # Scenarios authored against this env's cluster names and downstream path.
       # Older fixtures targeting the previous cluster names are excluded here.
-      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement waf-section-scoping branded-error-page connector-offline-503 atomic-reject-isolation oidc-missing-secret-isolation networkservice-endpoints networkservice-late-vpc-record misdirected-request
+      DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement waf-section-scoping branded-error-page connector-offline-503 atomic-reject-isolation oidc-missing-secret-isolation networkservice-endpoints networkservice-late-vpc-record misdirected-request federated-status-pending
       # CLI_ARGS (after --) wins; else SCENARIOS env; else the default set.
       SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
     deps:
@@ -1138,7 +1143,8 @@ tasks:
           {{.CHAINSAW}} test "$dir" \
             --parallel 1 \
             --cluster {{.UPSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
-            --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml
+            --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml \
+            --cluster karmada={{.TMP_DIR}}/karmada-{{.UPSTREAM_CLUSTER}}/karmada-apiserver.config
         done
 
   test-e2e:

@@ -37,6 +37,15 @@ policy and not by some unrelated default. This guards the customer's actual
 protection, and the risk that a single bad firewall rule wedges the whole
 listener.
 
+### Programmed means every serving edge
+A Gateway's status on the hub is aggregated across every edge it is placed on.
+With the only edge's Envoy Gateway held back, a new Gateway must read
+`Programmed=Unknown` with reason `Pending` and a message naming that edge, on
+the hub and on the customer-facing Gateway. Once the edge is released it must
+read `True` with a message counting every edge, and a real request must then
+succeed. This guards against a Gateway reporting ready while an edge has not
+got it yet, and against a single edge speaking for the whole fleet.
+
 ### Offline backend returns a clean 503
 When a backend connector is offline, the customer-facing path must return a
 real 503 — not hang, and not serve a blank. This is checked as an observed

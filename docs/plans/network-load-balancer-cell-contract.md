@@ -131,7 +131,12 @@ Galactic `NetworkService` with the intent's name in the intent's namespace,
 owned by the intent so it is deleted with it. The gateways must watch
 services in every namespace to serve it. That service selects those labels, uses the
 attachments' fabric VPC as `vpcRef`, and serves the VIP on the listener port. It
-forwards to the backend port. An intent is not served if its backends span
+forwards to the backend port. The service is annotated with
+`networking.datumapis.com/nlb-name` and `networking.datumapis.com/nlb-listener`,
+which name the load balancer and listener it serves. Metrics pipelines read
+those annotations to attribute the gateway's per-listener counters. They're
+annotations, not labels, because a load balancer name can exceed the 63
+characters a label value allows. An intent is not served if its backends span
 VPCs or ports, if no backend passes, or if it is withdrawn or deleted. In those
 cases the service is deleted and the labels are removed.
 

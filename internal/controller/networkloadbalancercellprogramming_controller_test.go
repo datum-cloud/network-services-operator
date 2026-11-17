@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -432,4 +433,77 @@ func TestNLBCellProgrammingServesIPv4AndReportsIPv4Served(t *testing.T) {
 	require.NotNil(t, announced)
 	require.Equal(t, metav1.ConditionFalse, announced.Status)
 	require.Equal(t, "BindingsNotBound", announced.Reason)
+}
+
+func TestNLBCellProgrammingAnnotatesGatewayServiceWithItsLoadBalancer(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	intent.Spec.Source = networkingv1alpha.NetworkLoadBalancerCellIntentSource{ParentName: "web", ListenerName: "http"}
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, "web", service.Annotations[nlbServiceLoadBalancerAnnotation])
+	require.Equal(t, "http", service.Annotations[nlbServiceListenerAnnotation])
+}
+
+func TestNLBCellProgrammingAnnotatesLoadBalancerNamesLongerThanALabelValue(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	long := "web." + strings.Repeat("a", 70)
+	intent.Spec.Source = networkingv1alpha.NetworkLoadBalancerCellIntentSource{ParentName: long, ListenerName: "http"}
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, long, service.Annotations[nlbServiceLoadBalancerAnnotation])
+}
+
+func TestNLBCellProgrammingFollowsListenerRenames(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	intent.Spec.Source = networkingv1alpha.NetworkLoadBalancerCellIntentSource{ParentName: "web", ListenerName: "http"}
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	service.Annotations["example.com/kept"] = "yes"
+	require.NoError(t, cl.Update(context.Background(), &service))
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	intent.Spec.Source.ListenerName = "web-tcp"
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Equal(t, "web-tcp", service.Annotations[nlbServiceListenerAnnotation])
+	require.Equal(t, "yes", service.Annotations["example.com/kept"])
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), intent))
+	intent.Spec.Source.ListenerName = ""
+	require.NoError(t, cl.Update(context.Background(), intent))
+	reconcileNLBProgramming(t, r, intent)
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.NotContains(t, service.Annotations, nlbServiceListenerAnnotation)
+	require.Equal(t, "web", service.Annotations[nlbServiceLoadBalancerAnnotation])
+}
+
+func TestNLBCellProgrammingLeavesForeignGatewayServiceUnannotated(t *testing.T) {
+	cl, r, intent := nlbProgrammingFixture(t)
+	intent.Spec.Source = networkingv1alpha.NetworkLoadBalancerCellIntentSource{ParentName: "web", ListenerName: "http"}
+	require.NoError(t, cl.Update(context.Background(), intent))
+	foreign := &networkv1alpha1.NetworkService{
+		ObjectMeta: metav1.ObjectMeta{Namespace: intent.Namespace, Name: intent.Name, CreationTimestamp: metav1.Now()},
+		Spec:       networkv1alpha1.NetworkServiceSpec{VPCRef: "other", VIPAddresses: []string{"2001:db8::1"}, Protocol: networkv1alpha1.NetworkServiceProtocolTCP, Port: 80},
+	}
+	require.NoError(t, cl.Create(context.Background(), foreign))
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(intent)})
+	require.Error(t, err)
+
+	var service networkv1alpha1.NetworkService
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKeyFromObject(intent), &service))
+	require.Empty(t, service.Annotations)
+	require.Equal(t, "other", service.Spec.VPCRef)
 }

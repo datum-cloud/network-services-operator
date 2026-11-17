@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -37,6 +38,8 @@ const (
 	nlbProgrammingBackendLabelPrefix = "nlb.networking.datumapis.com/"
 	nlbProgrammingBackendLabelValue  = "backend"
 	nlbProgrammingRetry              = 30 * time.Second
+	nlbServiceLoadBalancerAnnotation = "networking.datumapis.com/nlb-name"
+	nlbServiceListenerAnnotation     = "networking.datumapis.com/nlb-listener"
 )
 
 var nlbPartialBackendReasons = map[string]bool{"BackendsUnhealthy": true, "BackendsUnresolved": true}
@@ -142,6 +145,7 @@ func (r *NetworkLoadBalancerCellProgrammingReconciler) Reconcile(ctx context.Con
 			}
 		}
 		current.Spec = service.Spec
+		current.Annotations = nlbServiceAnnotations(current.Annotations, &intent)
 		return controllerutil.SetControllerReference(&intent, current, r.Scheme)
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("write gateway service %s: %w", service.Name, err)
@@ -393,6 +397,24 @@ func desiredNetworkLoadBalancerService(
 		service.Spec.PortRange = &networkv1alpha1.PortRange{Start: frontend.Start, End: frontend.End}
 	}
 	return service, ""
+}
+
+func nlbServiceAnnotations(current map[string]string, intent *networkingv1alpha.NetworkLoadBalancerCellIntent) map[string]string {
+	updated := maps.Clone(current)
+	if updated == nil {
+		updated = map[string]string{}
+	}
+	for key, value := range map[string]string{
+		nlbServiceLoadBalancerAnnotation: intent.Spec.Source.ParentName,
+		nlbServiceListenerAnnotation:     intent.Spec.Source.ListenerName,
+	} {
+		if value == "" {
+			delete(updated, key)
+		} else {
+			updated[key] = value
+		}
+	}
+	return updated
 }
 
 func networkLoadBalancerBackendLabel(intentName string) string {

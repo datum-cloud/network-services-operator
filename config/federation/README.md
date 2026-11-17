@@ -31,6 +31,19 @@ downstream cluster within seconds.
   the behavior that caused real "false offline" incidents and is now exercised
   directly.
 
+The interpreter rules also decide what a federated resource's status means on
+the hub. A condition such as `Programmed` is `True` only when every cluster the
+hub has dispatched the resource to reports it `True`. A cluster the scheduler
+has chosen but not yet dispatched to is not counted until its copy exists. If
+any placed cluster reports `False`, the hub reports `False` with that cluster's
+reason and names the cluster in the message. Otherwise the hub reports
+`Unknown` with reason `Pending` and names every cluster it is still waiting
+on. The set of placed clusters is the
+set the propagation policy selects with `infra.datum.net/gateways=enabled`, so
+no cluster name appears in a script. To drain a cluster, remove that label
+from its hub `Cluster` object. `task test-federation-interpreters` runs every
+script against fixtures in Karmada's own Lua VM.
+
 Not here: the per-location policies that deliver a cell its own identity. Every
 resource in the policy above goes to *every* labelled edge cluster, and a
 location must reach exactly the one cell that serves it. Karmada has no

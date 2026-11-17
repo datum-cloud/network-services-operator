@@ -83,6 +83,12 @@ tasks:
           fi
       silent: false
 
+  test-federation-interpreters:
+    desc: Run the Karmada resource-interpreter scripts in config/federation against fixtures in Karmada's own Lua VM (no cluster)
+    dir: test/federation-interpreters
+    cmds:
+      - go test -count=1 ./... {{.CLI_ARGS}}
+
   generate:
     desc: Run code generation (deepcopy, defaults)
     deps:

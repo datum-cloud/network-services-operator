@@ -1,0 +1,286 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A Gateway federated through the hub must read Programmed Unknown/Pending
+# naming the edge while that edge's Envoy Gateway is held back, then True
+# counting every edge once it is released, and then serve a real request.
+#
+# Cluster names: nso-upstream (control) / nso-downstream (edge) / karmada (hub).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: federated-status-pending
+spec:
+  cluster: nso-upstream
+  steps:
+    - name: Federated namespace on the hub
+      try:
+        - create:
+            cluster: karmada
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: ($namespace)
+                labels:
+                  meta.datumapis.com/upstream-namespace: ($namespace)
+                  meta.datumapis.com/upstream-cluster-name: e2e
+        - assert:
+            timeout: 120s
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: ($namespace)
+
+    - name: Backend pod and service on the edge
+      try:
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: ($namespace)
+                labels:
+                  purpose: backend-pod
+              spec:
+                containers:
+                  - name: test-plaintext
+                    image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                    command: ["/bin/go-httpbin"]
+                    args: ["-host", "0.0.0.0", "-port", "8080"]
+                    resources:
+                      requests: { cpu: 100m, memory: 128Mi }
+                      limits: { cpu: 100m, memory: 128Mi }
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: backend-service
+                namespace: ($namespace)
+              spec:
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+                selector:
+                  purpose: backend-pod
+
+    - name: Hold the edge back
+      try:
+        - script:
+            cluster: nso-downstream
+            timeout: 180s
+            content: |
+              kubectl -n datum-downstream-gateway scale deploy/envoy-gateway --replicas=0
+              kubectl -n datum-downstream-gateway rollout status deploy/envoy-gateway --timeout=120s
+      cleanup:
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            content: |
+              kubectl -n datum-downstream-gateway scale deploy/envoy-gateway --replicas=1
+              kubectl -n datum-downstream-gateway wait deploy/envoy-gateway --for=condition=Available --timeout=240s
+
+    - name: A new Gateway reads Pending naming the held edge
+      try:
+        - create:
+            cluster: karmada
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($namespace)
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: e2e
+              spec:
+                gatewayClassName: datum-downstream-gateway-e2e
+                listeners:
+                  - protocol: HTTP
+                    port: 80
+                    name: http-test-e2e
+                    allowedRoutes:
+                      namespaces:
+                        from: Same
+                    hostname: test.e2e.env.datum.net
+
+        - assert:
+            timeout: 120s
+            cluster: nso-downstream
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($namespace)
+
+        - assert:
+            timeout: 120s
+            cluster: karmada
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($namespace)
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: Unknown
+                    reason: Pending
+                    message: Waiting on nso-downstream
+
+    - name: Release the edge and the Gateway reads Programmed on every edge
+      try:
+        - script:
+            cluster: nso-downstream
+            timeout: 300s
+            content: |
+              kubectl -n datum-downstream-gateway scale deploy/envoy-gateway --replicas=1
+              kubectl -n datum-downstream-gateway wait deploy/envoy-gateway --for=condition=Available --timeout=240s
+
+        - assert:
+            timeout: 240s
+            cluster: karmada
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: test-gateway
+                namespace: ($namespace)
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+                    reason: Programmed
+                    message: Programmed on 1 of 1 clusters
+
+    - name: Federated HTTPRoute
+      try:
+        - create:
+            cluster: karmada
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+                namespace: ($namespace)
+                labels:
+                  meta.datumapis.com/upstream-cluster-name: e2e
+              spec:
+                parentRefs:
+                  - name: test-gateway
+                    kind: Gateway
+                rules:
+                  - matches:
+                      - path:
+                          type: PathPrefix
+                          value: /plaintext
+                    backendRefs:
+                      - name: backend-service
+                        port: 8080
+                    filters:
+                      - type: URLRewrite
+                        urlRewrite:
+                          path:
+                            type: ReplacePrefixMatch
+                            replacePrefixMatch: /
+
+        - assert:
+            timeout: 120s
+            cluster: karmada
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: test-route
+                namespace: ($namespace)
+              status:
+                parents:
+                  - conditions:
+                      - reason: Accepted
+                        status: "True"
+                        type: Accepted
+                        message: Accepted on 1 of 1 clusters
+                      - reason: ResolvedRefs
+                        status: "True"
+                        type: ResolvedRefs
+
+    - name: Real HTTP 200 through the data plane
+      try:
+        - script:
+            cluster: nso-downstream
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get svc -n datum-downstream-gateway -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e -o json
+            outputs:
+              - name: gatewayService
+                value: (json_parse($stdout).items | [0])
+
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: backend-pod
+                namespace: ($namespace)
+              status:
+                phase: Running
+
+        - create:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+                namespace: ($namespace)
+              spec:
+                containers:
+                  - name: connectivity-test
+                    image: alpine:3.21.3
+                    command: ["/bin/sh", "-c", "sleep infinity"]
+                    resources:
+                      requests: { cpu: 100m, memory: 128Mi }
+                      limits: { cpu: 100m, memory: 1Gi }
+                    env:
+                      - name: GATEWAY_SERVICE_NAME
+                        value: ($gatewayService.metadata.name)
+                      - name: GATEWAY_SERVICE_NAMESPACE
+                        value: ($gatewayService.metadata.namespace)
+                    lifecycle:
+                      postStart:
+                        exec:
+                          command: ["apk", "add", "curl"]
+                terminationGracePeriodSeconds: 0
+
+        - assert:
+            cluster: nso-downstream
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: test-pod
+                namespace: ($namespace)
+              status:
+                phase: Running
+
+        - sleep:
+            duration: 15s
+
+        - script:
+            cluster: nso-downstream
+            timeout: 120s
+            content: |
+              kubectl -n $NAMESPACE exec -i test-pod -- sh -c " \
+                set -x; \
+                for i in 1 2 3 4 5 6; do \
+                  curl -svf -H 'Host: test.e2e.env.datum.net' http://\${GATEWAY_SERVICE_NAME}.\${GATEWAY_SERVICE_NAMESPACE}.svc.cluster.local/plaintext/status/200 && exit 0; \
+                  sleep 5; \
+                done; \
+                exit 1"

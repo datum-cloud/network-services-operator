@@ -1,7 +1,4 @@
-# Future test coverage for resource interpreters can leverage the test framework
-# once it's merged.
-#
-# See: https://github.com/karmada-io/karmada/pull/6938
+# A deployment repository carries a copy of this file. Keep the two identical.
 ---
 apiVersion: config.karmada.io/v1alpha1
 kind: ResourceInterpreterCustomization
@@ -13,7 +10,110 @@ spec:
     kind: Gateway
   customizations:
     statusAggregation:
-      luaScript: >
+      luaScript: |
+        local function conditionByType(conds, typ)
+          if conds == nil then
+            return nil
+          end
+          for _, c in ipairs(conds) do
+            if c.type == typ then
+              return c
+            end
+          end
+          return nil
+        end
+
+        local function typesOf(statusItems, pick)
+          local seen, out = {}, {}
+          for _, it in ipairs(statusItems) do
+            local conds = nil
+            if it.status ~= nil then
+              conds = pick(it.status)
+            end
+            if conds ~= nil then
+              for _, c in ipairs(conds) do
+                if c.type ~= nil and not seen[c.type] then
+                  seen[c.type] = true
+                  out[#out + 1] = c.type
+                end
+              end
+            end
+          end
+          return out
+        end
+
+        local function aggregateCondition(statusItems, pick, typ)
+          local total = #statusItems
+          local waiting, falses = {}, {}
+          local first, latest = nil, nil
+          for _, it in ipairs(statusItems) do
+            local c = nil
+            if it.status ~= nil then
+              c = conditionByType(pick(it.status), typ)
+            end
+            if c == nil or c.status == nil or c.status == "Unknown" then
+              waiting[#waiting + 1] = it.clusterName
+            else
+              if first == nil then
+                first = c
+              end
+              if c.lastTransitionTime ~= nil and (latest == nil or c.lastTransitionTime > latest) then
+                latest = c.lastTransitionTime
+              end
+              if c.status ~= "True" then
+                falses[#falses + 1] = { cluster = it.clusterName, cond = c }
+              end
+            end
+          end
+          local out = { type = typ }
+          if first ~= nil then
+            out.observedGeneration = first.observedGeneration
+            out.lastTransitionTime = latest
+          end
+          if #falses > 0 then
+            out.status = "False"
+            out.reason = falses[1].cond.reason
+            local msg = falses[1].cluster .. ": " .. (falses[1].cond.message or "")
+            if #falses > 1 then
+              local others = {}
+              for i = 2, #falses do
+                others[#others + 1] = falses[i].cluster
+              end
+              msg = msg .. " (also " .. table.concat(others, ", ") .. ")"
+            end
+            out.message = msg
+          elseif #waiting > 0 then
+            out.status = "Unknown"
+            out.reason = "Pending"
+            out.message = "Waiting on " .. table.concat(waiting, ", ")
+          else
+            out.status = "True"
+            out.reason = first.reason
+            out.message = typ .. " on " .. total .. " of " .. total .. " clusters"
+          end
+          return out
+        end
+
+        local function aggregateConditions(statusItems, pick)
+          local out = {}
+          for _, typ in ipairs(typesOf(statusItems, pick)) do
+            out[#out + 1] = aggregateCondition(statusItems, pick, typ)
+          end
+          return out
+        end
+
+        local function firstWith(statusItems, pick)
+          for _, it in ipairs(statusItems) do
+            if it.status ~= nil then
+              local v = pick(it.status)
+              if v ~= nil then
+                return v
+              end
+            end
+          end
+          return nil
+        end
+
         function AggregateStatus(desiredObj, statusItems)
           if statusItems == nil or #statusItems == 0 then
             return desiredObj
@@ -21,22 +121,62 @@ spec:
           if desiredObj.status == nil then
             desiredObj.status = {}
           end
+          desiredObj.status.conditions = aggregateConditions(statusItems, function(s)
+            return s.conditions
+          end)
 
-          local item = statusItems[1]
-          if item == nil or item.status == nil then
-            return desiredObj
+          local function listenerNamed(s, name)
+            if s.listeners == nil then
+              return nil
+            end
+            for _, l in ipairs(s.listeners) do
+              if l.name == name then
+                return l
+              end
+            end
+            return nil
           end
 
-          -- TODO(jreese) implement proper aggregation logic. Would be good to
-          -- think through how to represent propagation status across clusters.
-          if item.status.addresses ~= nil then
-            desiredObj.status.addresses = item.status.addresses
+          local names, seen, listeners = {}, {}, {}
+          for _, it in ipairs(statusItems) do
+            if it.status ~= nil and it.status.listeners ~= nil then
+              for _, l in ipairs(it.status.listeners) do
+                if l.name ~= nil and not seen[l.name] then
+                  seen[l.name] = true
+                  names[#names + 1] = l.name
+                end
+              end
+            end
           end
-          if item.status.conditions ~= nil then
-            desiredObj.status.conditions = item.status.conditions
+          for _, name in ipairs(names) do
+            local base = firstWith(statusItems, function(s)
+              return listenerNamed(s, name)
+            end)
+            listeners[#listeners + 1] = {
+              name = name,
+              supportedKinds = base.supportedKinds,
+              attachedRoutes = base.attachedRoutes,
+              conditions = aggregateConditions(statusItems, function(s)
+                local l = listenerNamed(s, name)
+                if l == nil then
+                  return nil
+                end
+                return l.conditions
+              end),
+            }
           end
-          if item.status.listeners ~= nil then
-            desiredObj.status.listeners = item.status.listeners
+          if #listeners > 0 then
+            desiredObj.status.listeners = listeners
+          end
+
+          local addresses = firstWith(statusItems, function(s)
+            if s.addresses ~= nil and #s.addresses > 0 then
+              return s.addresses
+            end
+            return nil
+          end)
+          if addresses ~= nil then
+            desiredObj.status.addresses = addresses
           end
           return desiredObj
         end
@@ -198,3 +338,4 @@ spec:
           end
           return desiredObj
         end
+

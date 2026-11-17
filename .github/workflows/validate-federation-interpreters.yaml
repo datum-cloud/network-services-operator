@@ -1,0 +1,40 @@
+name: Validate Federation Interpreters
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/validate-federation-interpreters.yaml'
+      - 'config/federation/**'
+      - 'test/federation-interpreters/**'
+      - 'Taskfile.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate-federation-interpreters.yaml'
+      - 'config/federation/**'
+      - 'test/federation-interpreters/**'
+      - 'Taskfile.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  run-federation-interpreters:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Task
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: test/federation-interpreters/go.mod
+          cache-dependency-path: test/federation-interpreters/go.sum
+
+      - name: Run the interpreter scripts against fixtures
+        run: task test-federation-interpreters

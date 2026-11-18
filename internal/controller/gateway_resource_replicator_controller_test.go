@@ -261,6 +261,31 @@ func TestTypedEnqueueRequestForGVKFiltersBySelector(t *testing.T) {
 	assert.Equal(t, testGVK, item.GVK, "unexpected GVK enqueued")
 }
 
+func TestTypedEnqueueRequestForGVKEnqueuesTerminatingObjectWithFinalizer(t *testing.T) {
+	selector := labels.SelectorFromSet(map[string]string{"replicate": "true"})
+	h := typedEnqueueRequestForGVK(testGVK, selector)("upstream", nil)
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[GVKRequest]())
+	t.Cleanup(queue.ShutDown)
+
+	ctx := context.Background()
+	now := metav1.Now()
+
+	terminating := newUnstructuredObject("workloads", "example", nil, nil)
+	terminating.SetDeletionTimestamp(&now)
+	terminating.SetFinalizers([]string{"other.example.com/finalizer"})
+	h.Update(ctx, event.TypedUpdateEvent[client.Object]{ObjectOld: terminating, ObjectNew: terminating}, queue)
+	assert.Equal(t, 0, queue.Len(), "terminating object without replicator finalizer must stay filtered")
+
+	terminating.SetFinalizers([]string{gatewayResourceReplicatorFinalizer})
+	h.Update(ctx, event.TypedUpdateEvent[client.Object]{ObjectOld: terminating, ObjectNew: terminating}, queue)
+	assert.Equal(t, 1, queue.Len(), "terminating object holding the replicator finalizer must be enqueued despite lost label")
+
+	live := newUnstructuredObject("workloads", "other", nil, nil)
+	live.SetFinalizers([]string{gatewayResourceReplicatorFinalizer})
+	h.Create(ctx, event.TypedCreateEvent[client.Object]{Object: live}, queue)
+	assert.Equal(t, 1, queue.Len(), "non-terminating unlabeled object must stay filtered")
+}
+
 func TestReplicatorCleansDownstreamOnDelete(t *testing.T) {
 	scheme := runtime.NewScheme()
 	err := corev1.AddToScheme(scheme)

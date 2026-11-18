@@ -73,9 +73,9 @@ vars:
 
   # The dns-operator CRDs come from its published bundle at the version go.mod
   # pins, so the CRDs installed and the types NSO compiles against match.
-  DNS_BUNDLE_REPO: ghcr.io/datum-cloud/dns-operator-kustomize
-  DNS_BUNDLE_TAG: v0.5.1
-  DNS_BUNDLE_DIGEST: sha256:cd7dd3a0d2fbbbaa029f2b5e083723a675e88c89e56f999257ff4bd87221cd4a
+  DNS_BUNDLE_REPO: ghcr.io/datum-cloud/dns-kustomize
+  DNS_BUNDLE_TAG: v0.16.0
+  DNS_BUNDLE_DIGEST: sha256:fc067e523aaffd7704d3929d3a28d0b8d6811aa4f2963efc5f3818f7246f4810
   DNS_STAGE: '{{.TMP_DIR}}/.dns-bundle'
   # Milo, the control plane that fronts IPAM. The operator addresses a project
   # by control-plane path and Milo is what resolves the project from that path,

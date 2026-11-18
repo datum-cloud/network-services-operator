@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	dnsutil "go.datum.net/network-services-operator/internal/util/dns"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // TestDNSZonePredicatePassesExactlyWhenItsInputsChange checks the zone watch's

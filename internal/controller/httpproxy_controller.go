@@ -52,7 +52,7 @@ import (
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 	"go.datum.net/network-services-operator/internal/util/status"
 	"go.datum.net/network-services-operator/internal/validation"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // HTTPProxyReconciler reconciles a HTTPProxy object

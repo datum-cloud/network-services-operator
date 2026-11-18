@@ -48,9 +48,22 @@ func DefaultHTTPProxyRuleTimeouts(httpProxy *networkingv1alpha.HTTPProxy) {
 			rule.Timeouts = &gatewayv1.HTTPRouteTimeouts{}
 		}
 		if rule.Timeouts.Request == nil {
-			rule.Timeouts.Request = ptr.To(gatewayv1.Duration(networkingv1alpha.HTTPProxyDefaultRequestTimeout))
+			rule.Timeouts.Request = ptr.To(defaultRequestTimeout(rule.Timeouts.BackendRequest))
 		}
 	}
+}
+
+func defaultRequestTimeout(backendRequest *gatewayv1.Duration) gatewayv1.Duration {
+	request := gatewayv1.Duration(networkingv1alpha.HTTPProxyDefaultRequestTimeout)
+	if backendRequest == nil {
+		return request
+	}
+	backend, backendErr := time.ParseDuration(string(*backendRequest))
+	fallback, defaultErr := time.ParseDuration(string(request))
+	if backendErr == nil && defaultErr == nil && backend > fallback {
+		return *backendRequest
+	}
+	return request
 }
 
 func ValidateHTTPProxy(httpProxy *networkingv1alpha.HTTPProxy, opts HTTPProxyValidationOptions) field.ErrorList {

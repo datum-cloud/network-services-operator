@@ -839,6 +839,13 @@ func TestDefaultHTTPProxyRuleTimeouts(t *testing.T) {
 				BackendRequest: ptr.To(gatewayv1.Duration("5m")),
 			},
 		},
+		"backendRequest above the default raises the request to match": {
+			timeouts: &gatewayv1.HTTPRouteTimeouts{BackendRequest: ptr.To(gatewayv1.Duration("2h"))},
+			expected: &gatewayv1.HTTPRouteTimeouts{
+				Request:        ptr.To(gatewayv1.Duration("2h")),
+				BackendRequest: ptr.To(gatewayv1.Duration("2h")),
+			},
+		},
 		"request set is kept": {
 			timeouts: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("30s"))},
 			expected: &gatewayv1.HTTPRouteTimeouts{Request: ptr.To(gatewayv1.Duration("30s"))},

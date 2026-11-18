@@ -36,7 +36,7 @@ const (
 // a certificate has to answer HTTPS and nothing else.
 func TestServesTLSWhenGivenACertificate(t *testing.T) {
 	opts, roots := writeServingCertificate(t, t.TempDir(), 1)
-	addr, stop := startServing(t, opts)
+	addr, stop := startServing(t, opts, roots)
 	defer stop()
 
 	resp, err := httpsClient(roots).Get("https://" + addr + "/healthz")
@@ -56,8 +56,8 @@ func TestServesTLSWhenGivenACertificate(t *testing.T) {
 // watched rather than loaded once: the CSI driver renews it in place.
 func TestPicksUpARotatedCertificateWithoutARestart(t *testing.T) {
 	dir := t.TempDir()
-	opts, _ := writeServingCertificate(t, dir, 1)
-	addr, stop := startServing(t, opts)
+	opts, roots := writeServingCertificate(t, dir, 1)
+	addr, stop := startServing(t, opts, roots)
 	defer stop()
 
 	_, rotatedRoots := writeServingCertificate(t, dir, 2)
@@ -74,7 +74,7 @@ func TestPicksUpARotatedCertificateWithoutARestart(t *testing.T) {
 
 // TestServesPlainHTTPWithoutACertificate keeps local runs and e2e working.
 func TestServesPlainHTTPWithoutACertificate(t *testing.T) {
-	addr, stop := startServing(t, TLSOptions{})
+	addr, stop := startServing(t, TLSOptions{}, nil)
 	defer stop()
 
 	resp, err := http.Get("http://" + addr + "/healthz")
@@ -133,7 +133,7 @@ func TestTLSFlagsDefaultFromTheBinarysEnvironment(t *testing.T) {
 	assert.Equal(t, "http", TLSOptions{}.Scheme())
 }
 
-func startServing(t *testing.T, opts TLSOptions) (addr string, stop func()) {
+func startServing(t *testing.T, opts TLSOptions, roots *x509.CertPool) (addr string, stop func()) {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -146,7 +146,10 @@ func startServing(t *testing.T, opts TLSOptions) (addr string, stop func()) {
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, listener, opts, mux) }()
 
-	return listener.Addr().String(), func() {
+	addr = listener.Addr().String()
+	awaitServing(t, addr, opts, roots, done)
+
+	return addr, func() {
 		cancel()
 		select {
 		case err := <-done:
@@ -154,6 +157,44 @@ func startServing(t *testing.T, opts TLSOptions) (addr string, stop func()) {
 		case <-time.After(serveReturnTimeout):
 			t.Error("serve did not return after its context was cancelled")
 		}
+	}
+}
+
+// awaitServing blocks until the server answers, because serve reads the
+// certificate files on its own goroutine: a test that rewrote them before that
+// read finished failed startup with "loading serving certificate" and left no
+// server behind. The caller checks which certificate is served after this.
+func awaitServing(t *testing.T, addr string, opts TLSOptions, roots *x509.CertPool, done chan error) {
+	t.Helper()
+
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+	if opts.Enabled() {
+		client = httpsClient(roots)
+	}
+
+	deadline := time.Now().Add(serveReturnTimeout)
+	for {
+		resp, err := client.Get(opts.Scheme() + "://" + addr + "/healthz")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+
+		select {
+		case serveErr := <-done:
+			done <- serveErr
+			t.Fatalf("serve returned before it answered: %v", serveErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server never answered on %s", addr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

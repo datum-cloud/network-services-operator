@@ -7,15 +7,17 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
 	networkingwebhook "go.datum.net/network-services-operator/internal/webhook"
-	"go.datum.net/network-services-operator/internal/webhook/webhooktest"
 )
 
 type recordedProbes struct {
@@ -44,9 +46,16 @@ func (r *recordedProbes) ready() error {
 }
 
 func TestManagerIsReadyOnlyWhileTheWebhookServerServes(t *testing.T) {
+	install := &envtest.WebhookInstallOptions{LocalServingHost: "127.0.0.1"}
+	require.NoError(t, install.PrepWithoutInstalling())
+	t.Cleanup(func() { require.NoError(t, install.Cleanup()) })
 	probes := &recordedProbes{
 		webhookServer: networkingwebhook.NewClusterAwareWebhookServer(
-			webhook.NewServer(webhooktest.NewServing(t).Options),
+			webhook.NewServer(webhook.Options{
+				Host:    install.LocalServingHost,
+				Port:    install.LocalServingPort,
+				CertDir: install.LocalServingCertDir,
+			}),
 			multiclusterproviders.ProviderMilo,
 		),
 		readyz: map[string]healthz.Checker{},
@@ -63,9 +72,9 @@ func TestManagerIsReadyOnlyWhileTheWebhookServerServes(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- probes.webhookServer.Start(ctx) }()
 
-	webhooktest.WaitFor(t, "ready once the webhook server serves", func(c *assert.CollectT) {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.NoError(c, probes.ready())
-	})
+	}, 10*time.Second, 20*time.Millisecond, "ready once the webhook server serves")
 
 	cancel()
 	if err := <-stopped; err != nil {

@@ -1794,7 +1794,14 @@ type ClusterSettingsValidationOptions struct {
 	HTTPMaxConnectionDuration *metav1.Duration
 
 	// Maximum amount for the duration until an entire request is received by the
-	// upstream.
+	// upstream. It also caps the request and backendRequest timeouts on
+	// HTTPProxy rules.
+	//
+	// It must be at least the HTTPProxy default request timeout of one hour, or
+	// the operator refuses to start. Lowering it marks every stored HTTPProxy
+	// with a rule timeout above the new value Accepted=False with reason
+	// Invalid on its next reconcile, and that proxy is not programmed until its
+	// timeout is lowered.
 	//
 	// +default="1h"
 	HTTPMaxRequestTimeout *metav1.Duration

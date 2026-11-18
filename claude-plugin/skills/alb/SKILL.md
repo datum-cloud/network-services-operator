@@ -55,7 +55,7 @@ network, so run it first whenever anything else fails.
 | Force HTTPS | An extra redirect rule with no origins |
 | Traffic protection | A `TrafficProtectionPolicy` attached to the load balancer |
 | Basic auth | A `SecurityPolicy` and a `<name>-basic-auth` Secret |
-| How long a response may take | A `BackendTrafficPolicy` on the Gateway; `HTTPProxy` has no field for it |
+| How long a response may take | `timeouts.request` on an `HTTPProxy` rule |
 
 You never name or edit the routing objects Datum derives from the `HTTPProxy`.
 

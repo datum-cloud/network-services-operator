@@ -64,25 +64,18 @@ its status, `200` included, and is cut off mid-transfer. So a `200` at about
 3600000 ms, or at whatever the rule sets, is a large download or a stream that
 was cut short, not a success. WebSockets are not cut.
 
-The limit can be raised to at most one hour. `HTTPProxy` has no field for it.
-It takes a `BackendTrafficPolicy` that targets the load balancer by its name:
+The limit is set per rule with `timeouts.request` on the `HTTPProxy`, at most
+one hour. A `BackendTrafficPolicy` `requestTimeout` does not change it, because
+the rule's timeout takes precedence:
 
 ```yaml
 spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: Gateway
-      name: <load balancer name>
-  timeout:
-    http:
-      requestTimeout: 1h
+  rules:
+    - backends:
+        - endpoint: https://origin.example.com
+      timeouts:
+        request: 10m
 ```
-
-Keep `kind: Gateway`. A policy with `kind: HTTPRoute` collides with the one
-Datum attaches when the load balancer has a network service origin, an
-algorithm or health checks, and the older of the two wins. Either the timeout
-does nothing, or the load balancer quietly loses its health checks while still
-reporting healthy.
 
 **Response flags** say what went wrong at the connection level. They are short
 codes, and they are the most useful field in the log when nothing else explains

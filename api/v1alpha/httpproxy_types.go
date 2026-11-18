@@ -271,8 +271,10 @@ type HTTPProxyRule struct {
 	//
 	// The request timeout runs from the request reaching the edge until the
 	// last byte of the response is sent, so a streaming response or a large
-	// download must finish within it. It defaults to one hour, and the operator
-	// caps it at a configured maximum. It cannot be disabled.
+	// download must finish within it. It defaults to one hour, or to the
+	// backendRequest timeout when that is longer. It overrides a
+	// BackendTrafficPolicy requestTimeout. The operator caps it at a configured
+	// maximum, and it cannot be disabled.
 	//
 	// See documentation for the `timeouts` field in the `HTTPRouteRule` type at
 	// https://gateway-api.sigs.k8s.io/reference/spec/#httprouterule

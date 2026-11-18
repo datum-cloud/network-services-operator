@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -230,7 +231,8 @@ func NewCommand(build BuildInfo) *cobra.Command {
 
 			setupLog.Info("cluster discovery mode", "mode", serverConfig.Discovery.Mode)
 
-			ctx := ctrl.SetupSignalHandler()
+			shutdown := ctrl.SetupSignalHandler()
+			ctx, stopManager := context.WithCancel(context.Background())
 
 			deploymentClusterClient := deploymentCluster.GetClient()
 
@@ -240,10 +242,12 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				webhook.NewServer(serverConfig.WebhookServer.Options(ctx, deploymentClusterClient)),
 				serverConfig.Discovery.Mode,
 			)
+			go webhookServer.CloseConnectionsThenStop(shutdown, webhookShutdownDelay, stopManager)
 
 			leaseDuration := serverConfig.LeaderElection.LeaseDuration.Duration
 			renewDeadline := serverConfig.LeaderElection.RenewDeadline.Duration
 			retryPeriod := serverConfig.LeaderElection.RetryPeriod.Duration
+			gracefulShutdownTimeout := managerGracefulShutdownTimeout
 
 			mcManagerOptions := []mcmanager.Option{}
 			if enableClusterSharding {
@@ -301,6 +305,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 				LeaseDuration:                 &leaseDuration,
 				RenewDeadline:                 &renewDeadline,
 				RetryPeriod:                   &retryPeriod,
+				GracefulShutdownTimeout:       &gracefulShutdownTimeout,
 				LeaderElectionReleaseOnCancel: true,
 			}, mcManagerOptions...)
 			if err != nil {
@@ -349,6 +354,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 					LeaseDuration:                 &leaseDuration,
 					RenewDeadline:                 &renewDeadline,
 					RetryPeriod:                   &retryPeriod,
+					GracefulShutdownTimeout:       &gracefulShutdownTimeout,
 				})
 				if err != nil {
 					setupLog.Error(err, "unable to create singleton controller manager")
@@ -377,6 +383,7 @@ func NewCommand(build BuildInfo) *cobra.Command {
 					LeaseDuration:                 &leaseDuration,
 					RenewDeadline:                 &renewDeadline,
 					RetryPeriod:                   &retryPeriod,
+					GracefulShutdownTimeout:       &gracefulShutdownTimeout,
 				})
 				if err != nil {
 					setupLog.Error(err, "unable to create federation controller manager")
@@ -473,12 +480,8 @@ func NewCommand(build BuildInfo) *cobra.Command {
 
 			// +kubebuilder:scaffold:builder
 
-			if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-				setupLog.Error(err, "unable to set up health check")
-				os.Exit(1)
-			}
-			if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-				setupLog.Error(err, "unable to set up ready check")
+			if err := addProbes(mgr); err != nil {
+				setupLog.Error(err, "unable to set up probes")
 				os.Exit(1)
 			}
 
@@ -935,6 +938,27 @@ func setupControllers(
 }
 
 const defaultLeaderElectionID = "6a7d51cc.datumapis.com"
+
+const (
+	webhookShutdownDelay           = 10 * time.Second
+	managerGracefulShutdownTimeout = 30 * time.Second
+)
+
+type probeRegistry interface {
+	AddHealthzCheck(name string, check healthz.Checker) error
+	AddReadyzCheck(name string, check healthz.Checker) error
+	GetWebhookServer() webhook.Server
+}
+
+func addProbes(mgr probeRegistry) error {
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("health check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		return fmt.Errorf("ready check: %w", err)
+	}
+	return nil
+}
 
 func ignoreCanceled(err error) error {
 	if errors.Is(err, context.Canceled) {

@@ -104,7 +104,7 @@ spec:
         - name: config
           mountPath: /config
       serviceAccountName: controller-manager
-      terminationGracePeriodSeconds: 10
+      terminationGracePeriodSeconds: 45
       volumes:
       - name: config
         configMap:

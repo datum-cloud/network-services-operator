@@ -93,6 +93,18 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			},
 		},
 		{
+			name: "rule timeouts reach the route",
+			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
+				h.Spec.Rules[0].Timeouts = &gatewayv1.HTTPRouteTimeouts{
+					Request:        ptr.To(gatewayv1.Duration("30m")),
+					BackendRequest: ptr.To(gatewayv1.Duration("5m")),
+				}
+			}),
+			assert: func(t *testing.T, httpProxy *networkingv1alpha.HTTPProxy, desiredResources *desiredHTTPProxyResources) {
+				assert.Equal(t, httpProxy.Spec.Rules[0].Timeouts, desiredResources.httpRoute.Spec.Rules[0].Timeouts)
+			},
+		},
+		{
 			name: "no URLRewrite filter in rule with hostname in endpoint",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Rules[0].Filters = nil

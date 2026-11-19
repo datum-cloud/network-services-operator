@@ -1794,7 +1794,14 @@ type ClusterSettingsValidationOptions struct {
 	HTTPMaxConnectionDuration *metav1.Duration
 
 	// Maximum amount for the duration until an entire request is received by the
-	// upstream.
+	// upstream. It also caps the request and backendRequest timeouts on
+	// HTTPProxy rules.
+	//
+	// It must be at least the HTTPProxy default request timeout of one hour, or
+	// the operator refuses to start. Lowering it marks every stored HTTPProxy
+	// with a rule timeout above the new value Accepted=False with reason
+	// Invalid on its next reconcile, and that proxy is not programmed until its
+	// timeout is lowered.
 	//
 	// +default="1h"
 	HTTPMaxRequestTimeout *metav1.Duration
@@ -2145,7 +2152,23 @@ func (c *GatewayConfig) validate() error {
 	}
 	errs = append(errs, c.validateAuthorityLossGracePeriod())
 	errs = append(errs, c.DownstreamClientTraffic.validate())
+	errs = append(errs, c.validateHTTPMaxRequestTimeout())
 	return errors.Join(errs...)
+}
+
+func (c *GatewayConfig) validateHTTPMaxRequestTimeout() error {
+	max := c.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout
+	if max == nil {
+		return nil
+	}
+	floor, err := time.ParseDuration(networkingv1alpha.HTTPProxyDefaultRequestTimeout)
+	if err != nil {
+		return err
+	}
+	if max.Duration < floor {
+		return fmt.Errorf("extensionAPIValidationOptions.backendTrafficPolicies.clusterSettings.httpMaxRequestTimeout %s is below the HTTPProxy request timeout default of %s, which every proxy without a timeout of its own carries", max.Duration, networkingv1alpha.HTTPProxyDefaultRequestTimeout)
+	}
+	return nil
 }
 
 // validateAuthorityLossGracePeriod refuses a negative period, which would turn the hold off without saying so;

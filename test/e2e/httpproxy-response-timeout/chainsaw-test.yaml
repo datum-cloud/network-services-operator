@@ -1,0 +1,347 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A response through an HTTPProxy may run longer than Envoy's 15-second default
+# route timeout (issue #459).
+#
+# The generated HTTPRoute carried no timeouts, so Envoy applied its own default
+# and cut every response still in flight at 15 seconds: large downloads,
+# server-sent events, long polls. The rule now carries a request timeout that
+# defaults to one hour and that the user can set.
+#
+# The origin is go-httpbin on the downstream cluster. Its /drip endpoint sends
+# one byte at a time over the requested duration, so a 20-second drip through
+# the edge is the exact request the default used to cut.
+#
+# The scenario proves the field is in the path from both sides: a proxy with
+# the default completes the 20-second drip, and a proxy whose rule sets a
+# 5-second request timeout has the same drip cut. Without the second case a
+# timeout that Envoy ignored would pass the first.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: httpproxy-response-timeout
+spec:
+  cluster: nso-standard
+  timeouts:
+    cleanup: 120s
+  steps:
+    - name: Deploy a slow origin on the downstream cluster
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: drip-origin
+                namespace: default
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: drip-origin
+                template:
+                  metadata:
+                    labels:
+                      app: drip-origin
+                  spec:
+                    containers:
+                      - name: go-httpbin
+                        image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                        command: ["/bin/go-httpbin"]
+                        args:
+                          - -host
+                          - "0.0.0.0"
+                          - -port
+                          - "8080"
+                          - -max-duration
+                          - 60s
+                        ports:
+                          - containerPort: 8080
+                        resources:
+                          requests:
+                            cpu: 100m
+                            memory: 128Mi
+                          limits:
+                            cpu: 100m
+                            memory: 128Mi
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: drip-origin
+                namespace: default
+              spec:
+                selector:
+                  app: drip-origin
+                ports:
+                  - port: 8080
+                    targetPort: 8080
+        - assert:
+            cluster: nso-infra
+            timeout: 120s
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: drip-origin
+                namespace: default
+              status:
+                availableReplicas: 1
+
+    - name: Create a proxy with the default timeout and one with a short timeout
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: default-timeout
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://drip-origin.default.svc.cluster.local:8080
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: short-timeout
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://drip-origin.default.svc.cluster.local:8080
+                    timeouts:
+                      request: 5s
+        - create:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: partial-timeout
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://drip-origin.default.svc.cluster.local:8080
+                    timeouts:
+                      backendRequest: 5m
+        - assert:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: default-timeout
+              spec:
+                rules:
+                  - timeouts:
+                      request: 1h
+        - assert:
+            cluster: nso-standard
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: partial-timeout
+              spec:
+                rules:
+                  - timeouts:
+                      request: 1h
+                      backendRequest: 5m
+        - assert:
+            cluster: nso-standard
+            timeout: 120s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: default-timeout
+              spec:
+                rules:
+                  - timeouts:
+                      request: 1h
+        - assert:
+            cluster: nso-infra
+            timeout: 180s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: default-timeout
+                namespace: ($downstreamNamespaceName)
+              spec:
+                rules:
+                  - timeouts:
+                      request: 1h
+        - assert:
+            cluster: nso-infra
+            timeout: 180s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: short-timeout
+                namespace: ($downstreamNamespaceName)
+              spec:
+                rules:
+                  - timeouts:
+                      request: 5s
+        - assert:
+            cluster: nso-standard
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: default-timeout
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+        - assert:
+            cluster: nso-standard
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: short-timeout
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+      catch:
+        - script:
+            cluster: nso-standard
+            content: |
+              kubectl -n $NAMESPACE get httpproxy,httproute,gateway -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get httproute,gateway,backendtrafficpolicy -o yaml
+
+    - name: A 20-second response completes with the default and is cut by a 5-second timeout
+      description: |
+        Both proxies front the same origin through the shared downstream Envoy
+        on the kind hostPort. The request is served once a GET returns 200, and
+        then one 20-second drip is sent through each proxy. The default proxy
+        delivers every byte; the short-timeout proxy loses the stream before
+        the last byte, which shows the timeout on the rule is what Envoy
+        enforces.
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy default-timeout -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: defaultHostname
+                value: ($stdout)
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy short-timeout -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: shortHostname
+                value: ($stdout)
+        - script:
+            timeout: 300s
+            env:
+              - name: DEFAULT_HOSTNAME
+                value: ($defaultHostname)
+              - name: SHORT_HOSTNAME
+                value: ($shortHostname)
+            content: |
+              set -u
+              for host in "$DEFAULT_HOSTNAME" "$SHORT_HOSTNAME"; do
+                for i in $(seq 1 60); do
+                  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                    -H "Host: ${host}" http://localhost:30080/get) || code=000
+                  echo "${host} attempt ${i}: HTTP ${code}"
+                  [ "${code}" = "200" ] && break
+                  sleep 3
+                done
+                [ "${code}" = "200" ] || { echo "${host} never answered 200"; exit 1; }
+              done
+
+              drip() {
+                curl -s -o /dev/null --max-time 40 \
+                  -w 'http=%{http_code} bytes=%{size_download} seconds=%{time_total}\n' \
+                  -H "Host: $1" 'http://localhost:30080/drip?duration=20s&numbytes=20&code=200'
+              }
+
+              echo "default timeout:"
+              out=$(drip "$DEFAULT_HOSTNAME"); rc=$?
+              echo "  ${out} exit=${rc}"
+              case "${out}" in
+                *"http=200 bytes=20 "*) ;;
+                *) echo "the 20-second drip did not complete through the default proxy"; exit 1 ;;
+              esac
+
+              echo "5-second timeout:"
+              out=$(drip "$SHORT_HOSTNAME"); rc=$?
+              echo "  ${out} exit=${rc}"
+              case "${out}" in
+                *"bytes=20 "*) echo "the 20-second drip completed despite a 5-second request timeout"; exit 1 ;;
+              esac
+              echo "ok"
+      catch:
+        - script:
+            cluster: nso-infra
+            content: |
+              kubectl -n datum-downstream-gateway get pods -o wide
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gateway-namespace --all-containers --tail=100 || true
+
+    - name: A timeout above the maximum or of zero is refused at admission
+      try:
+        - apply:
+            cluster: nso-standard
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: timeout-too-long
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://drip-origin.default.svc.cluster.local:8080
+                    timeouts:
+                      request: 2h
+        - apply:
+            cluster: nso-standard
+            expect:
+              - check:
+                  ($error != null): true
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: timeout-disabled
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://drip-origin.default.svc.cluster.local:8080
+                    timeouts:
+                      request: 0s

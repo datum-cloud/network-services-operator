@@ -45,3 +45,27 @@ func TestHTTPProxyCustomDefaulter_Default(t *testing.T) {
 	require.NoError(t, (&HTTPProxyCustomDefaulter{}).Default(context.Background(), proxy))
 	assert.Equal(t, "Test ALB", proxy.Annotations[display.AnnotationDisplayName])
 }
+
+func TestHTTPProxyCustomDefaulter_DefaultsRuleRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	proxy := &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: "alb", Namespace: "proj"},
+		Spec: networkingv1alpha.HTTPProxySpec{
+			Rules: []networkingv1alpha.HTTPProxyRule{
+				{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{{Endpoint: "https://origin.example.com"}},
+					Timeouts: &gatewayv1.HTTPRouteTimeouts{BackendRequest: ptr.To(gatewayv1.Duration("5m"))},
+				},
+				{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{{Endpoint: "https://origin.example.com"}},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, (&HTTPProxyCustomDefaulter{}).Default(context.Background(), proxy))
+	assert.Equal(t, gatewayv1.Duration("1h"), ptr.Deref(proxy.Spec.Rules[0].Timeouts.Request, ""))
+	assert.Equal(t, gatewayv1.Duration("5m"), ptr.Deref(proxy.Spec.Rules[0].Timeouts.BackendRequest, ""))
+	assert.Equal(t, gatewayv1.Duration("1h"), ptr.Deref(proxy.Spec.Rules[1].Timeouts.Request, ""))
+}

@@ -13,7 +13,7 @@ spec:
       for: 10m
       labels:
         severity: warning
-        service: network-services
+        service: alb
         team: delivery
       annotations:
         summary: "{{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace }} is ignoring its config file"

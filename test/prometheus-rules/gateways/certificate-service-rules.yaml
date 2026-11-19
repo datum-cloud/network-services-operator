@@ -13,7 +13,7 @@ groups:
     for: 2h
     labels:
       severity: warning
-      service: network-services
+      service: alb
       team: delivery
     annotations:
       summary: "Certificate for Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} cannot be issued or renewed"

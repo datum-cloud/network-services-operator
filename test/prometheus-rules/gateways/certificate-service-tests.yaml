@@ -18,7 +18,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
+              service: alb
               team: delivery
               project: project-a
               resource_namespace: customer-ns
@@ -41,7 +41,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
+              service: alb
               team: delivery
               project: project-a
               resource_namespace: customer-ns
@@ -88,7 +88,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
+              service: alb
               team: delivery
               project: project-a
               resource_namespace: default
@@ -101,7 +101,7 @@ tests:
               runbook_url: "https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/gateway-tls-certificates.md#certificateserviceissuancefailing"
           - exp_labels:
               severity: warning
-              service: network-services
+              service: alb
               team: delivery
               project: project-b
               resource_namespace: default

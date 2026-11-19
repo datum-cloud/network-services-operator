@@ -12,7 +12,7 @@ groups:
     for: 5m
     labels:
       severity: warning
-      service: network-services
+      service: alb
       team: delivery
     annotations:
       summary: "Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} has an unusable TLS certificate"
@@ -29,7 +29,7 @@ groups:
     for: 1h
     labels:
       severity: warning
-      service: network-services
+      service: alb
       team: delivery
     annotations:
       summary: "TLS certificate for Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} expires in less than 7 days"
@@ -47,7 +47,7 @@ groups:
     for: 2m
     labels:
       severity: warning
-      service: network-services
+      service: alb
       team: delivery
     annotations:
       summary: "Extension server is dropping {{ $value }} broken certificate(s) to protect the edge listener"
@@ -65,7 +65,7 @@ groups:
     for: 2m
     labels:
       severity: critical
-      service: network-services
+      service: alb
       team: delivery
     annotations:
       summary: "{{ $value }} edge listener(s) have every TLS certificate broken and cannot be protected"

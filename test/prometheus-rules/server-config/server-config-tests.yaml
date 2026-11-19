@@ -19,7 +19,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
+              service: alb
               team: delivery
               cluster: lab
               namespace: nso-system

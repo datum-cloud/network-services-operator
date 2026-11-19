@@ -45,7 +45,7 @@ spec:
         subject_namespace: "{{ $labels.resource_namespace }}"
         subject_group: networking.datumapis.com
         slo_violation: "true"
-        service: network-services
+        service: alb
         team: delivery
       annotations:
         summary: "TrafficProtectionPolicy {{ $labels.resource_name }} is not programmed on {{ $labels.ancestor_kind }} {{ $labels.ancestor_name }}"

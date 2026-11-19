@@ -19,7 +19,7 @@ tests:
           - exp_labels:
               severity: warning
               service: network-services
-              team: sre
+              team: delivery
               project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
@@ -42,7 +42,7 @@ tests:
           - exp_labels:
               severity: warning
               service: network-services
-              team: sre
+              team: delivery
               project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
@@ -89,7 +89,7 @@ tests:
           - exp_labels:
               severity: warning
               service: network-services
-              team: sre
+              team: delivery
               project: project-a
               resource_namespace: default
               resource_name: shared-gw
@@ -102,7 +102,7 @@ tests:
           - exp_labels:
               severity: warning
               service: network-services
-              team: sre
+              team: delivery
               project: project-b
               resource_namespace: default
               resource_name: shared-gw

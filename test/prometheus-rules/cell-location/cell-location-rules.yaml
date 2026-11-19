@@ -7,6 +7,8 @@ groups:
     for: 10m
     labels:
       severity: warning
+      service: network-services
+      team: delivery
     annotations:
       summary: "{{ $labels.pod }} in {{ $labels.cluster }}/{{ $labels.namespace }} cannot tell which location it serves"
       description: "Pod '{{ $labels.pod }}' in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' has not been able to work out its location for 10 minutes ({{ $labels.reason }}). Until it can, it allocates no interface addresses and publishes no workload records to the edge, so HTTP proxies to workloads in this location cannot reach them from other locations."

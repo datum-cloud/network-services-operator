@@ -14,7 +14,7 @@ groups:
     labels:
       severity: warning
       service: network-services
-      team: sre
+      team: delivery
     annotations:
       summary: "Certificate for Gateway listener {{ $labels.project }}/{{ $labels.resource_namespace }}/{{ $labels.resource_name }}/{{ $labels.listener }} cannot be issued or renewed"
       description: "The certificate service has been failing to issue or renew the certificate for listener {{ $labels.listener }} on Gateway {{ $labels.resource_name }} in project {{ $labels.project }}, namespace {{ $labels.resource_namespace }} for over two hours (reason: {{ $labels.reason }}). The listener's CertificateRenewalBlocked or CertificateIssuanceBlocked condition says why."

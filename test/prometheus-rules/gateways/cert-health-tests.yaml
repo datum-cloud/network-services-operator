@@ -15,8 +15,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
               project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
@@ -81,8 +81,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
               project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
@@ -106,8 +106,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
               project: project-a
               resource_namespace: customer-ns
               resource_name: my-gateway
@@ -141,8 +141,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
             exp_annotations:
               summary: "Extension server is dropping 3 broken certificate(s) to protect the edge listener"
               description: "The extension server is dropping 3 broken certificate(s) from the configuration it sends to the edge gateway. Check extension server logs for 'pruned invalid TLS chains' to find the affected hostnames. If GatewayListenerCertUnusable is also firing, both layers of protection are working as expected. If only this alert fires, the controller may have missed the listener."
@@ -179,8 +179,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: critical
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
             exp_annotations:
               summary: "1 edge listener(s) have every TLS certificate broken and cannot be protected"
               description: "The extension server left 1 edge listener(s) untouched because every certificate on them is broken. It never removes a listener entirely, so the edge will reject the configuration update for those listeners (EnvoyListenerUpdateRejected confirms it). This means the controller did not withhold the listener before it reached the edge. Check extension server logs for 'listeners_left_intact' and why the controller did not withhold the listener."

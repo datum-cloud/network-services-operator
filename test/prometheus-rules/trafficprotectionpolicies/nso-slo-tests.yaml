@@ -27,8 +27,8 @@ tests:
               subject_namespace: ns
               subject_group: networking.datumapis.com
               slo_violation: "true"
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
               resourcemanager_datumapis_com_project_name: p
               resource_namespace: ns
               resource_name: waf
@@ -118,8 +118,8 @@ tests:
               subject_namespace: ns
               subject_group: networking.datumapis.com
               slo_violation: "true"
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
               resourcemanager_datumapis_com_project_name: p
               resource_namespace: ns
               resource_name: waf
@@ -169,8 +169,8 @@ tests:
               subject_namespace: ns
               subject_group: networking.datumapis.com
               slo_violation: "true"
-              service: network-services
-              team: sre
+              service: alb
+              team: delivery
               resourcemanager_datumapis_com_project_name: p
               resource_namespace: ns
               resource_name: waf

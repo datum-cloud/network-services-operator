@@ -19,6 +19,8 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              service: alb
+              team: delivery
               cluster: lab
               namespace: nso-system
               pod: cell-controller-manager-0

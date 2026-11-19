@@ -20,8 +20,8 @@ groups:
       subject_namespace: "{{ $labels.resource_namespace }}"
       subject_group: networking.datumapis.com
       slo_violation: 'true'
-      service: network-services
-      team: sre
+      service: alb
+      team: delivery
     annotations:
       summary: TrafficProtectionPolicy {{ $labels.resource_name }} is not programmed on {{ $labels.ancestor_kind }} {{ $labels.ancestor_name }}
       description: TrafficProtectionPolicy {{ $labels.resource_name }} in namespace {{ $labels.resource_namespace }} is Accepted on {{ $labels.ancestor_kind }} {{ $labels.ancestor_name }}, and its Programmed

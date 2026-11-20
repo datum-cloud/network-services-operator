@@ -113,13 +113,30 @@ spec:
 
     - name: A copy deleted on the hub comes back within seconds
       try:
-        - delete:
+        - script:
             cluster: nso-hub
-            ref:
-              apiVersion: discovery.k8s.io/v1
-              kind: EndpointSlice
-              name: vpc-us-central-1-reachability-pod
-              namespace: vpc-reachability-e2e
+            content: |
+              set -eu
+              was=$(kubectl -n vpc-reachability-e2e get endpointslice vpc-us-central-1-reachability-pod \
+                -o 'jsonpath={.metadata.uid}')
+              [ -n "$was" ] || { echo "the hub copy has no UID"; exit 1; }
+              # --wait=false on purpose: the cell rebuilds the copy within
+              # seconds, so a waiting delete can watch the replacement appear
+              # under the same name and never return.
+              kubectl -n vpc-reachability-e2e delete endpointslice vpc-us-central-1-reachability-pod --wait=false
+              deadline=$(($(date +%s) + 10))
+              while :; do
+                snapshot=$(kubectl -n vpc-reachability-e2e get endpointslice vpc-us-central-1-reachability-pod \
+                  --ignore-not-found --request-timeout=5s \
+                  -o 'jsonpath={.metadata.uid}{"|"}{.metadata.deletionTimestamp}')
+                now=${snapshot%%|*}
+                deleting=${snapshot#*|}
+                if [ -n "$now" ] && [ "$now" != "$was" ] && [ -z "$deleting" ]; then
+                  break
+                fi
+                [ "$(date +%s)" -lt "$deadline" ] || { echo "timed out waiting for the hub copy to come back: original UID ${was}, last observation ${snapshot}"; exit 1; }
+                sleep 1
+              done
         - assert:
             cluster: nso-hub
             timeout: 10s

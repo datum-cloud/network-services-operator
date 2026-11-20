@@ -113,13 +113,18 @@ spec:
 
     - name: A copy deleted on the hub comes back within seconds
       try:
-        - delete:
+        - script:
             cluster: nso-hub
-            ref:
-              apiVersion: discovery.k8s.io/v1
-              kind: EndpointSlice
-              name: vpc-us-central-1-reachability-pod
-              namespace: vpc-reachability-e2e
+            timeout: 30s
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              set -eu
+              kubectl -n vpc-reachability-e2e get endpointslice vpc-us-central-1-reachability-pod -o jsonpath='{.metadata.uid}'
+              kubectl -n vpc-reachability-e2e delete endpointslice vpc-us-central-1-reachability-pod --wait=false >&2
+            outputs:
+              - name: deletedCopyUID
+                value: ($stdout)
         - assert:
             cluster: nso-hub
             timeout: 10s
@@ -129,6 +134,7 @@ spec:
               metadata:
                 name: vpc-us-central-1-reachability-pod
                 namespace: vpc-reachability-e2e
+                (uid != $deletedCopyUID): true
       catch: *diagnose
 
     - name: Taking the pod out from behind the proxy withdraws it within seconds

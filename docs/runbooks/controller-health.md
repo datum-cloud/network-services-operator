@@ -159,7 +159,9 @@ as a plain error that controller-runtime retries for ever:
 is one of the patterns above, and an orphan is covered there too.
 
 **Remediate.** Fix the controller, or the data when the object is wrong, so the
-floor goes to zero. The warning resolves at the first hour without an error.
+floor goes to zero. The warning resolves 5 minutes after the first hour without
+an error. It also waits 5 minutes before it fires, so that a short gap in the
+owner map, such as a metrics store roll, posts nothing.
 
 **Exemptions.** A deployer that already alerts on a controller by a better
 signal can hand the floor to that alert: record

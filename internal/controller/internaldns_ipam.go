@@ -117,9 +117,9 @@ func claimedAddress(claim *ipamv1alpha1.IPClaim) (string, error) {
 // returns the address IPAM assigned, or errInternalDNSAddressPending. When a
 // claim is made, a non-empty address asks for that address, which is how an
 // address the network already uses is adopted; a claim that exists keeps
-// whatever it holds. Claims are kept under Retain so the class's retention
-// lease holds the address after the claim is deleted, until serving members
-// have withdrawn it.
+// whatever it holds. Claims use Delete: IPAM may hand a released address
+// out again at once, and DNS refuses it for another network until every
+// serving member has withdrawn it from the old one.
 func holdInternalDNSAddress(
 	ctx context.Context, ipamClient client.Client, namespace string, network *networkingv1alpha.Network,
 	key internalDNSClaimKey, class, address string,
@@ -141,7 +141,7 @@ func holdInternalDNSAddress(
 			IPFamily:      ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
 			PrefixLength:  ptr.To(int32(128)),
 			Address:       address,
-			ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+			ReclaimPolicy: ipamv1alpha1.ReclaimDelete,
 			Scope:         scope,
 		}
 		if err := ipamClient.Create(ctx, claim); err != nil {
@@ -151,7 +151,7 @@ func holdInternalDNSAddress(
 	}
 	if existing.Spec.ClassName != class ||
 		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != 128 ||
-		existing.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimRetain ||
+		existing.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimDelete ||
 		!equality.Semantic.DeepEqual(existing.Spec.Scope, scope) {
 		return "", fmt.Errorf("IPClaim %q does not match this network's DNS %s address request; the IPAM class of an existing claim cannot be changed", existing.Name, key.role)
 	}

@@ -5,7 +5,7 @@ import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } fr
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof api>('../lib/api');
@@ -76,11 +76,13 @@ function mockQuery(
   mock.mockReturnValue({ isLoading: false, error: null, refetch: vi.fn(), ...value } as never);
 }
 
-function renderPage() {
+const NLB_PATH = '/project/demo-project/services/networking/nlb/edge-nlb';
+
+function renderPage(path = NLB_PATH) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/project/demo-project/services/networking/nlb/edge-nlb']}>
+      <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route
             path="/project/:projectId/services/:serviceSlug/nlb/:nlbName/*"
@@ -100,9 +102,22 @@ function listenerRow(name: string): HTMLElement {
 }
 
 beforeEach(() => {
+  // Charts read an empty matrix unless a test says otherwise.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(JSON.stringify({ status: 'success', data: { resultType: 'matrix', result: [] } }), {
+        status: 200,
+      })
+    )
+  );
   mockQuery(useNlbMock, { data: nlb });
   mockQuery(useRoutesMock, { data: [route] });
   mockQuery(useServicesMock, { data: [service] });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('NlbDetail', () => {
@@ -297,5 +312,23 @@ describe('NlbDetail', () => {
     mockQuery(useNlbMock, { data: undefined, error: new ApiError(404, 'not found') });
     renderPage();
     expect(screen.getByTestId('networking-plugin-error')).toHaveTextContent('not found');
+  });
+
+  it('shows Overview and Metrics tabs, with traffic on the overview', async () => {
+    renderPage();
+    const tabs = screen.getByTestId('networking-plugin-nlb-tabs');
+    expect(within(tabs).getByRole('tab', { name: 'Metrics' })).toHaveAttribute('href', `${NLB_PATH}/metrics`);
+    expect(await screen.findByTestId('networking-plugin-nlb-traffic-card')).toBeInTheDocument();
+  });
+
+  it('opens the metrics tab', async () => {
+    renderPage(`${NLB_PATH}/metrics`);
+    expect(await screen.findByTestId('networking-plugin-nlb-metrics')).toBeInTheDocument();
+    expect(screen.queryByTestId('networking-plugin-nlb-listeners')).not.toBeInTheDocument();
+  });
+
+  it('sends an unknown tab back to the overview', async () => {
+    renderPage(`${NLB_PATH}/nope`);
+    expect(await screen.findByTestId('networking-plugin-nlb-listeners')).toBeInTheDocument();
   });
 });

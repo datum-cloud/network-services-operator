@@ -1,5 +1,4 @@
 import { ProtocolBadge } from './nlb-empty-state';
-import { NlbMetricsPlaceholder } from './nlb-metrics-placeholder';
 import {
   backendHealth,
   backendSummaries,
@@ -455,6 +454,7 @@ export function NlbOverview({
   networkHref,
   servicesHref,
   listenerActions,
+  traffic,
 }: {
   nlb: NetworkLoadBalancer;
   rows: ListenerRow[];
@@ -464,6 +464,8 @@ export function NlbOverview({
   servicesHref?: string;
   /** Add, edit and delete; without them the listeners are read-only. */
   listenerActions?: ListenerActions;
+  /** The traffic card under the traffic path. */
+  traffic?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-6">
@@ -483,7 +485,7 @@ export function NlbOverview({
         </div>
         <BackendsStrip rows={rows} href={servicesHref} />
       </section>
-      <NlbMetricsPlaceholder />
+      {traffic}
     </div>
   );
 }

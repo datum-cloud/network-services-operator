@@ -18,12 +18,14 @@ function controls(overrides: Partial<MetricsControls> = {}): MetricsControls {
     refresh: 'off',
     regions: [],
     instances: [],
+    listeners: [],
     advance: vi.fn(),
     setRange: vi.fn(),
     setStep: vi.fn(),
     setRefresh: vi.fn(),
     setRegions: vi.fn(),
     setInstances: vi.fn(),
+    setListeners: vi.fn(),
     ...overrides,
   };
 }

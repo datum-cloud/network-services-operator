@@ -1,6 +1,7 @@
 import {
   formatBitsPerSecond,
   formatBitsTick,
+  nextHiddenSeries,
   niceScale,
   rowsMax,
   timeTicks,
@@ -85,6 +86,22 @@ export function SeriesLegend({
   );
 }
 
+/** Series the legend has hidden, dropping any that leave the chart. */
+export function useHiddenSeries(keys: readonly string[]) {
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setHidden((prev) => {
+      const next = new Set([...prev].filter((k) => keys.includes(k)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [keys]);
+  const toggle = useCallback(
+    (key: string, modifiers: LegendModifiers) => setHidden((prev) => nextHiddenSeries(keys, prev, key, modifiers)),
+    [keys]
+  );
+  return { hidden, toggle };
+}
+
 function timestampOf(state: MouseHandlerDataParam | undefined, rows: readonly ChartRow[]): number | undefined {
   const label = Number(state?.activeLabel);
   if (Number.isFinite(label)) return label;
@@ -107,6 +124,10 @@ export function TrafficChart({
   syncId,
   onZoom,
   onResetZoom,
+  formatValue = formatBitsPerSecond,
+  formatTick = formatBitsTick,
+  minScale = 0,
+  emptyMessage = 'No traffic recorded in this window',
 }: {
   title: string;
   testId: string;
@@ -122,6 +143,13 @@ export function TrafficChart({
   syncId?: string;
   onZoom: (start: number, end: number) => void;
   onResetZoom: () => void;
+  /** Formats values in the tooltip. Defaults to bits per second. */
+  formatValue?: (value: number) => string;
+  /** Formats y-axis ticks. Defaults to bits per second. */
+  formatTick?: (value: number) => string;
+  /** The least the y-axis reaches, so small counts get whole-number ticks. */
+  minScale?: number;
+  emptyMessage?: string;
 }) {
   const [brush, setBrush] = useState<{ from: number; to: number } | null>(null);
   const brushRef = useRef<{ from: number; to: number } | null>(null);
@@ -131,11 +159,14 @@ export function TrafficChart({
     const visible = keys.filter((k) => !hidden.has(k));
     return visible.length > 0 ? visible : [...keys];
   }, [keys, hidden]);
-  const scale = useMemo(() => niceScale(rowsMax(rows, visibleKeys)), [rows, visibleKeys]);
+  const scale = useMemo(
+    () => niceScale(Math.max(minScale, rowsMax(rows, visibleKeys))),
+    [rows, visibleKeys, minScale]
+  );
   const xTicks = useMemo(() => timeTicks(start, end), [start, end]);
   const yWidth = useMemo(
-    () => Math.min(84, Math.max(48, Math.max(...scale.ticks.map((t) => formatBitsTick(t).length)) * 7 + 14)),
-    [scale]
+    () => Math.min(96, Math.max(48, Math.max(...scale.ticks.map((t) => formatTick(t).length)) * 7 + 14)),
+    [scale, formatTick]
   );
   const config: ChartConfig = useMemo(
     () => Object.fromEntries(keys.map((k) => [k, { label: labels[k] ?? k, color: colors[k] }])),
@@ -160,7 +191,7 @@ export function TrafficChart({
   let body: React.ReactNode;
   if (isLoading && rows.length === 0) body = <TrafficChartSkeleton />;
   else if (error) body = <Placeholder>{metricsErrorMessage(error)}</Placeholder>;
-  else if (!hasData) body = <Placeholder>No traffic recorded in this window</Placeholder>;
+  else if (!hasData) body = <Placeholder>{emptyMessage}</Placeholder>;
   else {
     body = (
       <ChartContainer
@@ -205,7 +236,7 @@ export function TrafficChart({
           <YAxis
             domain={scale.domain}
             ticks={scale.ticks}
-            tickFormatter={formatBitsTick}
+            tickFormatter={formatTick}
             tickLine={false}
             axisLine={false}
             tickMargin={4}
@@ -239,7 +270,7 @@ export function TrafficChart({
                             </span>
                           </span>
                           <span className="text-foreground shrink-0 font-mono font-medium tabular-nums">
-                            {formatBitsPerSecond(Number(p.value))}
+                            {formatValue(Number(p.value))}
                           </span>
                         </div>
                       ))}

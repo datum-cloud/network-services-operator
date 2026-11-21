@@ -541,16 +541,17 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 ) error {
 	region := networkContext.Annotations[InternalDNSRegionAnnotation]
 	contextName := networkContext.Annotations[InternalDNSContextNameAnnotation]
-	if region == "" || contextName == "" {
+	if region == "" {
 		return nil
 	}
+	networkUID := networkContext.Labels[networkingv1alpha.NetworkUIDLabel]
 	var contexts networkingv1alpha.NetworkContextList
 	if err := cl.List(ctx, &contexts, client.InNamespace(networkContext.Namespace), client.MatchingLabels{
-		networkingv1alpha.NetworkUIDLabel: networkContext.Labels[networkingv1alpha.NetworkUIDLabel],
+		networkingv1alpha.NetworkUIDLabel: networkUID,
 	}); err != nil {
 		return err
 	}
-	otherContexts := false
+	otherContexts, sameRegion := false, false
 	for i := range contexts.Items {
 		other := &contexts.Items[i]
 		if other.UID == networkContext.UID || !other.DeletionTimestamp.IsZero() {
@@ -566,10 +567,16 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 			}
 		}
 		if otherRegion == region {
-			return nil
+			sameRegion = true
 		}
 	}
-	networkUID := networkContext.Labels[networkingv1alpha.NetworkUIDLabel]
+	if sameRegion {
+		return nil
+	}
+	// The access binding may exist before the context names it in its intent.
+	if contextName == "" {
+		contextName = internalDNSResourceName(networkContext.Spec.Network.Name, types.UID(networkUID))
+	}
 	binding := newInternalDNSObject(internalDNSAccessGVK, networkContext.Namespace, internalDNSRegionalName(contextName, region))
 	if err := deleteOwnedDNSObject(ctx, cl, binding, networkUID); err != nil {
 		return err
@@ -578,16 +585,22 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 		return nil
 	}
 	// The class's retention lease holds a released address until serving
-	// members have withdrawn it, so claims go with the binding.
+	// members have withdrawn it, so claims go with the binding. The service
+	// destination is the network's in every region and goes with its last
+	// context; a context only moving region keeps it.
 	ipamClient, namespace, err := r.ipamClient(ctx, cl, networkContext.Namespace)
 	if err != nil {
 		return err
 	}
-	network := &networkingv1alpha.Network{}
-	network.Name, network.UID = networkContext.Spec.Network.Name, types.UID(networkUID)
-	resolverClaim := internalDNSResolverClaimName(network, region)
-	return releaseInternalDNSClaims(ctx, ipamClient, namespace, networkUID, func(name string) bool {
-		return otherContexts && name != resolverClaim
+	lastContext := !otherContexts && !networkContext.DeletionTimestamp.IsZero()
+	return releaseInternalDNSClaims(ctx, ipamClient, namespace, networkUID, func(labels map[string]string) bool {
+		switch labels[internalDNSClaimRoleLabel] {
+		case internalDNSResolverRole:
+			return labels[internalDNSClaimRegionLabel] == region
+		case internalDNSServiceRole:
+			return lastContext
+		}
+		return false
 	})
 }
 

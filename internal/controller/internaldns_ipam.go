@@ -22,15 +22,36 @@ import (
 // so every claim of a network can be found and released together.
 const internalDNSClaimNetworkLabel = "networking.datumapis.com/internal-dns-network-uid"
 
+// internalDNSClaimRoleLabel says which DNS address a claim holds, and
+// internalDNSClaimRegionLabel the region of a resolver address. Claims are
+// found by these labels rather than by name: IPAM refuses to recreate a claim
+// under the name of one whose address it still retains.
+const (
+	internalDNSClaimRoleLabel   = "networking.datumapis.com/internal-dns-address"
+	internalDNSClaimRegionLabel = "networking.datumapis.com/internal-dns-region"
+	internalDNSServiceRole      = "service"
+	internalDNSResolverRole     = "resolver"
+)
+
 // errInternalDNSAddressPending means IPAM has not assigned a DNS address yet.
 var errInternalDNSAddressPending = errors.New("waiting for IPAM to assign a DNS address")
 
-func internalDNSServiceClaimName(network *networkingv1alpha.Network) string {
-	return boundedDNSName("dns-service-"+network.Name, string(network.UID)+"/service")
+type internalDNSClaimKey struct {
+	role, region string
 }
 
-func internalDNSResolverClaimName(network *networkingv1alpha.Network, region string) string {
-	return boundedDNSName("dns-resolver-"+network.Name+"-"+region, string(network.UID)+"/resolver/"+region)
+func (k internalDNSClaimKey) labels(network *networkingv1alpha.Network) map[string]string {
+	labels := map[string]string{internalDNSClaimNetworkLabel: string(network.UID), internalDNSClaimRoleLabel: k.role}
+	if k.region != "" {
+		labels[internalDNSClaimRegionLabel] = k.region
+	}
+	return labels
+}
+
+func serviceClaimKey() internalDNSClaimKey { return internalDNSClaimKey{role: internalDNSServiceRole} }
+
+func resolverClaimKey(region string) internalDNSClaimKey {
+	return internalDNSClaimKey{role: internalDNSResolverRole, region: region}
 }
 
 func (r *InternalDNSProjectReconciler) ipamEnabled() bool {
@@ -49,91 +70,114 @@ func (r *InternalDNSProjectReconciler) ipamClient(ctx context.Context, cl client
 	return ipamClient, routing.projectNamespace, nil
 }
 
-// holdInternalDNSAddress ensures a /128 claim of class for the network and
-// returns the address IPAM assigned, or errInternalDNSAddressPending. A
-// non-empty address asks for that address, which is how an address the
-// network already uses is adopted. The claim is kept under Retain so the
-// class's retention lease holds the address after the claim is deleted,
-// until every serving member has withdrawn it.
-func holdInternalDNSAddress(
-	ctx context.Context, ipamClient client.Client, namespace string, network *networkingv1alpha.Network,
-	name, class, address string,
-) (string, error) {
-	claim := &ipamv1alpha1.IPClaim{}
-	claim.Namespace, claim.Name = namespace, name
-	claim.Labels = map[string]string{internalDNSClaimNetworkLabel: string(network.UID)}
-	claim.Spec = ipamv1alpha1.IPClaimSpec{
-		ClassName:     class,
-		IPFamily:      ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
-		PrefixLength:  ptr.To(int32(128)),
-		Address:       address,
-		ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
-		Scope: map[string]ipamv1alpha1.ScopeRef{
-			ipamScopeRoleNetwork: {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: network.Name},
-		},
+// findInternalDNSClaim returns the network's live claim for key, or nil.
+func findInternalDNSClaim(ctx context.Context, ipamClient client.Client, namespace string, network *networkingv1alpha.Network, key internalDNSClaimKey) (*ipamv1alpha1.IPClaim, error) {
+	var claims ipamv1alpha1.IPClaimList
+	if err := ipamClient.List(ctx, &claims, client.InNamespace(namespace), client.MatchingLabels(key.labels(network))); err != nil {
+		return nil, fmt.Errorf("list DNS address claims: %w", err)
 	}
-	existing := &ipamv1alpha1.IPClaim{}
-	switch err := ipamClient.Get(ctx, client.ObjectKeyFromObject(claim), existing); {
-	case apierrors.IsNotFound(err):
-		if err := ipamClient.Create(ctx, claim); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("claim DNS address %q: %w", name, err)
+	var found *ipamv1alpha1.IPClaim
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if !claim.DeletionTimestamp.IsZero() {
+			continue
 		}
-		return "", errInternalDNSAddressPending
-	case err != nil:
-		return "", err
+		if found != nil {
+			return nil, fmt.Errorf("network %s holds more than one DNS %s address claim", network.Name, key.role)
+		}
+		found = claim
 	}
-	if !existing.DeletionTimestamp.IsZero() {
-		return "", fmt.Errorf("%w: IPClaim %q is being deleted", errInternalDNSAddressPending, name)
-	}
-	if existing.Labels[internalDNSClaimNetworkLabel] != string(network.UID) ||
-		existing.Spec.ClassName != class ||
-		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != 128 ||
-		existing.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimRetain ||
-		address != "" && existing.Spec.Address != "" && !sameIPText(existing.Spec.Address, address) ||
-		!equality.Semantic.DeepEqual(existing.Spec.Scope, claim.Spec.Scope) {
-		return "", fmt.Errorf("IPClaim %q does not match this network's DNS address request", name)
-	}
-	allocated := existing.Status.Address
-	if allocated == "" && existing.Status.AllocatedCIDR != "" {
-		if prefix, err := netip.ParsePrefix(existing.Status.AllocatedCIDR); err == nil && prefix.Bits() == 128 {
+	return found, nil
+}
+
+// claimedAddress returns the address IPAM bound to a claim, or "" while it is
+// unbound. A claim that asked for an address and was bound to another is an
+// error: its address is not the network's.
+func claimedAddress(claim *ipamv1alpha1.IPClaim) (string, error) {
+	allocated := claim.Status.Address
+	if allocated == "" && claim.Status.AllocatedCIDR != "" {
+		if prefix, err := netip.ParsePrefix(claim.Status.AllocatedCIDR); err == nil && prefix.Bits() == 128 {
 			allocated = prefix.Addr().String()
 		}
 	}
 	if allocated == "" {
-		return "", errInternalDNSAddressPending
+		return "", nil
 	}
 	parsed, err := netip.ParseAddr(allocated)
 	if err != nil || !parsed.Is6() || parsed.Is4In6() {
-		return "", fmt.Errorf("IPClaim %q returned an invalid IPv6 address %q", name, allocated)
+		return "", fmt.Errorf("IPClaim %q returned an invalid IPv6 address %q", claim.Name, allocated)
 	}
-	if address != "" && parsed != netip.MustParseAddr(address).Unmap() {
-		return "", fmt.Errorf("IPClaim %q holds %s, not the address %s it adopts", name, parsed, address)
+	if claim.Spec.Address != "" && !sameIPText(claim.Spec.Address, allocated) {
+		return "", fmt.Errorf("IPClaim %q asked for %s but holds %s", claim.Name, claim.Spec.Address, parsed)
 	}
 	return parsed.String(), nil
 }
 
-// internalDNSClaimedAddress reads the address a claim holds, without creating
-// it. An empty address means none is held.
-func internalDNSClaimedAddress(ctx context.Context, ipamClient client.Client, namespace, name string, network *networkingv1alpha.Network) (string, error) {
-	claim := &ipamv1alpha1.IPClaim{}
-	if err := ipamClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, claim); err != nil {
-		return "", client.IgnoreNotFound(err)
+// holdInternalDNSAddress ensures a /128 claim of class for the network and
+// returns the address IPAM assigned, or errInternalDNSAddressPending. When a
+// claim is made, a non-empty address asks for that address, which is how an
+// address the network already uses is adopted; a claim that exists keeps
+// whatever it holds. Claims are kept under Retain so the class's retention
+// lease holds the address after the claim is deleted, until serving members
+// have withdrawn it.
+func holdInternalDNSAddress(
+	ctx context.Context, ipamClient client.Client, namespace string, network *networkingv1alpha.Network,
+	key internalDNSClaimKey, class, address string,
+) (string, error) {
+	scope := map[string]ipamv1alpha1.ScopeRef{
+		ipamScopeRoleNetwork: {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: network.Name},
 	}
-	if claim.Labels[internalDNSClaimNetworkLabel] != string(network.UID) || !claim.DeletionTimestamp.IsZero() {
-		return "", nil
+	existing, err := findInternalDNSClaim(ctx, ipamClient, namespace, network, key)
+	if err != nil {
+		return "", err
 	}
-	if claim.Status.Address != "" {
-		return claim.Status.Address, nil
+	if existing == nil {
+		claim := &ipamv1alpha1.IPClaim{}
+		claim.Namespace = namespace
+		claim.GenerateName = "dns-" + key.role + "-"
+		claim.Labels = key.labels(network)
+		claim.Spec = ipamv1alpha1.IPClaimSpec{
+			ClassName:     class,
+			IPFamily:      ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
+			PrefixLength:  ptr.To(int32(128)),
+			Address:       address,
+			ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+			Scope:         scope,
+		}
+		if err := ipamClient.Create(ctx, claim); err != nil {
+			return "", fmt.Errorf("claim DNS %s address: %w", key.role, err)
+		}
+		existing = claim
 	}
-	if prefix, err := netip.ParsePrefix(claim.Status.AllocatedCIDR); err == nil && prefix.Bits() == 128 {
-		return prefix.Addr().String(), nil
+	if existing.Spec.ClassName != class ||
+		existing.Spec.PrefixLength == nil || *existing.Spec.PrefixLength != 128 ||
+		existing.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimRetain ||
+		!equality.Semantic.DeepEqual(existing.Spec.Scope, scope) {
+		return "", fmt.Errorf("IPClaim %q does not match this network's DNS %s address request; the IPAM class of an existing claim cannot be changed", existing.Name, key.role)
 	}
-	return "", nil
+	allocated, err := claimedAddress(existing)
+	if err != nil {
+		return "", err
+	}
+	if allocated == "" {
+		return "", errInternalDNSAddressPending
+	}
+	return allocated, nil
 }
 
-// releaseInternalDNSClaims deletes the network's DNS address claims that keep
-// returns false for.
-func releaseInternalDNSClaims(ctx context.Context, ipamClient client.Client, namespace string, networkUID string, keep func(name string) bool) error {
+// internalDNSClaimedAddress reads the address a claim holds, without creating
+// it. An empty address means none is held.
+func internalDNSClaimedAddress(ctx context.Context, ipamClient client.Client, namespace string, network *networkingv1alpha.Network, key internalDNSClaimKey) (string, error) {
+	claim, err := findInternalDNSClaim(ctx, ipamClient, namespace, network, key)
+	if err != nil || claim == nil {
+		return "", err
+	}
+	return claimedAddress(claim)
+}
+
+// releaseInternalDNSClaims deletes the network's DNS address claims that
+// release selects, or all of them when release is nil.
+func releaseInternalDNSClaims(ctx context.Context, ipamClient client.Client, namespace string, networkUID string, release func(labels map[string]string) bool) error {
 	if networkUID == "" {
 		return nil
 	}
@@ -144,7 +188,7 @@ func releaseInternalDNSClaims(ctx context.Context, ipamClient client.Client, nam
 	var errs []error
 	for i := range claims.Items {
 		claim := &claims.Items[i]
-		if keep != nil && keep(claim.Name) {
+		if release != nil && !release(claim.Labels) {
 			continue
 		}
 		uid := claim.UID
@@ -189,19 +233,13 @@ func (r *InternalDNSProjectReconciler) addresses(
 	}
 	want := derived
 	if r.Config.IPAM.FreshAllocation {
-		// A network that already has a binding keeps its destination.
-		want = ""
-		if held, err := internalDNSClaimedAddress(ctx, ipamClient, namespace, internalDNSServiceClaimName(network), network); err != nil {
+		// A network with a binding in any region keeps its destination.
+		want, err = r.networkDestination(ctx, cl, network)
+		if err != nil {
 			return "", "", err
-		} else if held == "" {
-			if existing, err := r.existingAccess(ctx, cl, network, dnsContext, region); err != nil {
-				return "", "", err
-			} else if existing != nil {
-				want, _, _ = unstructured.NestedString(existing.Object, "spec", "destinationAddress")
-			}
 		}
 	}
-	destination, err := holdInternalDNSAddress(ctx, ipamClient, namespace, network, internalDNSServiceClaimName(network), r.Config.IPAM.ServiceClass, want)
+	destination, err := holdInternalDNSAddress(ctx, ipamClient, namespace, network, serviceClaimKey(), r.Config.IPAM.ServiceClass, want)
 	if err != nil {
 		return "", "", err
 	}
@@ -209,8 +247,7 @@ func (r *InternalDNSProjectReconciler) addresses(
 	if class == "" {
 		return destination, "", nil
 	}
-	claimName := internalDNSResolverClaimName(network, region)
-	regional, err := internalDNSClaimedAddress(ctx, ipamClient, namespace, claimName, network)
+	regional, err := internalDNSClaimedAddress(ctx, ipamClient, namespace, network, resolverClaimKey(region))
 	if err != nil || regional != "" {
 		return destination, regional, err
 	}
@@ -222,7 +259,7 @@ func (r *InternalDNSProjectReconciler) addresses(
 		// Adopted after the binding reports what DNS allocated.
 		return destination, "", nil
 	}
-	regional, err = holdInternalDNSAddress(ctx, ipamClient, namespace, network, claimName, class, "")
+	regional, err = holdInternalDNSAddress(ctx, ipamClient, namespace, network, resolverClaimKey(region), class, "")
 	return destination, regional, err
 }
 
@@ -231,7 +268,7 @@ func (r *InternalDNSProjectReconciler) adoptRegional(ctx context.Context, cl cli
 	if err != nil {
 		return "", err
 	}
-	return holdInternalDNSAddress(ctx, ipamClient, namespace, network, internalDNSResolverClaimName(network, region), r.Config.IPAM.ResolverClasses[region], address)
+	return holdInternalDNSAddress(ctx, ipamClient, namespace, network, resolverClaimKey(region), r.Config.IPAM.ResolverClasses[region], address)
 }
 
 func (r *InternalDNSProjectReconciler) existingAccess(
@@ -245,4 +282,24 @@ func (r *InternalDNSProjectReconciler) existingAccess(
 		return nil, nil
 	}
 	return current, nil
+}
+
+// networkDestination returns the destination any of the network's access
+// bindings uses, in any region, or "".
+func (r *InternalDNSProjectReconciler) networkDestination(ctx context.Context, cl client.Client, network *networkingv1alpha.Network) (string, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(internalDNSAccessGVK.GroupVersion().WithKind(internalDNSAccessGVK.Kind + "List"))
+	if err := cl.List(ctx, list, client.InNamespace(network.Namespace)); err != nil {
+		return "", err
+	}
+	for i := range list.Items {
+		binding := &list.Items[i]
+		if binding.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) {
+			continue
+		}
+		if destination, _, _ := unstructured.NestedString(binding.Object, "spec", "destinationAddress"); destination != "" {
+			return destination, nil
+		}
+	}
+	return "", nil
 }

@@ -58,7 +58,7 @@ func claimedInternalDNSDestination(cl client.Client, factory IPAMClientFactory, 
 		if err != nil {
 			return "", fmt.Errorf("build project IPAM client: %w", err)
 		}
-		address, err := internalDNSClaimedAddress(ctx, ipamClient, routing.projectNamespace, internalDNSServiceClaimName(network), network)
+		address, err := internalDNSClaimedAddress(ctx, ipamClient, routing.projectNamespace, network, serviceClaimKey())
 		if err == nil && address == "" {
 			return internalDNSDestination(servicePrefix, dnsContext.GetUID())
 		}

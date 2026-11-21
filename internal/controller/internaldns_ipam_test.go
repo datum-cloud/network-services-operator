@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -91,23 +92,20 @@ func (s *ipamDNSScenario) readyContext() *unstructured.Unstructured {
 	return dnsContext
 }
 
-func (s *ipamDNSScenario) claim(name string) *ipamv1alpha1.IPClaim {
+func (s *ipamDNSScenario) claim(key internalDNSClaimKey) *ipamv1alpha1.IPClaim {
 	s.t.Helper()
-	claim := &ipamv1alpha1.IPClaim{}
-	if err := s.ipam.Get(s.ctx, client.ObjectKey{Namespace: "tenant", Name: name}, claim); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
+	claim, err := findInternalDNSClaim(s.ctx, s.ipam, "tenant", s.network, key)
+	if err != nil {
 		s.t.Fatal(err)
 	}
 	return claim
 }
 
-func (s *ipamDNSScenario) allocate(name, address string) {
+func (s *ipamDNSScenario) allocate(key internalDNSClaimKey, address string) {
 	s.t.Helper()
-	claim := s.claim(name)
+	claim := s.claim(key)
 	if claim == nil {
-		s.t.Fatalf("claim %s was not made", name)
+		s.t.Fatalf("claim %v was not made", key)
 	}
 	claim.Status.Address = address
 	if err := s.ipam.Status().Update(s.ctx, claim); err != nil {
@@ -136,14 +134,14 @@ func TestInternalDNSAdoptsExistingAddressesIntoIPAM(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.reconcile()
-	service := s.claim(internalDNSServiceClaimName(s.network))
+	service := s.claim(serviceClaimKey())
 	if service == nil || service.Spec.Address != derived || service.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimRetain || service.Spec.ClassName != "dns-service" {
 		t.Fatalf("service address was not adopted: %#v", service)
 	}
 	if s.binding(dnsContext) != nil {
 		t.Fatal("access was written before IPAM held its destination")
 	}
-	s.allocate(service.Name, derived)
+	s.allocate(serviceClaimKey(), derived)
 	s.reconcile()
 	binding := s.binding(dnsContext)
 	if binding == nil {
@@ -152,7 +150,7 @@ func TestInternalDNSAdoptsExistingAddressesIntoIPAM(t *testing.T) {
 	if got, _, _ := unstructured.NestedString(binding.Object, "spec", "destinationAddress"); got != derived {
 		t.Fatalf("destination = %s, want %s", got, derived)
 	}
-	if accessRegionalAddress(binding, "spec") != "" || s.claim(internalDNSResolverClaimName(s.network, "us-central")) != nil {
+	if accessRegionalAddress(binding, "spec") != "" || s.claim(resolverClaimKey("us-central")) != nil {
 		t.Fatal("a regional address was claimed before DNS reported the one it allocated")
 	}
 
@@ -161,7 +159,7 @@ func TestInternalDNSAdoptsExistingAddressesIntoIPAM(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.reconcile()
-	resolverName := internalDNSResolverClaimName(s.network, "us-central")
+	resolverName := resolverClaimKey("us-central")
 	resolver := s.claim(resolverName)
 	if resolver == nil || resolver.Spec.Address != "fd54::5" || resolver.Spec.ClassName != "dns-resolver-us-central" {
 		t.Fatalf("regional address was not adopted: %#v", resolver)
@@ -178,13 +176,13 @@ func TestInternalDNSFreshAllocationUsesIPAMAddresses(t *testing.T) {
 	s.reconcile()
 	dnsContext := s.readyContext()
 	s.reconcile()
-	service := s.claim(internalDNSServiceClaimName(s.network))
+	service := s.claim(serviceClaimKey())
 	if service == nil || service.Spec.Address != "" {
 		t.Fatalf("a new network did not ask IPAM for a destination: %#v", service)
 	}
-	s.allocate(service.Name, "fd70:100::99")
+	s.allocate(serviceClaimKey(), "fd70:100::99")
 	s.reconcile()
-	resolverName := internalDNSResolverClaimName(s.network, "us-central")
+	resolverName := resolverClaimKey("us-central")
 	if resolver := s.claim(resolverName); resolver == nil || resolver.Spec.Address != "" {
 		t.Fatalf("a new network did not ask IPAM for a regional address: %#v", resolver)
 	}
@@ -205,9 +203,9 @@ func TestInternalDNSDisableReleasesClaims(t *testing.T) {
 	s.reconcile()
 	s.readyContext()
 	s.reconcile()
-	s.allocate(internalDNSServiceClaimName(s.network), "fd70:100::99")
+	s.allocate(serviceClaimKey(), "fd70:100::99")
 	s.reconcile()
-	s.allocate(internalDNSResolverClaimName(s.network, "us-central"), "fd54::7")
+	s.allocate(resolverClaimKey("us-central"), "fd54::7")
 	s.reconcile()
 	network := &networkingv1alpha.Network{}
 	if err := s.cl.Get(s.ctx, client.ObjectKeyFromObject(s.network), network); err != nil {
@@ -224,5 +222,90 @@ func TestInternalDNSDisableReleasesClaims(t *testing.T) {
 	}
 	if len(claims.Items) != 0 {
 		t.Fatalf("disabling DNS kept %d address claims", len(claims.Items))
+	}
+}
+
+func TestInternalDNSRefusesAClaimBoundToAnotherAddress(t *testing.T) {
+	s := newIPAMDNSScenario(t, false)
+	s.reconcile()
+	dnsContext := s.readyContext()
+	s.reconcile()
+	s.allocate(serviceClaimKey(), "fd70:100::1")
+	if _, err := s.r.reconcile(s.ctx, s.cl, testProject, client.ObjectKeyFromObject(s.nc)); err == nil {
+		t.Fatal("a claim bound to an address other than the adopted one was accepted")
+	}
+	if s.binding(dnsContext) != nil {
+		t.Fatal("access was written with an address the network does not use")
+	}
+	verify := claimedInternalDNSDestination(s.cl, s.r.IPAM, "fd70:100::/64")
+	if _, err := verify(s.ctx, s.network, dnsContext); err == nil || errors.Is(err, errInternalDNSIntentUnverified) {
+		t.Fatalf("a mismatched claim must hold intent, not withdraw it: %v", err)
+	}
+}
+
+func TestInternalDNSRegionChangeKeepsTheServiceAddress(t *testing.T) {
+	s := newIPAMDNSScenario(t, true)
+	s.reconcile()
+	s.readyContext()
+	s.reconcile()
+	s.allocate(serviceClaimKey(), "fd70:100::99")
+	s.reconcile()
+	s.allocate(resolverClaimKey("us-central"), "fd54::7")
+	s.reconcile()
+	location := &locationsv1alpha1.Location{}
+	if err := s.cl.Get(s.ctx, client.ObjectKey{Name: "ord-1"}, location); err != nil {
+		t.Fatal(err)
+	}
+	location.Spec.Topology[internalDNSRegionTopologyKey] = "us-east"
+	if err := s.cl.Update(s.ctx, location); err != nil {
+		t.Fatal(err)
+	}
+	s.reconcile()
+	if service := s.claim(serviceClaimKey()); service == nil {
+		t.Fatal("moving region released the network's service address")
+	}
+	if s.claim(resolverClaimKey("us-central")) != nil {
+		t.Fatal("the old region's resolver address was kept")
+	}
+}
+
+func TestInternalDNSDeletionBeforeIntentReleasesClaims(t *testing.T) {
+	s := newIPAMDNSScenario(t, true)
+	s.reconcile()
+	s.readyContext()
+	s.reconcile()
+	if s.claim(serviceClaimKey()) == nil {
+		t.Fatal("no claim was made")
+	}
+	current := &networkingv1alpha.NetworkContext{}
+	if err := s.cl.Get(s.ctx, client.ObjectKeyFromObject(s.nc), current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Annotations[InternalDNSContextNameAnnotation] != "" {
+		t.Fatal("intent was published before the claim was bound")
+	}
+	if err := s.cl.Delete(s.ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	s.reconcile()
+	if s.claim(serviceClaimKey()) != nil {
+		t.Fatal("a context deleted before its intent was published left its claim")
+	}
+}
+
+func TestInternalDNSFreshAllocationCanBeTurnedOff(t *testing.T) {
+	s := newIPAMDNSScenario(t, true)
+	s.reconcile()
+	dnsContext := s.readyContext()
+	s.reconcile()
+	s.allocate(serviceClaimKey(), "fd70:100::99")
+	s.reconcile()
+	s.allocate(resolverClaimKey("us-central"), "fd54::7")
+	s.reconcile()
+	s.r.Config.IPAM.FreshAllocation = false
+	s.reconcile()
+	destination, _, _ := unstructured.NestedString(s.binding(dnsContext).Object, "spec", "destinationAddress")
+	if destination != "fd70:100::99" {
+		t.Fatalf("turning fresh allocation off moved a network: %s", destination)
 	}
 }

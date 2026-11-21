@@ -297,7 +297,7 @@ func TestRecreatedContextReplacesAccessBinding(t *testing.T) {
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(binding).Build()
 	r := &InternalDNSProjectReconciler{}
-	_, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::11")
+	_, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::11", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestRecreatedContextReplacesAccessBinding(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); !apierrors.IsNotFound(err) {
 		t.Fatalf("retired binding survived: %v", err)
 	}
-	current, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::11")
+	current, ready, err := r.ensureAccess(ctx, cl, network, "project-uid", dnsContext, "us-central", "fd70:100::11", "")
 	if err != nil {
 		t.Fatal(err)
 	}

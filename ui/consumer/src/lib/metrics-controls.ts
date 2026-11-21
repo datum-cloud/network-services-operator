@@ -8,6 +8,7 @@ export const STEP_PARAM = 'step';
 export const REFRESH_PARAM = 'refresh';
 export const REGIONS_PARAM = 'regions';
 export const INSTANCES_PARAM = 'instances';
+export const LISTENERS_PARAM = 'listeners';
 
 export const DEFAULT_RANGE = 'now-1h';
 export const DEFAULT_STEP = 'auto';
@@ -150,8 +151,10 @@ export function useMetricsControls() {
   const refresh = searchParams.get(REFRESH_PARAM) || DEFAULT_REFRESH;
   const regionsRaw = searchParams.get(REGIONS_PARAM);
   const instancesRaw = searchParams.get(INSTANCES_PARAM);
+  const listenersRaw = searchParams.get(LISTENERS_PARAM);
   const regions = useMemo(() => parseListParam(regionsRaw), [regionsRaw]);
   const instances = useMemo(() => parseListParam(instancesRaw), [instancesRaw]);
+  const listeners = useMemo(() => parseListParam(listenersRaw), [listenersRaw]);
 
   const relative = isRelativeRange(range);
   const [now, setNow] = useState(() => Date.now());
@@ -192,6 +195,7 @@ export function useMetricsControls() {
     refresh,
     regions,
     instances,
+    listeners,
     advance: useCallback(() => setNow(Date.now()), []),
     setRange: useCallback(
       (value: string) => {
@@ -204,10 +208,25 @@ export function useMetricsControls() {
     setRefresh: useCallback((value: string) => setParam(REFRESH_PARAM, value, DEFAULT_REFRESH), [setParam]),
     setRegions: useCallback((values: string[]) => setParam(REGIONS_PARAM, values.join(',')), [setParam]),
     setInstances: useCallback((values: string[]) => setParam(INSTANCES_PARAM, values.join(',')), [setParam]),
+    setListeners: useCallback((values: string[]) => setParam(LISTENERS_PARAM, values.join(',')), [setParam]),
   };
 }
 
 export type MetricsControls = ReturnType<typeof useMetricsControls>;
+
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+}
+
+/** "Last 1h" for a preset, otherwise the window's length. */
+export function rangeLabelFor(range: { start: number; end: number; preset?: string }): string {
+  const preset = RANGE_PRESETS.find((p) => p.key === range.preset);
+  if (preset) return preset.label;
+  return formatDuration(range.end - range.start);
+}
 
 export function useRangeZoom(
   range: string,

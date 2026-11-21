@@ -82,12 +82,15 @@ export function MetricsToolbar({
   instanceOptions,
   pickedRegions,
   pickedInstances,
+  instanceFilter,
 }: {
   controls: MetricsControls;
   regionOptions: FilterOption[];
   instanceOptions: FilterOption[];
   pickedRegions: string[];
   pickedInstances: string[];
+  /** Renames the second filter and where it writes, for pages that filter by something other than instances. */
+  instanceFilter?: { placeholder: string; emptyContent: string; onValueChange: (values: string[]) => void };
 }) {
   const timezone = useMemo(() => getBrowserTimezone(), []);
   const pickerValue = useMemo(
@@ -120,10 +123,10 @@ export function MetricsToolbar({
             className={cn('bg-card w-full sm:w-auto sm:min-w-64', CONTROL_HEIGHT)}
             options={instanceOptions}
             value={pickedInstances}
-            onValueChange={controls.setInstances}
-            placeholder="All instances"
+            onValueChange={instanceFilter?.onValueChange ?? controls.setInstances}
+            placeholder={instanceFilter?.placeholder ?? 'All instances'}
             maxCount={1}
-            emptyContent="No instances found."
+            emptyContent={instanceFilter?.emptyContent ?? 'No instances found.'}
           />
         )}
       </div>

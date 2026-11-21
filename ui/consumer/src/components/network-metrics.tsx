@@ -2,7 +2,7 @@ import { MetricsToolbar } from './metrics-toolbar';
 import { MetricKpiCard } from './metric-kpi-card';
 import { NetworkMetricsSkeleton, TrafficLegendSkeleton } from './skeletons';
 import { ErrorOrRestrictedState, SectionEmpty } from './states';
-import { SeriesLegend, TrafficChart } from './traffic-chart';
+import { SeriesLegend, TrafficChart, useHiddenSeries } from './traffic-chart';
 import { useNetworkInterfaces } from '../lib/api';
 import {
   INTERFACE_LABEL,
@@ -14,52 +14,22 @@ import {
   interfaceSeriesLabels,
   interfaceTrafficQuery,
   naturalCompare,
-  nextHiddenSeries,
   rankSeriesKeys,
   rollUpSeries,
   seriesColors,
   toGridRows,
   totalSeries,
   trafficSummary,
-  type LegendModifiers,
 } from '../lib/interface-metrics';
 import { isMetricsDenied, useMetricsRange, type RangeResult } from '../lib/metrics';
-import { RANGE_PRESETS, useMetricsControls, useRangeZoom } from '../lib/metrics-controls';
+import { rangeLabelFor, useMetricsControls, useRangeZoom } from '../lib/metrics-controls';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
 import { Text } from '@datum-cloud/datum-ui/typography';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 
 const SYNC_ID = 'networking-plugin-vpc-traffic';
 const INTERFACES_REFETCH_MS = 60_000;
 const EMPTY_SERIES: RangeResult['series'] = [];
-
-function formatDuration(ms: number): string {
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
-}
-
-function rangeLabelFor(range: { start: number; end: number; preset?: string }): string {
-  const preset = RANGE_PRESETS.find((p) => p.key === range.preset);
-  if (preset) return preset.label;
-  return formatDuration(range.end - range.start);
-}
-
-function useHiddenSeries(keys: readonly string[]) {
-  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
-  useEffect(() => {
-    setHidden((prev) => {
-      const next = new Set([...prev].filter((k) => keys.includes(k)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [keys]);
-  const toggle = useCallback(
-    (key: string, modifiers: LegendModifiers) => setHidden((prev) => nextHiddenSeries(keys, prev, key, modifiers)),
-    [keys]
-  );
-  return { hidden, toggle };
-}
 
 export function NetworkMetrics({
   projectId,

@@ -47,9 +47,19 @@ async function errorText(res: Response): Promise<string | undefined> {
   return undefined;
 }
 
-export function toSeries(matrix: RawMatrix | undefined, groupLabel: string): MetricSeries[] {
+/** The label, or labels joined with SERIES_KEY_SEPARATOR, that names each series. */
+export type GroupLabel = string | readonly string[];
+
+export const SERIES_KEY_SEPARATOR = '|';
+
+function seriesKey(metric: Record<string, string> | undefined, groupLabel: GroupLabel): string {
+  if (typeof groupLabel === 'string') return metric?.[groupLabel] ?? '';
+  return groupLabel.map((label) => metric?.[label] ?? '').join(SERIES_KEY_SEPARATOR);
+}
+
+export function toSeries(matrix: RawMatrix | undefined, groupLabel: GroupLabel): MetricSeries[] {
   return (matrix?.result ?? []).map((row) => ({
-    key: row.metric?.[groupLabel] ?? '',
+    key: seriesKey(row.metric, groupLabel),
     points: (row.values ?? []).flatMap(([ts, value]) => {
       const n = Number.parseFloat(value);
       return Number.isFinite(n) ? [[ts * 1000, n] as [number, number]] : [];
@@ -67,7 +77,7 @@ export async function queryRange(
   projectId: string,
   query: string,
   window: QueryWindow,
-  groupLabel: string
+  groupLabel: GroupLabel
 ): Promise<RangeResult> {
   const { stepSeconds } = window;
   const end = Math.floor(window.end / 1000);
@@ -114,7 +124,7 @@ export const METRICS_QUERY_KEY = 'metrics-range';
 export function useMetricsRange(
   projectId: string | undefined,
   query: string | undefined,
-  options: QueryWindow & { groupLabel: string; refetchInterval?: number | false }
+  options: QueryWindow & { groupLabel: GroupLabel; refetchInterval?: number | false }
 ): UseQueryResult<RangeResult, MetricsError> {
   const { start, end, stepSeconds, groupLabel, refetchInterval = false } = options;
   return useQuery<RangeResult, MetricsError>({

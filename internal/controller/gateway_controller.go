@@ -2291,9 +2291,8 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			downstreamStrategy,
 			route,
 		)
-		if result.Err != nil {
-			return result
-		}
+		// A route's error fails that route alone: keep programming the others,
+		// and join its error into the result.
 		result = result.Merge(httpRouteResult)
 	}
 

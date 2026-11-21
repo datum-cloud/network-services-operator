@@ -784,6 +784,7 @@ func controllerRegistrations(
 				Config:    serverConfig.InternalDNS,
 				Projects:  deps.projectIdentities,
 				Locations: deps.dnsLocations,
+				IPAM:      deps.ipamClients,
 			}).SetupWithManager(mgr)
 		}},
 		{"internaldns-readiness", serverConfig.InternalDNS.Enabled, func() error {
@@ -885,6 +886,7 @@ func controllerRegistrations(
 			return (&controller.GatewayResourceReplicatorReconciler{
 				Config:            serverConfig,
 				DownstreamCluster: deps.downstreamCluster,
+				IPAM:              deps.ipamClients,
 			}).SetupWithManager(mgr)
 		}},
 		{"trafficprotectionpolicy", !serverConfig.Gateway.Coraza.Disabled, func() error {

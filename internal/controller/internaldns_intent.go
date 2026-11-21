@@ -34,6 +34,38 @@ func internalDNSIntentComplete(annotations map[string]string) bool {
 	return internaldns.IntentComplete(annotations)
 }
 
+// internalDNSDestinationFunc returns the service destination a network's DNS
+// context must use: the one derived from the context, or the one IPAM holds.
+type internalDNSDestinationFunc func(ctx context.Context, network *networkingv1alpha.Network, dnsContext *unstructured.Unstructured) (string, error)
+
+// derivedInternalDNSDestination derives destinations from servicePrefix.
+func derivedInternalDNSDestination(servicePrefix string) internalDNSDestinationFunc {
+	return func(_ context.Context, _ *networkingv1alpha.Network, dnsContext *unstructured.Unstructured) (string, error) {
+		return internalDNSDestination(servicePrefix, dnsContext.GetUID())
+	}
+}
+
+// claimedInternalDNSDestination reads the destination from the network's
+// service claim in IPAM. A network that holds no claim yet still uses the
+// derived destination it had before IPAM.
+func claimedInternalDNSDestination(cl client.Client, factory IPAMClientFactory, servicePrefix string) internalDNSDestinationFunc {
+	return func(ctx context.Context, network *networkingv1alpha.Network, dnsContext *unstructured.Unstructured) (string, error) {
+		routing, err := resolveProjectOrCluster(ctx, cl, network.Namespace)
+		if err != nil {
+			return "", err
+		}
+		ipamClient, err := factory.ClientForProject(routing.project)
+		if err != nil {
+			return "", fmt.Errorf("build project IPAM client: %w", err)
+		}
+		address, err := internalDNSClaimedAddress(ctx, ipamClient, routing.projectNamespace, internalDNSServiceClaimName(network), network)
+		if err == nil && address == "" {
+			return internalDNSDestination(servicePrefix, dnsContext.GetUID())
+		}
+		return address, err
+	}
+}
+
 // verifyInternalDNSIntent checks the DNS annotations on a project
 // NetworkContext against the resolver context and access binding DNS accepted
 // for the context's network. It returns errInternalDNSIntentUnverified when
@@ -43,7 +75,7 @@ func verifyInternalDNSIntent(
 	cl client.Client,
 	networkContext client.Object,
 	networkName string,
-	servicePrefix string,
+	destinationFor internalDNSDestinationFunc,
 ) error {
 	annotations := networkContext.GetAnnotations()
 	namespace := networkContext.GetNamespace()
@@ -81,11 +113,11 @@ func verifyInternalDNSIntent(
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
 		return unverifiedIfNotFound(err)
 	}
-	destination, err := internalDNSDestination(servicePrefix, dnsContext.GetUID())
+	destination, err := destinationFor(ctx, network, dnsContext)
 	if err != nil {
 		return err
 	}
-	if annotations[InternalDNSServiceDestinationAnnotation] != destination ||
+	if !sameIPText(annotations[InternalDNSServiceDestinationAnnotation], destination) ||
 		!binding.GetDeletionTimestamp().IsZero() ||
 		binding.GetAnnotations()[internalDNSOwnerNetworkUIDAnnotation] != string(network.UID) ||
 		!accessBindingMatches(binding, dnsContext, annotations[InternalDNSRegionAnnotation], annotations[InternalDNSServiceDestinationAnnotation]) {

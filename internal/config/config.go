@@ -255,7 +255,12 @@ type InternalDNSConfig struct {
 	Frontend string `json:"frontend,omitempty"`
 
 	// ServicePrefix allocates a stable service-side destination per DNS context.
+	// With an IPAM service class it is only the range existing destinations
+	// were derived from, which IPAM adopts.
 	ServicePrefix string `json:"servicePrefix,omitempty"`
+
+	// IPAM holds a network's DNS addresses in IPAM when its ServiceClass is set.
+	IPAM InternalDNSIPAM `json:"ipam,omitempty"`
 
 	// ProducerAttachmentSelector selects shared DNS service attachments for the
 	// single resolver Frontend configures. Mutually exclusive with Resolvers.
@@ -268,6 +273,29 @@ type InternalDNSConfig struct {
 	// the first resolver's route objects keep the names a single resolver
 	// uses. At most three.
 	Resolvers []InternalDNSResolver `json:"resolvers,omitempty"`
+}
+
+// +k8s:deepcopy-gen=true
+
+// InternalDNSIPAM names the IPAM classes a network's DNS addresses are claimed
+// from, in the network's project.
+type InternalDNSIPAM struct {
+	// ServiceClass hands out the service destination DNS queries are routed to
+	// inside the VPC fabric. Unset, destinations are derived from
+	// ServicePrefix and nothing is claimed.
+	ServiceClass string `json:"serviceClass,omitempty"`
+
+	// ResolverClasses maps a region to the class its regional resolver
+	// addresses are claimed from. A region without one keeps the address DNS
+	// allocates.
+	ResolverClasses map[string]string `json:"resolverClasses,omitempty"`
+
+	// FreshAllocation lets IPAM choose addresses for new networks. Until it is
+	// set, every claim adopts the address the network already has: the derived
+	// service destination, and the regional address DNS reports. Set it only
+	// once every existing network holds its claims, so IPAM cannot hand out an
+	// address one of them still uses.
+	FreshAllocation bool `json:"freshAllocation,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

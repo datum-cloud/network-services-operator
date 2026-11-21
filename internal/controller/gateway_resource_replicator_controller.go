@@ -250,6 +250,9 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 type GatewayResourceReplicatorReconciler struct {
 	mgr    mcmanager.Manager
 	Config config.NetworkServicesOperator
+	// IPAM reads the DNS service address a network holds, when DNS addresses
+	// are claimed from IPAM.
+	IPAM IPAMClientFactory
 
 	DownstreamCluster cluster.Cluster
 
@@ -597,7 +600,11 @@ func (r *GatewayResourceReplicatorReconciler) verifyInternalDNSAnnotations(
 	candidate := upstreamObj.DeepCopy()
 	candidate.SetAnnotations(annotations)
 	networkName, _, _ := unstructured.NestedString(upstreamObj.Object, "spec", "network", "name")
-	return verifyInternalDNSIntent(ctx, upstreamClient, candidate, networkName, r.Config.InternalDNS.ServicePrefix)
+	destinationFor := derivedInternalDNSDestination(r.Config.InternalDNS.ServicePrefix)
+	if r.IPAM != nil && r.Config.InternalDNS.IPAM.ServiceClass != "" {
+		destinationFor = claimedInternalDNSDestination(upstreamClient, r.IPAM, r.Config.InternalDNS.ServicePrefix)
+	}
+	return verifyInternalDNSIntent(ctx, upstreamClient, candidate, networkName, destinationFor)
 }
 
 func removeAnnotations(obj *unstructured.Unstructured, names []string) {

@@ -5,6 +5,7 @@ export const ALL_NETWORK_PERMISSIONS: NetworkPermissions & { isLoading: boolean 
   canUpdateNetwork: true,
   canDeleteNetwork: true,
   canCreateService: true,
+  canUpdateService: true,
   canDeleteService: true,
   isLoading: false,
 };

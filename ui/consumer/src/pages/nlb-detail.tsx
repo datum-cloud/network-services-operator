@@ -5,7 +5,11 @@ import { NlbOverview } from '../components/nlb-overview';
 import { toListenerRows, type ListenerRow } from '../components/nlb-overview-model';
 import { deleteDescription } from '../components/nlb-table';
 import { PluginTabs } from '../components/plugin-tabs';
-import { NetworkMetricsSkeleton, NetworkOverviewSkeleton } from '../components/skeletons';
+import {
+  NetworkMetricsSkeleton,
+  NetworkOverviewSkeleton,
+  NlbTrafficCardSkeleton,
+} from '../components/skeletons';
 import { ErrorOrRestrictedState } from '../components/states';
 import {
   useDeleteNetworkLoadBalancer,
@@ -78,7 +82,7 @@ function useHrefs(nlbName: string | undefined): NlbHrefs {
 
 function TabSkeleton() {
   const { '*': rest = '' } = useParams();
-  return rest.split('/')[0] === 'metrics' ? <NetworkMetricsSkeleton /> : <NetworkOverviewSkeleton />;
+  return rest.split('/')[0] === 'metrics' ? <NetworkMetricsSkeleton charts={4} /> : <NetworkOverviewSkeleton />;
 }
 
 function DetailLayout() {
@@ -215,7 +219,7 @@ function OverviewTab() {
           onDelete: setDeleting,
         }}
         traffic={
-          <Suspense fallback={null}>
+          <Suspense fallback={<NlbTrafficCardSkeleton />}>
             <NlbTrafficCard projectId={projectId} nlb={nlb} metricsHref={hrefs.metrics} />
           </Suspense>
         }
@@ -241,7 +245,7 @@ function OverviewTab() {
 function MetricsTab() {
   const { nlb, projectId } = useNlbOutlet();
   return (
-    <Suspense fallback={<NetworkMetricsSkeleton />}>
+    <Suspense fallback={<NetworkMetricsSkeleton charts={4} />}>
       <NlbMetrics projectId={projectId} nlb={nlb} />
     </Suspense>
   );

@@ -262,7 +262,8 @@ export function TrafficChartSkeleton() {
   return <Skeleton className="w-full rounded-md" style={{ height: METRICS_CHART_HEIGHT }} />;
 }
 
-export function NetworkMetricsSkeleton() {
+/** The metrics tab: toolbar, KPI cards and a card of charts (two for a VPC network, four for an NLB). */
+export function NetworkMetricsSkeleton({ charts = 2 }: { charts?: number }) {
   return (
     <Loading kind="metrics">
       <div className="flex w-full flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -292,7 +293,7 @@ export function NetworkMetricsSkeleton() {
         <CardContent className="flex flex-col gap-4">
           <TrafficLegendSkeleton />
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            {Array.from({ length: 2 }).map((_, i) => (
+            {Array.from({ length: charts }).map((_, i) => (
               <div key={i} className="flex min-w-0 flex-col gap-2">
                 <div className="flex h-5 items-center">
                   <Skeleton className="h-3.5 w-20" />
@@ -307,5 +308,26 @@ export function NetworkMetricsSkeleton() {
         </CardContent>
       </Card>
     </Loading>
+  );
+}
+
+/** The NLB overview's traffic card, while its chart loads. */
+export function NlbTrafficCardSkeleton() {
+  return (
+    <Card size="sm" sectioned className="w-full min-w-0 overflow-hidden" aria-busy="true" aria-label="Loading traffic">
+      <CardHeader size="sm" bordered>
+        <div className="flex h-5 items-center">
+          <Skeleton className="h-4 w-16" />
+        </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex h-5 items-center">
+            <Skeleton className="h-3.5 w-40" />
+          </div>
+          <TrafficChartSkeleton />
+        </div>
+      </CardContent>
+    </Card>
   );
 }

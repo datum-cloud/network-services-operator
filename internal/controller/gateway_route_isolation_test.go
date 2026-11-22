@@ -3,16 +3,21 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
 func TestAFailingRouteLeavesTheGatewaysOtherRoutesConverging(t *testing.T) {
@@ -59,6 +64,42 @@ func TestAFailingRouteLeavesTheGatewaysOtherRoutesConverging(t *testing.T) {
 	accepted := apimeta.FindStatusCondition(served.Status.Parents[0].Conditions, string(gatewayv1.RouteConditionAccepted))
 	require.NotNil(t, accepted, "the served route reports the edge's Accepted condition")
 	assert.Equal(t, metav1.ConditionTrue, accepted.Status)
+
+	var gateway gatewayv1.Gateway
+	require.NoError(t, rig.upstream.Get(rig.ctx, client.ObjectKeyFromObject(rig.gateway), &gateway))
+	require.NotEmpty(t, gateway.Status.Listeners, "the listener status is written")
+	for _, listener := range gateway.Status.Listeners {
+		assert.Equalf(t, int32(3), listener.AttachedRoutes, "listener %s counts the three routes", listener.Name)
+	}
+}
+
+func TestADeniedFinalizerWriteLeavesTheGatewaysOtherRoutesConverging(t *testing.T) {
+	rig := newMissingBackendRig(t,
+		routeToEndpointSlice("denied-a", "present"),
+		routeToEndpointSlice("denied-b", "present"),
+		routeToEndpointSlice("served", "present"),
+	)
+	require.NoError(t, rig.upstream.Create(rig.ctx, backendSlice("present")))
+	upstream := interceptor.NewClient(rig.upstream.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*gatewayv1.HTTPRoute); ok && obj.GetName() != "served" {
+				return apierrors.NewForbidden(gatewayv1.Resource("httproutes"), obj.GetName(), nil)
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	})
+
+	result := rig.reconciler.ensureDownstreamGatewayHTTPRoutes(rig.ctx, upstream, rig.gateway, "test", rig.hubGateway, rig.strategy, nil, nil, nil)
+	_, err := result.Complete(rig.ctx)
+
+	assert.ErrorContains(t, err, `"denied-a" is forbidden`)
+	assert.ErrorContains(t, err, `"denied-b" is forbidden`)
+	rig.hubRoute("served")
+	for _, name := range []string{"denied-a", "denied-b"} {
+		var routes gatewayv1.HTTPRouteList
+		require.NoError(t, rig.downstream.List(rig.ctx, &routes, client.MatchingLabels{downstreamclient.UpstreamOwnerNameLabel: name}))
+		assert.Emptyf(t, routes.Items, "a route without its finalizer is not programmed: %s", name)
+	}
 
 	var gateway gatewayv1.Gateway
 	require.NoError(t, rig.upstream.Get(rig.ctx, client.ObjectKeyFromObject(rig.gateway), &gateway))

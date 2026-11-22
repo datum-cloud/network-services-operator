@@ -15,13 +15,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-// A route whose backend fails for a reason other than NotFound fails alone:
-// the Gateway's other routes are programmed and their status is saved, the
-// listener status is written, and each route's error reaches the caller.
-//
-// The Gateway has two failing routes. The routes are programmed in map order,
-// so with two of them some route always comes after the first failure, and the
-// test does not depend on the order the map gives.
 func TestAFailingRouteLeavesTheGatewaysOtherRoutesConverging(t *testing.T) {
 	rig := newMissingBackendRig(t,
 		routeToEndpointSlice("wrong-port", "wrong-port"),

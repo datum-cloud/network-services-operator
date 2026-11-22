@@ -173,13 +173,16 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 
 	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
 	if currentClaim != string(connector.UID) {
-		log.FromContext(ctx).Info("iroh DNS record is claimed by another Connector",
-			"dnsRecordSet", key.String(),
-			"ownerCluster", decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel]),
-			"ownerNamespace", existing.Labels[irohDNSConnectorNamespaceLabel],
-			"ownerName", existing.Labels[irohDNSConnectorNameLabel],
-			"ownerUID", currentClaim,
-		)
+		prior := apimeta.FindStatusCondition(connector.Status.Conditions, connectorConditionIrohDNSPublished)
+		if prior == nil || prior.Status != metav1.ConditionFalse || prior.Reason != connectorReasonIrohDeferredToOwner {
+			log.FromContext(ctx).Info("iroh DNS record is claimed by another Connector",
+				"dnsRecordSet", key.String(),
+				"ownerCluster", decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel]),
+				"ownerNamespace", existing.Labels[irohDNSConnectorNamespaceLabel],
+				"ownerName", existing.Labels[irohDNSConnectorNameLabel],
+				"ownerUID", currentClaim,
+			)
+		}
 		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionFalse, connectorReasonIrohDeferredToOwner, irohDeferredToOwnerMessage)
 	}
 

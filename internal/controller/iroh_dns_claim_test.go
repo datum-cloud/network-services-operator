@@ -20,12 +20,34 @@ import (
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 )
 
+const (
+	foreignOwnerCluster   = "victim-project"
+	foreignOwnerNamespace = "victim-namespace"
+	foreignOwnerName      = "victim-connector"
+	foreignOwnerUID       = "11111111-2222-3333-4444-555555555555"
+)
+
 func TestApplyClaim_ForeignClaimDoesNotDiscloseOwner(t *testing.T) {
+	runForeignClaim(t, nil)
+}
+
+func TestApplyClaim_ForeignClaimScrubsPriorOwnerMessage(t *testing.T) {
+	runForeignClaim(t, []metav1.Condition{{
+		Type:               connectorConditionIrohDNSPublished,
+		Status:             metav1.ConditionFalse,
+		Reason:             connectorReasonIrohDeferredToOwner,
+		Message:            "iroh DNS record is owned by Connector " + foreignOwnerCluster + "/" + foreignOwnerNamespace + "/" + foreignOwnerName + " (uid " + foreignOwnerUID + ").",
+		LastTransitionTime: metav1.Now(),
+	}})
+}
+
+func runForeignClaim(t *testing.T, priorConditions []metav1.Condition) {
+	t.Helper()
 	const (
-		ownerCluster   = "victim-project"
-		ownerNamespace = "victim-namespace"
-		ownerName      = "victim-connector"
-		ownerUID       = "11111111-2222-3333-4444-555555555555"
+		ownerCluster   = foreignOwnerCluster
+		ownerNamespace = foreignOwnerNamespace
+		ownerName      = foreignOwnerName
+		ownerUID       = foreignOwnerUID
 	)
 
 	s := runtime.NewScheme()
@@ -38,6 +60,7 @@ func TestApplyClaim_ForeignClaimDoesNotDiscloseOwner(t *testing.T) {
 		Id:        testEndpointHex,
 		HomeRelay: testRelayURL,
 	})
+	connector.Status.Conditions = priorConditions
 
 	desired, ok, err := r.buildDesiredRecordSet(testClusterName, connector)
 	require.NoError(t, err)
@@ -50,7 +73,7 @@ func TestApplyClaim_ForeignClaimDoesNotDiscloseOwner(t *testing.T) {
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": irohDNSManagedByLabelValue,
 				irohDNSClaimedByUIDLabel:       ownerUID,
-				irohDNSConnectorClusterLabel:   encodeIrohClusterLabel(ownerCluster),
+				irohDNSConnectorClusterLabel:   encodeIrohClusterLabel("/" + ownerCluster),
 				irohDNSConnectorNamespaceLabel: ownerNamespace,
 				irohDNSConnectorNameLabel:      ownerName,
 			},

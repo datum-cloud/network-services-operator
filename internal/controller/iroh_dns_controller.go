@@ -58,6 +58,8 @@ const (
 	connectorReasonIrohOwner           = "Owner"
 	connectorReasonIrohDeferredToOwner = "DeferredToOwner"
 	connectorReasonIrohPending         = "Pending"
+
+	irohDeferredToOwnerMessage = "This endpoint ID is already published by another connector."
 )
 
 // allowedIrohControllerNames is the set of ConnectorClass.spec.controllerName
@@ -147,7 +149,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 //     us; we re-fetch and continue.
 //   - Found, our claim → SSA refresh content.
 //   - Found, foreign claim → defer (no write) and surface a status
-//     condition naming the owner.
+//     condition that does not identify the owner.
 func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, desired *dnsv1alpha1.DNSRecordSet) error {
 	key := client.ObjectKeyFromObject(desired)
 	var existing dnsv1alpha1.DNSRecordSet
@@ -171,10 +173,17 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 
 	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
 	if currentClaim != string(connector.UID) {
-		ownerCluster := decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel])
-		ownerRef := ownerCluster + "/" + existing.Labels[irohDNSConnectorNamespaceLabel] + "/" + existing.Labels[irohDNSConnectorNameLabel]
-		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionFalse, connectorReasonIrohDeferredToOwner,
-			fmt.Sprintf("iroh DNS record is owned by Connector %s (uid %s).", ownerRef, currentClaim))
+		prior := apimeta.FindStatusCondition(connector.Status.Conditions, connectorConditionIrohDNSPublished)
+		if prior == nil || prior.Status != metav1.ConditionFalse || prior.Reason != connectorReasonIrohDeferredToOwner {
+			log.FromContext(ctx).Info("iroh DNS record is claimed by another Connector",
+				"dnsRecordSet", key.String(),
+				"ownerCluster", decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel]),
+				"ownerNamespace", existing.Labels[irohDNSConnectorNamespaceLabel],
+				"ownerName", existing.Labels[irohDNSConnectorNameLabel],
+				"ownerUID", currentClaim,
+			)
+		}
+		return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionFalse, connectorReasonIrohDeferredToOwner, irohDeferredToOwnerMessage)
 	}
 
 	// We own it. SSA the desired content.

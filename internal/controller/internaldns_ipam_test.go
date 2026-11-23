@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -374,5 +375,45 @@ func TestInternalDNSFreshResolverAddressesReplaceAStuckAdoption(t *testing.T) {
 	s.reconcile()
 	if got := accessRegionalAddress(s.binding(dnsContext), "spec"); got != "fd70:202::1:0:9" {
 		t.Fatalf("the network did not move to its new regional address: %q", got)
+	}
+}
+
+func TestInternalDNSRefusesAClaimItDidNotMake(t *testing.T) {
+	for name, tamper := range map[string]func(*ipamv1alpha1.IPClaim){
+		"another class": func(c *ipamv1alpha1.IPClaim) { c.Spec.ClassName = "someone-elses-class" },
+		"another network": func(c *ipamv1alpha1.IPClaim) {
+			c.Spec.Scope = map[string]ipamv1alpha1.ScopeRef{ipamScopeRoleNetwork: {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: "red"}}
+		},
+		"a larger block":            func(c *ipamv1alpha1.IPClaim) { c.Spec.PrefixLength = ptr.To(int32(64)) },
+		"a deleting reclaim policy": func(c *ipamv1alpha1.IPClaim) { c.Spec.ReclaimPolicy = ipamv1alpha1.ReclaimDelete },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newIPAMDNSScenario(t, true)
+			s.reconcile()
+			dnsContext := s.readyContext()
+			// A project member made a claim carrying the operator's labels.
+			planted := &ipamv1alpha1.IPClaim{}
+			planted.Namespace, planted.Name = "tenant", "planted"
+			planted.Labels = serviceClaimKey().labels(s.network)
+			planted.Spec = ipamv1alpha1.IPClaimSpec{
+				ClassName: "dns-service", IPFamily: ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
+				PrefixLength: ptr.To(int32(128)), ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+				Scope: map[string]ipamv1alpha1.ScopeRef{ipamScopeRoleNetwork: {APIGroup: datumNetworkingAPIGroup, Kind: "Network", Name: "blue"}},
+			}
+			tamper(planted)
+			if err := s.ipam.Create(s.ctx, planted); err != nil {
+				t.Fatal(err)
+			}
+			planted.Status.Address = "fd70:100::66"
+			if err := s.ipam.Status().Update(s.ctx, planted); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.r.reconcile(s.ctx, s.cl, testProject, client.ObjectKeyFromObject(s.nc)); err == nil {
+				t.Fatal("a claim the operator did not make was accepted")
+			}
+			if binding := s.binding(dnsContext); binding != nil {
+				t.Fatalf("the planted claim's address was used: %#v", binding.Object["spec"])
+			}
+		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -2277,8 +2278,8 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 					result.RequeueAfter = conflictRequeueInterval
 					return result
 				}
-				result.Err = fmt.Errorf("failed to add finalizer to httproute: %w", err)
-				return result
+				result.Err = errors.Join(result.Err, fmt.Errorf("failed to add finalizer to httproute: %w", err))
+				continue
 			}
 		}
 
@@ -2291,9 +2292,6 @@ func (r *GatewayReconciler) ensureDownstreamGatewayHTTPRoutes(
 			downstreamStrategy,
 			route,
 		)
-		if result.Err != nil {
-			return result
-		}
 		result = result.Merge(httpRouteResult)
 	}
 

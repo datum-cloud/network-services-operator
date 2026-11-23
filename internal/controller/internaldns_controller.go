@@ -584,8 +584,8 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 	if !r.ipamEnabled() {
 		return nil
 	}
-	// DNS refuses a released address for another network until serving
-	// members have withdrawn it, so claims go with the binding. The service
+	// The class's retention lease keeps a released address unused while
+	// serving members withdraw it, so claims go with the binding. The service
 	// destination is the network's in every region and goes with its last
 	// context; a context only moving region keeps it.
 	ipamClient, namespace, err := r.ipamClient(ctx, cl, networkContext.Namespace)

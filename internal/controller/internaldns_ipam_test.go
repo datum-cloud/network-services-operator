@@ -135,7 +135,7 @@ func TestInternalDNSAdoptsExistingAddressesIntoIPAM(t *testing.T) {
 	}
 	s.reconcile()
 	service := s.claim(serviceClaimKey())
-	if service == nil || service.Spec.Address != derived || service.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimDelete || service.Spec.ClassName != "dns-service" {
+	if service == nil || service.Spec.Address != derived || service.Spec.ReclaimPolicy != ipamv1alpha1.ReclaimRetain || service.Spec.ClassName != "dns-service" {
 		t.Fatalf("service address was not adopted: %#v", service)
 	}
 	if s.binding(dnsContext) != nil {

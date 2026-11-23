@@ -296,6 +296,14 @@ type InternalDNSIPAM struct {
 	// once every existing network holds its claims, so IPAM cannot hand out an
 	// address one of them still uses.
 	FreshAllocation bool `json:"freshAllocation,omitempty"`
+
+	// FreshResolverAddresses gives every network a regional resolver address
+	// IPAM picks, instead of adopting the one DNS allocated, and moves an
+	// existing network to it. Use it when a region's resolver range changes
+	// and the old addresses are not in the new pool. The regional address
+	// identifies the network at the regional resolver and carries no guest
+	// queries, so moving it does not interrupt lookups.
+	FreshResolverAddresses bool `json:"freshResolverAddresses,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true

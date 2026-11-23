@@ -309,3 +309,34 @@ func TestInternalDNSFreshAllocationCanBeTurnedOff(t *testing.T) {
 		t.Fatalf("turning fresh allocation off moved a network: %s", destination)
 	}
 }
+
+func TestInternalDNSFreshResolverAddressesMoveAnExistingNetwork(t *testing.T) {
+	s := newIPAMDNSScenario(t, false)
+	s.reconcile()
+	dnsContext := s.readyContext()
+	derived, err := internalDNSDestination("fd70:100::/64", dnsContext.GetUID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.reconcile()
+	s.allocate(serviceClaimKey(), derived)
+	s.reconcile()
+	binding := s.binding(dnsContext)
+	_ = unstructured.SetNestedField(binding.Object, "fd20:0:e::2:0:5", "status", "regionalAddress")
+	if err := s.cl.Update(s.ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	s.r.Config.IPAM.FreshResolverAddresses = true
+	s.reconcile()
+	resolver := s.claim(resolverClaimKey("us-central"))
+	if resolver == nil || resolver.Spec.Address != "" {
+		t.Fatalf("an existing network adopted its old regional address: %#v", resolver)
+	}
+	s.allocate(resolverClaimKey("us-central"), "fd70:202::1:0:9")
+	s.reconcile()
+	binding = s.binding(dnsContext)
+	destination, _, _ := unstructured.NestedString(binding.Object, "spec", "destinationAddress")
+	if got := accessRegionalAddress(binding, "spec"); got != "fd70:202::1:0:9" || destination != derived {
+		t.Fatalf("the network was not moved to its new regional address with the same destination: %q %q", got, destination)
+	}
+}

@@ -228,7 +228,7 @@ func (r *InternalDNSProjectReconciler) reconcile(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if regional == "" && r.ipamEnabled() && r.Config.IPAM.ResolverClasses[region] != "" {
+	if regional == "" && r.ipamEnabled() && r.Config.IPAM.ResolverClasses[region] != "" && !r.Config.IPAM.FreshResolverAddresses {
 		// DNS allocated this network's regional address before IPAM held
 		// it; claim that address so IPAM never hands it to another network.
 		if reported := accessRegionalAddress(binding, "status"); reported != "" {

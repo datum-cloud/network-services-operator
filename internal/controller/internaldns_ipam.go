@@ -254,7 +254,7 @@ func (r *InternalDNSProjectReconciler) addresses(
 	if err != nil {
 		return "", "", err
 	}
-	if existing != nil || !r.Config.IPAM.FreshAllocation {
+	if !r.Config.IPAM.FreshResolverAddresses && (existing != nil || !r.Config.IPAM.FreshAllocation) {
 		// Adopted after the binding reports what DNS allocated.
 		return destination, "", nil
 	}

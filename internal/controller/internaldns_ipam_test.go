@@ -340,3 +340,39 @@ func TestInternalDNSFreshResolverAddressesMoveAnExistingNetwork(t *testing.T) {
 		t.Fatalf("the network was not moved to its new regional address with the same destination: %q %q", got, destination)
 	}
 }
+
+func TestInternalDNSFreshResolverAddressesReplaceAStuckAdoption(t *testing.T) {
+	s := newIPAMDNSScenario(t, false)
+	s.reconcile()
+	dnsContext := s.readyContext()
+	derived, err := internalDNSDestination("fd70:100::/64", dnsContext.GetUID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.reconcile()
+	s.allocate(serviceClaimKey(), derived)
+	s.reconcile()
+	binding := s.binding(dnsContext)
+	_ = unstructured.SetNestedField(binding.Object, "fd20:0:e::2:0:5", "status", "regionalAddress")
+	if err := s.cl.Update(s.ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	// The adoption claim asks for the old address, which the new pool can't
+	// give, so it never binds.
+	s.reconcile()
+	stuck := s.claim(resolverClaimKey("us-central"))
+	if stuck == nil || stuck.Spec.Address != "fd20:0:e::2:0:5" {
+		t.Fatalf("no adoption claim was made: %#v", stuck)
+	}
+	s.r.Config.IPAM.FreshResolverAddresses = true
+	s.reconcile()
+	fresh := s.claim(resolverClaimKey("us-central"))
+	if fresh == nil || fresh.Name == stuck.Name || fresh.Spec.Address != "" {
+		t.Fatalf("the stuck adoption claim was not replaced by one IPAM picks: %#v", fresh)
+	}
+	s.allocate(resolverClaimKey("us-central"), "fd70:202::1:0:9")
+	s.reconcile()
+	if got := accessRegionalAddress(s.binding(dnsContext), "spec"); got != "fd70:202::1:0:9" {
+		t.Fatalf("the network did not move to its new regional address: %q", got)
+	}
+}

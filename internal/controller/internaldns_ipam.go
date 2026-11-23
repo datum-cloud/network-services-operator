@@ -11,9 +11,11 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
@@ -159,9 +161,38 @@ func holdInternalDNSAddress(
 		return "", err
 	}
 	if allocated == "" {
+		log.FromContext(ctx).Info("waiting for IPAM to bind a DNS address claim", "claim", existing.Name, "class", class, "address", existing.Spec.Address, "reason", claimWaitReason(existing))
 		return "", errInternalDNSAddressPending
 	}
 	return allocated, nil
+}
+
+// claimWaitReason is the message of the first false condition on a claim, so
+// the log says what IPAM is waiting on.
+func claimWaitReason(claim *ipamv1alpha1.IPClaim) string {
+	for _, condition := range claim.Status.Conditions {
+		if condition.Status == metav1.ConditionFalse {
+			return condition.Reason + ": " + condition.Message
+		}
+	}
+	return string(claim.Status.Phase)
+}
+
+// dropUnboundAdoption deletes the network's claim for key while it is still
+// unbound and asks for a specific address.
+func dropUnboundAdoption(ctx context.Context, ipamClient client.Client, namespace string, network *networkingv1alpha.Network, key internalDNSClaimKey) error {
+	claim, err := findInternalDNSClaim(ctx, ipamClient, namespace, network, key)
+	if err != nil || claim == nil || claim.Spec.Address == "" {
+		return err
+	}
+	if bound, err := claimedAddress(claim); err != nil || bound != "" {
+		return nil
+	}
+	uid := claim.UID
+	if err := ipamClient.Delete(ctx, claim, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("replace unbound DNS address claim %q: %w", claim.Name, err)
+	}
+	return nil
 }
 
 // internalDNSClaimedAddress reads the address a claim holds, without creating
@@ -245,6 +276,13 @@ func (r *InternalDNSProjectReconciler) addresses(
 	class := r.Config.IPAM.ResolverClasses[region]
 	if class == "" {
 		return destination, "", nil
+	}
+	if r.Config.IPAM.FreshResolverAddresses {
+		// A claim still waiting to adopt an old address may never bind once
+		// the range has changed; it gives way to one IPAM picks.
+		if err := dropUnboundAdoption(ctx, ipamClient, namespace, network, resolverClaimKey(region)); err != nil {
+			return "", "", err
+		}
 	}
 	regional, err := internalDNSClaimedAddress(ctx, ipamClient, namespace, network, resolverClaimKey(region))
 	if err != nil || regional != "" {

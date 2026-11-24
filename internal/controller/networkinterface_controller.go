@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 
+	"k8s.io/client-go/tools/events"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,7 +52,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req mcreconc
 	logger.V(1).Info("reconciling network interface")
 	defer logger.V(1).Info("reconcile complete")
 
-	err = r.reconcileInterface(ctx, cl.GetClient(), req.NamespacedName)
+	err = r.reconcileInterface(ctx, cl.GetClient(), cl.GetEventRecorder("networkinterface-controller"), req.NamespacedName)
 	if retryResult, expected := networkInterfaceClaimWriteRace(err); expected {
 		// The claim controller writes the same interface. Losing that race
 		// only means the cached copy was stale, so read it again.
@@ -63,6 +65,7 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req mcreconc
 func (r *NetworkInterfaceReconciler) reconcileInterface(
 	ctx context.Context,
 	cl client.Client,
+	recorder events.EventRecorder,
 	key client.ObjectKey,
 ) error {
 	var iface networkingv1alpha.NetworkInterface
@@ -95,7 +98,7 @@ func (r *NetworkInterfaceReconciler) reconcileInterface(
 	// The claim rebuilds the interface and finds the same addresses by name.
 	// Releasing here would give a running workload new ones.
 	if !held {
-		if err := r.claims.releaseAddresses(ctx, cl, iface.Namespace, &iface); err != nil {
+		if err := r.claims.releaseAddresses(ctx, cl, recorder, iface.Namespace, &iface); err != nil {
 			return err
 		}
 	}

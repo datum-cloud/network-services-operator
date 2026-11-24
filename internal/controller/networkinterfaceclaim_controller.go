@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -54,6 +55,8 @@ const (
 	networkContextInUseFinalizer = "networking.datumapis.com/networkcontext-in-use"
 
 	allocationClaimAnnotation = "networking.datumapis.com/allocation-claim"
+
+	pendingAllocationReleaseAnnotation = "networking.datumapis.com/pending-allocation-release"
 
 	ipamScopeRoleNetwork  = "network"
 	ipamScopeRoleLocation = "location"
@@ -131,7 +134,7 @@ func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
 	}
 
 	if !claim.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.release(ctx, cl, &claim)
+		return ctrl.Result{}, r.release(ctx, cl, recorder, &claim)
 	}
 
 	if controllerutil.AddFinalizer(&claim, networkInterfaceClaimFinalizer) {
@@ -1463,6 +1466,7 @@ func seedCondition(conditions *[]metav1.Condition, conditionType string, generat
 func (r *NetworkInterfaceClaimReconciler) release(
 	ctx context.Context,
 	cl client.Client,
+	recorder events.EventRecorder,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 ) error {
 	if !controllerutil.ContainsFinalizer(claim, networkInterfaceClaimFinalizer) {
@@ -1496,7 +1500,7 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		}
 
 	case held:
-		if err := r.releaseAddresses(ctx, cl, claim.Namespace, &iface); err != nil {
+		if err := r.releaseAddresses(ctx, cl, recorder, claim.Namespace, &iface); err != nil {
 			return err
 		}
 		if controllerutil.RemoveFinalizer(&iface, networkInterfaceFinalizer) {
@@ -1518,7 +1522,7 @@ func (r *NetworkInterfaceClaimReconciler) release(
 	case !retain:
 		// The interface is gone, or never named this claim. Either way the
 		// addresses this claim allocated are named after it.
-		if err := r.releaseClaimAllocations(ctx, cl, claim); err != nil {
+		if err := r.releaseClaimAllocations(ctx, cl, recorder, claim); err != nil {
 			return err
 		}
 	}
@@ -1572,10 +1576,11 @@ func markReleasing(ctx context.Context, cl client.Client, claim *networkingv1alp
 func (r *NetworkInterfaceClaimReconciler) releaseAddresses(
 	ctx context.Context,
 	cl client.Client,
+	recorder events.EventRecorder,
 	namespace string,
 	iface *networkingv1alpha.NetworkInterface,
 ) error {
-	return r.releaseIPClaims(ctx, cl, namespace,
+	return r.releaseIPClaims(ctx, cl, recorder, iface, namespace,
 		allocationClaimName(iface), allocationEntries(iface))
 }
 
@@ -1584,6 +1589,7 @@ func (r *NetworkInterfaceClaimReconciler) releaseAddresses(
 func (r *NetworkInterfaceClaimReconciler) releaseClaimAllocations(
 	ctx context.Context,
 	cl client.Client,
+	recorder events.EventRecorder,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 ) error {
 	// A claim that never bound allocated nothing, so there is nothing to
@@ -1592,7 +1598,7 @@ func (r *NetworkInterfaceClaimReconciler) releaseClaimAllocations(
 		return nil
 	}
 
-	return r.releaseIPClaims(ctx, cl, claim.Namespace,
+	return r.releaseIPClaims(ctx, cl, recorder, claim, claim.Namespace,
 		claim.Name, claimEntries(claim))
 }
 
@@ -1648,11 +1654,14 @@ func clearHolderAvailable(conditions *[]metav1.Condition, generation int64) bool
 func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 	ctx context.Context,
 	cl client.Client,
+	recorder events.EventRecorder,
+	holder client.Object,
 	namespace string,
 	owner string,
 	entries []allocationEntry,
 ) error {
-	if len(entries) == 0 {
+	pending := pendingAllocationReleases(holder)
+	if len(entries) == 0 && len(pending) == 0 {
 		return nil
 	}
 
@@ -1672,6 +1681,7 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 	}
 
 	var errs []error
+	stillBound := map[string]bool{}
 	for _, entry := range entries {
 		held, foreign, err := findAllocation(ctx, ipamClient, routing.projectNamespace,
 			owner, entry, location)
@@ -1690,19 +1700,96 @@ func (r *NetworkInterfaceClaimReconciler) releaseIPClaims(
 			continue
 		}
 
+		ref := held.Status.BoundAllocationRef
+		if ref != nil && ref.Name != "" {
+			if err := setPendingAllocationRelease(ctx, cl, holder, ref.Name, true); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+
 		// The UID pins the delete to the allocation checked above, in case its
 		// name is released and taken by another location in between.
 		if err := ipamClient.Delete(ctx, held, client.Preconditions{UID: &held.UID}); err != nil &&
 			!apierrors.IsNotFound(err) {
+			if ref != nil {
+				stillBound[ref.Name] = true
+			}
 			errs = append(errs, fmt.Errorf("failed releasing %q: %w", held.Name, err))
 			continue
 		}
+	}
 
-		if err := releaseRetainedAllocation(ctx, ipamClient, held.Namespace, held.Status.BoundAllocationRef); err != nil {
+	for _, allocation := range pendingAllocationReleases(holder) {
+		if stillBound[allocation] {
+			continue
+		}
+		if err := releaseRetainedAllocation(ctx, ipamClient, routing.projectNamespace,
+			&ipamv1alpha1.LocalRef{Name: allocation}); err != nil {
+			reportBlockedAllocationRelease(recorder, holder, allocation, err)
+			errs = append(errs, err)
+			continue
+		}
+		if err := setPendingAllocationRelease(ctx, cl, holder, allocation, false); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func pendingAllocationReleases(holder client.Object) []string {
+	recorded := holder.GetAnnotations()[pendingAllocationReleaseAnnotation]
+	if recorded == "" {
+		return nil
+	}
+	return strings.Split(recorded, ",")
+}
+
+func setPendingAllocationRelease(
+	ctx context.Context,
+	cl client.Client,
+	holder client.Object,
+	allocation string,
+	pending bool,
+) error {
+	recorded := pendingAllocationReleases(holder)
+	if slices.Contains(recorded, allocation) == pending {
+		return nil
+	}
+
+	updated := slices.DeleteFunc(slices.Clone(recorded), func(name string) bool { return name == allocation })
+	if pending {
+		updated = append(updated, allocation)
+	}
+
+	base := holder.DeepCopyObject().(client.Object)
+	annotations := maps.Clone(holder.GetAnnotations())
+	if len(updated) == 0 {
+		delete(annotations, pendingAllocationReleaseAnnotation)
+	} else {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[pendingAllocationReleaseAnnotation] = strings.Join(updated, ",")
+	}
+	holder.SetAnnotations(annotations)
+	if err := cl.Patch(ctx, holder, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("failed recording pending release of IPAllocation %q: %w", allocation, err)
+	}
+	return nil
+}
+
+func reportBlockedAllocationRelease(
+	recorder events.EventRecorder,
+	holder client.Object,
+	allocation string,
+	err error,
+) {
+	if recorder == nil {
+		return
+	}
+	recorder.Eventf(holder, nil, corev1.EventTypeWarning, "AllocationReleaseBlocked", "ReleaseAllocation",
+		"IPAllocation %q still holds an address and will be retried: %v", allocation, err)
 }
 
 // releaseRetainedAllocation hands back the address an IPClaim deletion left

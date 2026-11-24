@@ -34,5 +34,5 @@ func TestAddingAFinalizerToADeletedInterfaceIsNotAnError(t *testing.T) {
 		})
 
 	r := &NetworkInterfaceReconciler{}
-	require.NoError(t, r.reconcileInterface(context.Background(), cl, client.ObjectKeyFromObject(iface)))
+	require.NoError(t, r.reconcileInterface(context.Background(), cl, nil, client.ObjectKeyFromObject(iface)))
 }

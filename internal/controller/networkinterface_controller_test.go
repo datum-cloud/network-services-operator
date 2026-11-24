@@ -4,6 +4,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,6 +15,7 @@ import (
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	locationsv1alpha1 "go.miloapis.com/locations/api/v1alpha1"
 	"go.miloapis.com/locations/pkg/locationidentity"
 
@@ -84,7 +87,7 @@ func TestAKeptInterfaceWaitsUntilItsLocationResolves(t *testing.T) {
 	require.NoError(t, s.client.Delete(s.ctx, served))
 
 	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}
-	err := interfaces.reconcileInterface(s.ctx, s.client, client.ObjectKey{Namespace: s.namespace, Name: "kept"})
+	err := interfaces.reconcileInterface(s.ctx, s.client, s.events, client.ObjectKey{Namespace: s.namespace, Name: "kept"})
 
 	var unresolved *locationidentity.LocationUnresolved
 	require.ErrorAs(t, err, &unresolved)
@@ -221,7 +224,7 @@ func TestAClaimThatBindsTheKeptInterfaceFirstKeepsIt(t *testing.T) {
 	s.markNetworkDeleting()
 
 	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}
-	err := interfaces.reconcileInterface(s.ctx, &bindingClient{Client: s.client, claim: "kept"},
+	err := interfaces.reconcileInterface(s.ctx, &bindingClient{Client: s.client, claim: "kept"}, s.events,
 		client.ObjectKey{Namespace: s.namespace, Name: "kept"})
 	require.True(t, apierrors.IsConflict(err), "the delete names the interface it read: %v", err)
 
@@ -270,4 +273,41 @@ func TestAMarkedNetworkContextEnqueuesItsKeptInterfaces(t *testing.T) {
 	networkContext.Spec.NetworkDeleting = false
 	require.Empty(t, keptInterfacesOnNetworkContext(context.Background(), cl, networkContext),
 		"an unmarked context gives up nothing")
+}
+
+func TestAKeptInterfaceHoldsItsFinalizerUntilItsAllocationIsReleased(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv6Protocol})
+	s.keepInterface()
+
+	allocation := allocationNameFor("kept-f-ipv6")
+	s.ipam.refuseAllocationRelease(allocation, apierrors.NewForbidden(
+		ipamv1alpha1.SchemeGroupVersion.WithResource("ipallocations").GroupResource(),
+		allocation, errors.New("not permitted")))
+
+	kept, err := s.getInterface("kept")
+	require.NoError(t, err)
+	require.NoError(t, s.client.Delete(s.ctx, kept))
+
+	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}
+	key := client.ObjectKey{Namespace: s.namespace, Name: "kept"}
+	require.Error(t, interfaces.reconcileInterface(s.ctx, s.client, s.events, key), "a refused release is retried")
+	require.Error(t, interfaces.reconcileInterface(s.ctx, s.client, s.events, key),
+		"the release stays pending after its IPClaim is gone")
+
+	_, err = s.getInterface("kept")
+	require.NoError(t, err, "the interface keeps its finalizer while the address is held")
+	require.Contains(t, s.ipam.orphanedAllocations(), allocation)
+	var recorded []string
+	for len(s.events.Events) > 0 {
+		recorded = append(recorded, <-s.events.Events)
+	}
+	require.Contains(t, strings.Join(recorded, "\n"), "AllocationReleaseBlocked")
+	require.Contains(t, strings.Join(recorded, "\n"), allocation, "the event names the held allocation")
+
+	s.ipam.refuseAllocationRelease(allocation, nil)
+	require.NoError(t, interfaces.reconcileInterface(s.ctx, s.client, s.events, key))
+
+	_, err = s.getInterface("kept")
+	require.True(t, apierrors.IsNotFound(err), "the interface goes once its address is back: %v", err)
+	require.Empty(t, s.ipam.orphanedAllocations())
 }

@@ -261,27 +261,18 @@ func NewCommand(build BuildInfo) *cobra.Command {
 					clusterShardingPeerWeight,
 				)
 
-				clusterShardingOptions := []sharded.Option{
-					sharded.WithShardLease(clusterShardingLeaseNamespace, clusterShardingLeasePrefix),
-					sharded.WithPerClusterLease(true),
-				}
-				if clusterShardingPeerWeight > 0 {
-					clusterShardingOptions = append(
-						clusterShardingOptions,
-						sharded.WithPeerWeight(uint32(clusterShardingPeerWeight)),
-					)
+				coordinator, err := newClusterShardingCoordinator(
+					cfg,
+					clusterShardingLeaseNamespace,
+					clusterShardingLeasePrefix,
+					clusterShardingPeerWeight,
+				)
+				if err != nil {
+					setupLog.Error(err, "unable to create the cluster sharding coordinator")
+					os.Exit(1)
 				}
 
-				mcManagerOptions = append(
-					mcManagerOptions,
-					mcmanager.WithCoordinator(
-						sharded.New(
-							deploymentCluster.GetClient(),
-							ctrl.Log.WithName("cluster-sharding-coordinator"),
-							clusterShardingOptions...,
-						),
-					),
-				)
+				mcManagerOptions = append(mcManagerOptions, mcmanager.WithCoordinator(coordinator))
 			}
 
 			primaryManagerLeaderElection := enableLeaderElection
@@ -665,6 +656,28 @@ func federationRESTConfig(federation config.FederationConfig, deployment *rest.C
 		return rest.CopyConfig(deployment), nil
 	}
 	return federation.RestConfig()
+}
+
+func newClusterShardingCoordinator(
+	cfg *rest.Config,
+	leaseNamespace string,
+	leasePrefix string,
+	peerWeight uint,
+) (*sharded.Coordinator, error) {
+	uncachedClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("unable to create the coordinator's client: %w", err)
+	}
+
+	options := []sharded.Option{
+		sharded.WithShardLease(leaseNamespace, leasePrefix),
+		sharded.WithPerClusterLease(true),
+	}
+	if peerWeight > 0 {
+		options = append(options, sharded.WithPeerWeight(uint32(peerWeight)))
+	}
+
+	return sharded.New(uncachedClient, ctrl.Log.WithName("cluster-sharding-coordinator"), options...), nil
 }
 
 func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (*controller.APIProjectIdentityResolver, error) {

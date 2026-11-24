@@ -32,6 +32,7 @@ import (
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -268,6 +269,9 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		jsonKeyName, req.Name,
 	)
 	ctx = log.IntoContext(ctx, logger)
+	// A project's own control plane does not label its namespaces with the
+	// project, so the DNS checks fall back to the cluster to name it.
+	ctx = mccontext.WithCluster(ctx, req.ClusterName)
 
 	resourceCfg, ok := r.resources[gvkKey(req.GVK)]
 	if !ok {

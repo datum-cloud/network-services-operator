@@ -27,6 +27,7 @@ type fakeReader struct {
 	security    []envoygatewayv1alpha1.SecurityPolicy
 	domainsErr  error
 	policiesErr error
+	securityErr error
 }
 
 func (f *fakeReader) ListProxies(context.Context, string) ([]networkingv1alpha.HTTPProxy, error) {
@@ -65,7 +66,7 @@ func (f *fakeReader) GetSecret(_ context.Context, _, name string) (*corev1.Secre
 }
 
 func (f *fakeReader) ListSecurityPolicies(context.Context, string) ([]envoygatewayv1alpha1.SecurityPolicy, error) {
-	return f.security, nil
+	return f.security, f.securityErr
 }
 
 var _ Reader = (*fakeReader)(nil)

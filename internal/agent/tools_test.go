@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -191,6 +192,40 @@ func TestGetReportsBasicAuthOnOneRule(t *testing.T) {
 		Usernames: []string{"alice"},
 		State:     "accepted",
 	}}, auth.Policies)
+}
+
+func TestGetDoesNotReportBasicAuthOffWhenPoliciesCannotBeRead(t *testing.T) {
+	pinClock(t)
+
+	r := &fakeReader{
+		proxies:     []networkingv1alpha.HTTPProxy{healthyProxy()},
+		securityErr: errors.New("forbidden"),
+	}
+
+	_, out, err := albGet(depsFor(r))(context.Background(), nil, GetInput{Name: "my-app"})
+	require.NoError(t, err)
+
+	auth := out.LoadBalancer.BasicAuth
+	assert.True(t, auth.Unknown, "an unreadable policy list is not the same as basic auth off")
+	assert.Contains(t, auth.Message, "forbidden")
+}
+
+func TestGetSaysWhenTheUsersSecretCannotBeRead(t *testing.T) {
+	pinClock(t)
+
+	r := &fakeReader{
+		proxies:  []networkingv1alpha.HTTPProxy{healthyProxy()},
+		security: []envoygatewayv1alpha1.SecurityPolicy{*spec.BuildSecurityPolicy("my-app", "")},
+	}
+
+	_, out, err := albGet(depsFor(r))(context.Background(), nil, GetInput{Name: "my-app"})
+	require.NoError(t, err)
+
+	auth := out.LoadBalancer.BasicAuth
+	require.True(t, auth.Enabled)
+	require.Len(t, auth.Policies, 1)
+	assert.Empty(t, auth.Policies[0].Usernames)
+	assert.Contains(t, auth.Policies[0].Secret, "could not read users secret")
 }
 
 // TestListPutsTheWorstFirst pins the point of a fleet view.

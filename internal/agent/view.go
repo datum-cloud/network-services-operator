@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -85,6 +86,8 @@ type BasicAuthView struct {
 	Enabled   bool                 `json:"enabled"`
 	Usernames []string             `json:"usernames,omitempty"`
 	Policies  []BasicAuthRulesView `json:"policies,omitempty"`
+	Unknown   bool                 `json:"unknown,omitempty"`
+	Message   string               `json:"message,omitempty"`
 }
 
 type BasicAuthRulesView struct {
@@ -95,6 +98,7 @@ type BasicAuthRulesView struct {
 	Usernames []string `json:"usernames,omitempty"`
 	State     string   `json:"state"`
 	Message   string   `json:"message,omitempty"`
+	Secret    string   `json:"secret,omitempty"`
 }
 
 // ConditionView is the part of a condition worth spending tokens on.
@@ -169,7 +173,9 @@ func buildView(
 		}
 	}
 
-	if policies, err := r.ListSecurityPolicies(ctx, namespace); err == nil {
+	if policies, err := r.ListSecurityPolicies(ctx, namespace); err != nil {
+		v.BasicAuth = BasicAuthView{Unknown: true, Message: fmt.Sprintf("could not read security policies: %v", err)}
+	} else {
 		v.BasicAuth = basicAuthView(ctx, r, namespace, spec.BasicAuthAttachments(proxy.Name, policies))
 	}
 
@@ -184,8 +190,6 @@ func buildView(
 	return v
 }
 
-// Usernames only. The stored value is a hash and a hash is still a
-// credential's shadow; nothing here returns the Secret's data.
 func basicAuthView(ctx context.Context, r Reader, namespace string, attachments []spec.BasicAuthAttachment) BasicAuthView {
 	var v BasicAuthView
 	seen := map[string]struct{}{}
@@ -198,7 +202,9 @@ func basicAuthView(ctx context.Context, r Reader, namespace string, attachments 
 			State:     a.State,
 			Message:   a.Message,
 		}
-		if secret, err := r.GetSecret(ctx, namespace, a.SecretName); err == nil {
+		if secret, err := r.GetSecret(ctx, namespace, a.SecretName); err != nil {
+			pv.Secret = fmt.Sprintf("could not read users secret %s: %v", a.SecretName, err)
+		} else {
 			pv.Usernames = spec.ParseHtpasswdUsernames(secret)
 		}
 		for _, name := range pv.Usernames {

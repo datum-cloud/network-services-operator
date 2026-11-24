@@ -74,10 +74,6 @@ func dnsCondition(reason string, status metav1.ConditionStatus) *metav1.Conditio
 	return &c
 }
 
-// TestPresentRecordsMakeTheDNSStepDone is the #938 guard. The hostname's own
-// record list says what is left to do, so a hostname whose records are all in
-// place has finished the step whatever the condition says, or whether there is
-// one at all.
 func TestPresentRecordsMakeTheDNSStepDone(t *testing.T) {
 	for name, c := range map[string]*metav1.Condition{
 		"no condition":         nil,
@@ -98,9 +94,6 @@ func TestPresentRecordsMakeTheDNSStepDone(t *testing.T) {
 	}
 }
 
-// TestAMissingRecordOfTheCustomersIsTheirNextStep pins the other half: a record
-// the customer publishes and has not is a step they have to take, and the
-// answer names the record exactly, because that is the whole of the fix.
 func TestAMissingRecordOfTheCustomersIsTheirNextStep(t *testing.T) {
 	for name, c := range map[string]*metav1.Condition{
 		"no condition":      nil,
@@ -133,8 +126,6 @@ func TestAMissingRecordOfTheCustomersIsTheirNextStep(t *testing.T) {
 	}
 }
 
-// TestOnlyMissingRecordsAreNextSteps keeps a record already in place out of
-// the instructions, so nobody is told to create what exists.
 func TestOnlyMissingRecordsAreNextSteps(t *testing.T) {
 	d := diagnose(t, hostnameWithRecords(nil,
 		routingRecord(networkingv1alpha.HostnameDNSRecordManagedByUser, networkingv1alpha.HostnameDNSRecordMissing),
@@ -146,8 +137,6 @@ func TestOnlyMissingRecordsAreNextSteps(t *testing.T) {
 	assert.NotContains(t, strings.Join(d.NextSteps, " "), "_acme-challenge")
 }
 
-// TestAMissingRecordOfDatumsIsPending is the record Datum publishes in its own
-// zone, written and not yet taking effect. The customer has nothing to do.
 func TestAMissingRecordOfDatumsIsPending(t *testing.T) {
 	fresh := cond(networkingv1alpha.HostnameConditionDNSRecordProgrammed,
 		networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue, ago(5*time.Minute))
@@ -166,9 +155,6 @@ func TestAMissingRecordOfDatumsIsPending(t *testing.T) {
 		"a record Datum publishes is not the customer's to create")
 }
 
-// TestAFailingConditionExplainsDatumsMissingRecord keeps the more specific
-// answer. Datum's record is missing because the domain does not delegate to
-// it, and that is the customer's to fix, not something to wait for.
 func TestAFailingConditionExplainsDatumsMissingRecord(t *testing.T) {
 	d := diagnose(t, hostnameWithRecords(
 		dnsCondition(networkingv1alpha.DNSRecordReasonDNSAuthorityMissing, metav1.ConditionFalse),
@@ -183,9 +169,6 @@ func TestAFailingConditionExplainsDatumsMissingRecord(t *testing.T) {
 	assert.Equal(t, networkingv1alpha.DNSRecordReasonDNSAuthorityMissing, d.RootCause.Reason)
 }
 
-// TestOwnershipRecordsBelongToTheOwnershipStep keeps the DNS record step to
-// routing and certificates. The ownership record is the domain's, and the
-// ownership step already reads it from there.
 func TestOwnershipRecordsBelongToTheOwnershipStep(t *testing.T) {
 	d := diagnose(t, hostnameWithRecords(
 		dnsCondition(networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue),
@@ -198,7 +181,6 @@ func TestOwnershipRecordsBelongToTheOwnershipStep(t *testing.T) {
 	assert.Equal(t, StepNotReported, stepNamed(t, d, "app.example.com", StepDNSRecord).State)
 }
 
-// TestNoRecordsAndNoConditionIsNotReported keeps absence reading as absence.
 func TestNoRecordsAndNoConditionIsNotReported(t *testing.T) {
 	d := diagnose(t, hostnameWithRecords(nil))
 

@@ -106,7 +106,10 @@ type InternalDNSProjectReconciler struct {
 	Config    config.InternalDNSConfig
 	Projects  ProjectIdentityResolver
 	Locations client.Reader
-	Now       func() time.Time
+	// IPAM reaches the network's project in IPAM, where its DNS addresses
+	// are claimed when Config.IPAM names a service class.
+	IPAM IPAMClientFactory
+	Now  func() time.Time
 
 	mgr mcmanager.Manager
 }
@@ -214,13 +217,25 @@ func (r *InternalDNSProjectReconciler) reconcile(
 		return ctrl.Result{RequeueAfter: internalDNSResyncInterval}, nil
 	}
 
-	destination, err := internalDNSDestination(r.Config.ServicePrefix, dnsContext.GetUID())
+	destination, regional, err := r.addresses(ctx, cl, network, dnsContext, region)
+	if errors.Is(err, errInternalDNSAddressPending) {
+		return ctrl.Result{RequeueAfter: internalDNSRetryInterval}, nil
+	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	binding, ready, err := r.ensureAccess(ctx, cl, network, projectUID, dnsContext, region, destination)
+	binding, ready, err := r.ensureAccess(ctx, cl, network, projectUID, dnsContext, region, destination, regional)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if regional == "" && r.ipamEnabled() && r.Config.IPAM.ResolverClasses[region] != "" && !r.Config.IPAM.FreshResolverAddresses {
+		// DNS allocated this network's regional address before IPAM held
+		// it; claim that address so IPAM never hands it to another network.
+		if reported := accessRegionalAddress(binding, "status"); reported != "" {
+			if _, err := r.adoptRegional(ctx, cl, network, region, reported); err != nil && !errors.Is(err, errInternalDNSAddressPending) {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 	if !ready {
 		return ctrl.Result{RequeueAfter: internalDNSResyncInterval}, nil
@@ -413,6 +428,7 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 	dnsContext *unstructured.Unstructured,
 	region string,
 	destination string,
+	regional string,
 ) (*unstructured.Unstructured, bool, error) {
 	name := internalDNSRegionalName(dnsContext.GetName(), region)
 	current := newInternalDNSObject(internalDNSAccessGVK, network.Namespace, name)
@@ -428,6 +444,17 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 			return current, false, nil
 		}
 		if accessBindingMatches(current, dnsContext, region, destination) {
+			// DNS moves a binding to a new regional address in place.
+			if regional != "" && !sameIPText(accessRegionalAddress(current, "spec"), regional) {
+				base := current.DeepCopy()
+				if err := unstructured.SetNestedField(current.Object, regional, "spec", "regionalAddress"); err != nil {
+					return nil, false, err
+				}
+				if err := cl.Patch(ctx, current, client.MergeFrom(base)); err != nil {
+					return nil, false, err
+				}
+				return current, false, nil
+			}
 			return current, bindingReady(current), nil
 		}
 		uid, resourceVersion := current.GetUID(), current.GetResourceVersion()
@@ -437,6 +464,9 @@ func (r *InternalDNSProjectReconciler) ensureAccess(
 		"contextRef":         map[string]any{"name": dnsContext.GetName(), "uid": string(dnsContext.GetUID())},
 		"region":             region,
 		"destinationAddress": destination,
+	}
+	if regional != "" {
+		current.Object["spec"].(map[string]any)["regionalAddress"] = regional
 	}
 	current.SetAnnotations(map[string]string{
 		internalDNSOwnerNetworkUIDAnnotation: string(network.UID),
@@ -475,6 +505,13 @@ func (r *InternalDNSProjectReconciler) disable(
 	if err := deleteOwnedDNSObject(ctx, cl, contextObj, string(network.UID)); err != nil {
 		errs = append(errs, err)
 	}
+	if r.ipamEnabled() {
+		if ipamClient, namespace, err := r.ipamClient(ctx, cl, network.Namespace); err != nil {
+			errs = append(errs, err)
+		} else if err := releaseInternalDNSClaims(ctx, ipamClient, namespace, string(network.UID), nil); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if err := r.clearIntent(ctx, cl, networkContext); err != nil {
 		errs = append(errs, err)
 	}
@@ -504,20 +541,23 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 ) error {
 	region := networkContext.Annotations[InternalDNSRegionAnnotation]
 	contextName := networkContext.Annotations[InternalDNSContextNameAnnotation]
-	if region == "" || contextName == "" {
+	if region == "" {
 		return nil
 	}
+	networkUID := networkContext.Labels[networkingv1alpha.NetworkUIDLabel]
 	var contexts networkingv1alpha.NetworkContextList
 	if err := cl.List(ctx, &contexts, client.InNamespace(networkContext.Namespace), client.MatchingLabels{
-		networkingv1alpha.NetworkUIDLabel: networkContext.Labels[networkingv1alpha.NetworkUIDLabel],
+		networkingv1alpha.NetworkUIDLabel: networkUID,
 	}); err != nil {
 		return err
 	}
+	otherContexts, sameRegion := false, false
 	for i := range contexts.Items {
 		other := &contexts.Items[i]
 		if other.UID == networkContext.UID || !other.DeletionTimestamp.IsZero() {
 			continue
 		}
+		otherContexts = true
 		otherRegion := other.Annotations[InternalDNSRegionAnnotation]
 		if otherRegion == "" {
 			var err error
@@ -527,14 +567,41 @@ func (r *InternalDNSProjectReconciler) cleanupRegion(
 			}
 		}
 		if otherRegion == region {
-			return nil
+			sameRegion = true
 		}
 	}
+	if sameRegion {
+		return nil
+	}
+	// The access binding may exist before the context names it in its intent.
+	if contextName == "" {
+		contextName = internalDNSResourceName(networkContext.Spec.Network.Name, types.UID(networkUID))
+	}
 	binding := newInternalDNSObject(internalDNSAccessGVK, networkContext.Namespace, internalDNSRegionalName(contextName, region))
-	if err := deleteOwnedDNSObject(ctx, cl, binding, networkContext.Labels[networkingv1alpha.NetworkUIDLabel]); err != nil {
+	if err := deleteOwnedDNSObject(ctx, cl, binding, networkUID); err != nil {
 		return err
 	}
-	return nil
+	if !r.ipamEnabled() {
+		return nil
+	}
+	// The class's retention lease keeps a released address unused while
+	// serving members withdraw it, so claims go with the binding. The service
+	// destination is the network's in every region and goes with its last
+	// context; a context only moving region keeps it.
+	ipamClient, namespace, err := r.ipamClient(ctx, cl, networkContext.Namespace)
+	if err != nil {
+		return err
+	}
+	lastContext := !otherContexts && !networkContext.DeletionTimestamp.IsZero()
+	return releaseInternalDNSClaims(ctx, ipamClient, namespace, networkUID, func(labels map[string]string) bool {
+		switch labels[internalDNSClaimRoleLabel] {
+		case internalDNSResolverRole:
+			return labels[internalDNSClaimRegionLabel] == region
+		case internalDNSServiceRole:
+			return lastContext
+		}
+		return false
+	})
 }
 
 func (r *InternalDNSProjectReconciler) publishIntent(

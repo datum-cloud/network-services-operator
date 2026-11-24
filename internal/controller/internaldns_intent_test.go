@@ -191,7 +191,7 @@ func TestVerifyInternalDNSIntent(t *testing.T) {
 			cl := fake.NewClientBuilder().WithScheme(internalDNSIntentScheme(t)).
 				WithObjects(network, dnsContext, binding).Build()
 
-			err := verifyInternalDNSIntent(context.Background(), cl, networkContext, networkContext.Spec.Network.Name, testDNSServicePrefix)
+			err := verifyInternalDNSIntent(context.Background(), cl, networkContext, networkContext.Spec.Network.Name, derivedInternalDNSDestination(testDNSServicePrefix))
 			if tc.wantErr != (err != nil) {
 				t.Fatalf("verify = %v, want error %v", err, tc.wantErr)
 			}

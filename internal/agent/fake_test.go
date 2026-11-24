@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -23,6 +24,7 @@ type fakeReader struct {
 	policies    []networkingv1alpha.TrafficProtectionPolicy
 	services    map[string]*networkingv1alpha.NetworkService
 	secrets     map[string]*corev1.Secret
+	security    []envoygatewayv1alpha1.SecurityPolicy
 	domainsErr  error
 	policiesErr error
 }
@@ -60,6 +62,10 @@ func (f *fakeReader) GetSecret(_ context.Context, _, name string) (*corev1.Secre
 		return s, nil
 	}
 	return nil, fmt.Errorf("getting secret %s: not found", name)
+}
+
+func (f *fakeReader) ListSecurityPolicies(context.Context, string) ([]envoygatewayv1alpha1.SecurityPolicy, error) {
+	return f.security, nil
 }
 
 var _ Reader = (*fakeReader)(nil)

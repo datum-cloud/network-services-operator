@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,7 @@ func TestReaderHasNoWrites(t *testing.T) {
 					"previews first", name)
 		}
 	}
-	assert.Equal(t, 6, rt.NumMethod(),
+	assert.Equal(t, 7, rt.NumMethod(),
 		"Reader grew a method; if it is a write, it belongs on Writer")
 }
 
@@ -116,7 +117,8 @@ func TestGetReturnsUsernamesNeverHashes(t *testing.T) {
 
 	const hash = "{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g="
 	r := &fakeReader{
-		proxies: []networkingv1alpha.HTTPProxy{healthyProxy()},
+		proxies:  []networkingv1alpha.HTTPProxy{healthyProxy()},
+		security: []envoygatewayv1alpha1.SecurityPolicy{*spec.BuildSecurityPolicy("my-app", "")},
 		secrets: map[string]*corev1.Secret{
 			spec.BasicAuthSecretName("my-app"): {
 				ObjectMeta: metav1.ObjectMeta{Name: spec.BasicAuthSecretName("my-app")},
@@ -135,6 +137,60 @@ func TestGetReturnsUsernamesNeverHashes(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), hash, "a password hash must never leave this service")
 	assert.NotContains(t, string(encoded), "htpasswd")
+}
+
+func TestGetReportsBasicAuthOnOneRule(t *testing.T) {
+	pinClock(t)
+
+	proxy := healthyProxy()
+	proxy.Spec.Rules = []networkingv1alpha.HTTPProxyRule{
+		{Name: ptr.To(gatewayv1.SectionName("api"))},
+		{Name: ptr.To(gatewayv1.SectionName("web"))},
+	}
+	policy := envoygatewayv1alpha1.SecurityPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-auth", Namespace: "default"},
+		Spec: envoygatewayv1alpha1.SecurityPolicySpec{
+			PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
+				TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{{
+					LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+						Group: gatewayv1.GroupName, Kind: "HTTPRoute", Name: "my-app",
+					},
+					SectionName: ptr.To(gatewayv1.SectionName("api")),
+				}},
+			},
+			BasicAuth: &envoygatewayv1alpha1.BasicAuth{Users: gatewayv1.SecretObjectReference{Name: "api-users"}},
+		},
+		Status: gatewayv1.PolicyStatus{Ancestors: []gatewayv1.PolicyAncestorStatus{{
+			AncestorRef: gatewayv1.ParentReference{Name: "my-app"},
+			Conditions: []metav1.Condition{{
+				Type: string(gatewayv1.PolicyConditionAccepted), Status: metav1.ConditionTrue,
+				Reason: string(gatewayv1.PolicyReasonAccepted),
+			}},
+		}}},
+	}
+	r := &fakeReader{
+		proxies:  []networkingv1alpha.HTTPProxy{proxy},
+		security: []envoygatewayv1alpha1.SecurityPolicy{policy},
+		secrets: map[string]*corev1.Secret{
+			"api-users": {
+				ObjectMeta: metav1.ObjectMeta{Name: "api-users"},
+				Data:       map[string][]byte{".htpasswd": []byte("alice:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=\n")},
+			},
+		},
+	}
+
+	_, out, err := albGet(depsFor(r))(context.Background(), nil, GetInput{Name: "my-app"})
+	require.NoError(t, err)
+
+	auth := out.LoadBalancer.BasicAuth
+	assert.True(t, auth.Enabled, "a rule that requires a password means basic auth is on")
+	assert.Equal(t, []string{"alice"}, auth.Usernames)
+	assert.Equal(t, []BasicAuthRulesView{{
+		Name:      "api-auth",
+		Rules:     []string{"api"},
+		Usernames: []string{"alice"},
+		State:     "accepted",
+	}}, auth.Policies)
 }
 
 // TestListPutsTheWorstFirst pins the point of a fleet view.

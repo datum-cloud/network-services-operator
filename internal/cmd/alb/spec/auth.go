@@ -10,6 +10,7 @@ import (
 
 	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -20,6 +21,114 @@ import (
 type BasicAuthUser struct {
 	Username string
 	Password string
+}
+
+const (
+	httpRouteKind = "HTTPRoute"
+
+	BasicAuthAccepted    = "accepted"
+	BasicAuthNotAccepted = "not accepted"
+	BasicAuthPending     = "pending"
+)
+
+type BasicAuthAttachment struct {
+	Policy     string
+	SecretName string
+	AllRoutes  bool
+	Rules      []string
+	Listeners  []string
+	State      string
+	Message    string
+}
+
+func (a BasicAuthAttachment) Scope() string {
+	if a.AllRoutes {
+		return "all"
+	}
+	parts := append([]string{}, a.Rules...)
+	for _, l := range a.Listeners {
+		parts = append(parts, "listener "+l)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (a BasicAuthAttachment) StateDetail() string {
+	if a.State == BasicAuthNotAccepted && a.Message != "" {
+		return a.State + ": " + a.Message
+	}
+	return a.State
+}
+
+func BasicAuthAttachments(proxyName string, policies []envoygatewayv1alpha1.SecurityPolicy) []BasicAuthAttachment {
+	var out []BasicAuthAttachment
+	for i := range policies {
+		policy := &policies[i]
+		if policy.Spec.BasicAuth == nil {
+			continue
+		}
+		attachment, ok := basicAuthAttachment(proxyName, policy)
+		if ok {
+			out = append(out, attachment)
+		}
+	}
+	return out
+}
+
+func basicAuthAttachment(proxyName string, policy *envoygatewayv1alpha1.SecurityPolicy) (BasicAuthAttachment, bool) {
+	a := BasicAuthAttachment{Policy: policy.Name, SecretName: string(policy.Spec.BasicAuth.Users.Name)}
+	matched := false
+	for _, ref := range policy.Spec.TargetRefs {
+		if string(ref.Group) != gatewayv1.GroupName || string(ref.Name) != proxyName {
+			continue
+		}
+		kind := string(ref.Kind)
+		if kind != gatewayKind && kind != httpRouteKind {
+			continue
+		}
+		matched = true
+		switch {
+		case ref.SectionName == nil:
+			a.AllRoutes = true
+		case kind == httpRouteKind:
+			a.Rules = appendUnique(a.Rules, string(*ref.SectionName))
+		default:
+			a.Listeners = appendUnique(a.Listeners, string(*ref.SectionName))
+		}
+	}
+	if !matched {
+		return a, false
+	}
+	if a.AllRoutes {
+		a.Rules, a.Listeners = nil, nil
+	}
+	a.State, a.Message = basicAuthState(policy)
+	return a, true
+}
+
+func basicAuthState(policy *envoygatewayv1alpha1.SecurityPolicy) (string, string) {
+	state := BasicAuthPending
+	for _, ancestor := range policy.Status.Ancestors {
+		cond := apimeta.FindStatusCondition(ancestor.Conditions, string(gatewayv1.PolicyConditionAccepted))
+		if cond == nil {
+			continue
+		}
+		switch cond.Status {
+		case metav1.ConditionFalse:
+			return BasicAuthNotAccepted, cond.Message
+		case metav1.ConditionTrue:
+			state = BasicAuthAccepted
+		}
+	}
+	return state, ""
+}
+
+func appendUnique(list []string, value string) []string {
+	for _, existing := range list {
+		if existing == value {
+			return list
+		}
+	}
+	return append(list, value)
 }
 
 func BasicAuthSecretName(proxyName string) string {

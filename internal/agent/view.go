@@ -82,8 +82,19 @@ type HeaderView struct {
 // BasicAuthView reports whether a username and password are required. It
 // carries usernames and never a password or a hash.
 type BasicAuthView struct {
-	Enabled   bool     `json:"enabled"`
+	Enabled   bool                 `json:"enabled"`
+	Usernames []string             `json:"usernames,omitempty"`
+	Policies  []BasicAuthRulesView `json:"policies,omitempty"`
+}
+
+type BasicAuthRulesView struct {
+	Name      string   `json:"name"`
+	AllRoutes bool     `json:"allRoutes,omitempty"`
+	Rules     []string `json:"rules,omitempty"`
+	Listeners []string `json:"listeners,omitempty"`
 	Usernames []string `json:"usernames,omitempty"`
+	State     string   `json:"state"`
+	Message   string   `json:"message,omitempty"`
 }
 
 // ConditionView is the part of a condition worth spending tokens on.
@@ -158,12 +169,8 @@ func buildView(
 		}
 	}
 
-	// Usernames only. The stored value is a hash and a hash is still a
-	// credential's shadow; nothing here returns the Secret's data.
-	if secret, err := r.GetSecret(ctx, namespace, spec.BasicAuthSecretName(proxy.Name)); err == nil {
-		if names := spec.ParseHtpasswdUsernames(secret); len(names) > 0 {
-			v.BasicAuth = BasicAuthView{Enabled: true, Usernames: names}
-		}
+	if policies, err := r.ListSecurityPolicies(ctx, namespace); err == nil {
+		v.BasicAuth = basicAuthView(ctx, r, namespace, spec.BasicAuthAttachments(proxy.Name, policies))
 	}
 
 	for _, c := range proxy.Status.Conditions {
@@ -174,6 +181,35 @@ func buildView(
 			Message: c.Message,
 		})
 	}
+	return v
+}
+
+// Usernames only. The stored value is a hash and a hash is still a
+// credential's shadow; nothing here returns the Secret's data.
+func basicAuthView(ctx context.Context, r Reader, namespace string, attachments []spec.BasicAuthAttachment) BasicAuthView {
+	var v BasicAuthView
+	seen := map[string]struct{}{}
+	for _, a := range attachments {
+		pv := BasicAuthRulesView{
+			Name:      a.Policy,
+			AllRoutes: a.AllRoutes,
+			Rules:     a.Rules,
+			Listeners: a.Listeners,
+			State:     a.State,
+			Message:   a.Message,
+		}
+		if secret, err := r.GetSecret(ctx, namespace, a.SecretName); err == nil {
+			pv.Usernames = spec.ParseHtpasswdUsernames(secret)
+		}
+		for _, name := range pv.Usernames {
+			if _, dup := seen[name]; !dup {
+				seen[name] = struct{}{}
+				v.Usernames = append(v.Usernames, name)
+			}
+		}
+		v.Policies = append(v.Policies, pv)
+	}
+	v.Enabled = len(v.Policies) > 0
 	return v
 }
 

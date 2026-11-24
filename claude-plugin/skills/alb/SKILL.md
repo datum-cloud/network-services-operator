@@ -148,6 +148,8 @@ datumctl alb logs my-app --since 1h --code 502
 
 Passwords are never printed and must come from stdin — never put one in a command line or a manifest. Every `--user` in one command gets the same password, and `auth set` replaces the whole user list rather than merging, so pass every user you want to keep.
 
+`auth list` and `describe` also report basic auth attached to one rule through a manifest (a `SecurityPolicy` whose target is the load balancer's route with a `sectionName`). Each policy shows the rules it guards, its usernames, and `accepted`, `pending` or `not accepted: <reason>`. `auth set` and `unset` touch only the policy named after the load balancer.
+
 `tpp` is an alias for `waf`. `--paranoia` sets the blocking and detection levels together and takes 1 to 4, but the portal offers only 1 and 2.
 
 ## What you cannot get here

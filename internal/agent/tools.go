@@ -88,7 +88,8 @@ func registerReadTools(s *mcp.Server, deps DepsFor) {
 			"(claimed, ownership proven, DNS record written, certificate issued), the routes and the " +
 			"origins behind each with their weights and share of requests, the load balancing " +
 			"algorithm, passive health checks, Force HTTPS, any Host override, traffic protection mode and " +
-			"paranoia level, and whether basic auth is on and which usernames it accepts — never " +
+			"paranoia level, and whether basic auth is on: which rules it guards, which usernames it " +
+			"accepts and whether the edge accepted it — never " +
 			"passwords or hashes. Use when you need the state rather than a diagnosis. Read-only.",
 	}, albGet(deps))
 

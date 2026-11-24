@@ -64,6 +64,43 @@ func getSecurityPolicy(ctx context.Context, c client.Client, name string) (*envo
 	return policy, nil
 }
 
+type basicAuthEntry struct {
+	spec.BasicAuthAttachment
+	Usernames []string
+	SecretErr error
+}
+
+func listBasicAuth(ctx context.Context, c client.Client, proxyName string) ([]basicAuthEntry, error) {
+	var list envoygatewayv1alpha1.SecurityPolicyList
+	if err := c.List(ctx, &list, client.InNamespace(util.ResourceNamespace)); err != nil {
+		return nil, util.ClassifyError(fmt.Errorf("listing basic auth policies: %w", err))
+	}
+	attachments := spec.BasicAuthAttachments(proxyName, list.Items)
+	entries := make([]basicAuthEntry, 0, len(attachments))
+	for _, a := range attachments {
+		entry := basicAuthEntry{BasicAuthAttachment: a}
+		secret := &corev1.Secret{}
+		err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: a.SecretName}, secret)
+		switch {
+		case apierrors.IsNotFound(err):
+			entry.SecretErr = fmt.Errorf("secret %q not found", a.SecretName)
+		case err != nil:
+			entry.SecretErr = util.ClassifyError(fmt.Errorf("getting basic auth secret %q: %w", a.SecretName, err))
+		default:
+			entry.Usernames = spec.ParseHtpasswdUsernames(secret)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (e basicAuthEntry) users() string {
+	if e.SecretErr != nil {
+		return e.SecretErr.Error()
+	}
+	return util.OrDash(strings.Join(e.Usernames, ", "))
+}
+
 func getBasicAuthSecret(ctx context.Context, c client.Client, proxyName string) (*corev1.Secret, error) {
 	secret := &corev1.Secret{}
 	err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: spec.BasicAuthSecretName(proxyName)}, secret)

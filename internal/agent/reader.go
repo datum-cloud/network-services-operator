@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	envoygatewayv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -37,6 +38,7 @@ type Reader interface {
 	// namespace. Which one guards a load balancer is decided by its targetRefs,
 	// so answering "is this one protected" means reading them all once.
 	ListProtectionPolicies(ctx context.Context, namespace string) ([]networkingv1alpha.TrafficProtectionPolicy, error)
+	ListSecurityPolicies(ctx context.Context, namespace string) ([]envoygatewayv1alpha1.SecurityPolicy, error)
 	// GetSecret returns one Secret, used only to read which usernames basic
 	// auth accepts. Callers must never return its contents.
 	GetSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error)
@@ -91,6 +93,14 @@ func (r *ClientReader) ListProtectionPolicies(ctx context.Context, namespace str
 	var list networkingv1alpha.TrafficProtectionPolicyList
 	if err := r.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing traffic protection policies in %s: %w", namespace, err)
+	}
+	return list.Items, nil
+}
+
+func (r *ClientReader) ListSecurityPolicies(ctx context.Context, namespace string) ([]envoygatewayv1alpha1.SecurityPolicy, error) {
+	var list envoygatewayv1alpha1.SecurityPolicyList
+	if err := r.Client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing security policies in %s: %w", namespace, err)
 	}
 	return list.Items, nil
 }

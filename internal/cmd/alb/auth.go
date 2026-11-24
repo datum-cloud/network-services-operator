@@ -187,27 +187,27 @@ func runAuthList(cmd *cobra.Command, args []string) error {
 	if _, err := util.GetHTTPProxy(cmd.Context(), c, args[0]); err != nil {
 		return err
 	}
-	policy, err := getSecurityPolicy(cmd.Context(), c, args[0])
+	entries, err := listBasicAuth(cmd.Context(), c, args[0])
 	if err != nil {
 		return err
 	}
-	if policy == nil {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Basic authentication: off")
+	out := cmd.OutOrStdout()
+	if len(entries) == 0 {
+		_, _ = fmt.Fprintln(out, "Basic authentication: off")
 		return nil
 	}
-	secret, err := getBasicAuthSecret(cmd.Context(), c, args[0])
-	if err != nil {
-		return err
+	tw := util.NewTabWriter(out)
+	_, _ = fmt.Fprintln(tw, "USERNAME\tRULES\tPOLICY\tSTATUS")
+	for _, e := range entries {
+		usernames := e.Usernames
+		if len(usernames) == 0 {
+			usernames = []string{e.users()}
+		}
+		for _, username := range usernames {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", username, e.Scope(), e.Policy, e.StateDetail())
+		}
 	}
-	usernames := spec.ParseHtpasswdUsernames(secret)
-	if len(usernames) == 0 {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Basic authentication: enabled (no usernames readable)")
-		return nil
-	}
-	for _, username := range usernames {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), username)
-	}
-	return nil
+	return tw.Flush()
 }
 
 func readPassword(in io.Reader) (string, error) {

@@ -245,6 +245,16 @@ Three things worth knowing:
 - **`set` replaces the whole user list**, it does not merge. Pass every user you want to keep.
 - `unset` removes the policy and the secret together.
 
+`auth list` and `describe` show every basic auth policy on the load balancer, not only the one `auth set` writes. That includes a policy you attach to one rule yourself. Each line names the rules it guards (`all` for the whole load balancer), its usernames, and whether the edge accepted it:
+
+```text
+USERNAME   RULES   POLICY     STATUS
+admin      all     my-app     accepted
+alice      api     api-auth   pending
+```
+
+The status is `accepted`, `pending` until the edge reports, or `not accepted` with the reason. `auth set` and `unset` change only the policy named after the load balancer.
+
 ## Previewing a change
 
 Every command that writes takes `--dry-run`, which sends the change to the API for validation and discards it:

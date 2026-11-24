@@ -141,17 +141,14 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(out, "Traffic protection: %s (paranoia %d)\n", spec.TPPMode(tpp), spec.TPPParanoia(tpp))
 	}
 
-	if policy, err := getSecurityPolicy(cmd.Context(), c, proxy.Name); err != nil {
+	if entries, err := listBasicAuth(cmd.Context(), c, proxy.Name); err != nil {
 		_, _ = fmt.Fprintf(out, "Basic auth:         %s\n", err.Error())
-	} else if policy == nil {
+	} else if len(entries) == 0 {
 		_, _ = fmt.Fprintln(out, "Basic auth:         off")
 	} else {
-		secret, secretErr := getBasicAuthSecret(cmd.Context(), c, proxy.Name)
-		usernames := spec.ParseHtpasswdUsernames(secret)
-		if secretErr != nil {
-			_, _ = fmt.Fprintf(out, "Basic auth:         enabled (%s)\n", secretErr.Error())
-		} else {
-			_, _ = fmt.Fprintf(out, "Basic auth:         enabled (%s)\n", util.OrDash(strings.Join(usernames, ", ")))
+		_, _ = fmt.Fprintln(out, "Basic auth:         on")
+		for _, e := range entries {
+			_, _ = fmt.Fprintf(out, "  %s  rules: %s  users: %s  %s\n", e.Policy, e.Scope(), e.users(), e.StateDetail())
 		}
 	}
 

@@ -269,8 +269,6 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 		jsonKeyName, req.Name,
 	)
 	ctx = log.IntoContext(ctx, logger)
-	// A project's own control plane does not label its namespaces with the
-	// project, so the DNS checks fall back to the cluster to name it.
 	ctx = mccontext.WithCluster(ctx, req.ClusterName)
 
 	resourceCfg, ok := r.resources[gvkKey(req.GVK)]

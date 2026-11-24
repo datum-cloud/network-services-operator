@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -423,9 +424,18 @@ func TestInternalDNSRefusesAClaimItDidNotMake(t *testing.T) {
 	}
 }
 
-// A project's own control plane does not label its namespaces with the
-// project, so the replicator has to name the project from the cluster it read
-// the NetworkContext from before it can look up the IPAM-held destination.
+type projectIPAMClient struct {
+	project string
+	client.Client
+}
+
+func (f projectIPAMClient) ClientForProject(project string) (client.Client, error) {
+	if project != f.project {
+		return nil, fmt.Errorf("IPAM client asked for project %q, want %q", project, f.project)
+	}
+	return f.Client, nil
+}
+
 func TestReplicationVerifiesIPAMDestinationInAProjectControlPlane(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -435,7 +445,6 @@ func TestReplicationVerifiesIPAMDestinationInAProjectControlPlane(t *testing.T) 
 
 	network, dnsContext, binding := acceptedDNSAccess(t)
 	_ = unstructured.SetNestedField(binding.Object, claimed, "spec", "destinationAddress")
-	// No upstream-cluster-name label: the namespace names no project.
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", UID: "ns-uid"}}
 	networkContext := testNetworkContext("context", "context-uid")
 	networkContext.Annotations = verifiedDNSIntent()
@@ -470,7 +479,7 @@ func TestReplicationVerifiesIPAMDestinationInAProjectControlPlane(t *testing.T) 
 	r.mgr = &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{
 		testProject: &replicatorFakeCluster{scheme: scheme, c: upstream},
 	}}
-	r.IPAM = fixedIPAMClient{ipam}
+	r.IPAM = projectIPAMClient{project: testProject, Client: ipam}
 	r.Config.InternalDNS.Enabled = true
 	r.Config.InternalDNS.ServicePrefix = testDNSServicePrefix
 	r.Config.InternalDNS.IPAM.ServiceClass = "dns-service"
@@ -482,12 +491,12 @@ func TestReplicationVerifiesIPAMDestinationInAProjectControlPlane(t *testing.T) 
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	copy := &unstructured.Unstructured{}
-	copy.SetGroupVersionKind(gvk)
-	if err := downstream.Get(ctx, client.ObjectKey{Namespace: "ns-ns-uid", Name: "context"}, copy); err != nil {
+	replica := &unstructured.Unstructured{}
+	replica.SetGroupVersionKind(gvk)
+	if err := downstream.Get(ctx, client.ObjectKey{Namespace: "ns-ns-uid", Name: "context"}, replica); err != nil {
 		t.Fatal(err)
 	}
-	got := copy.GetAnnotations()
+	got := replica.GetAnnotations()
 	if got[InternalDNSServiceDestinationAnnotation] != claimed || got[InternalDNSAccessNameAnnotation] == "" {
 		t.Fatalf("the IPAM-held DNS intent did not reach the copy: %v", got)
 	}

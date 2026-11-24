@@ -50,7 +50,9 @@ control it, or, if they believe it should be theirs, raise it with Datum.
 
 ## A DNS record that will not be written
 
-Read the reason on the `dns-record` step:
+The `dns-record` step reads the routing and certificate records the hostname
+lists, and falls back to the platform's own report only when it lists none.
+Read the reason on the step:
 
 | Reason | What it means |
 |---|---|
@@ -60,6 +62,8 @@ Read the reason on the `dns-record` step:
 | `ConflictWithUserRecord` | A record already exists that Datum did not write. Remove it, or use a different hostname |
 | `RecordCreationFailed` | Datum's. Say so and say to raise it |
 | `Pending` / `RetryPending` | In flight. Check how long — past 15 minutes it is stuck |
+| `RecordNotPublished` | A record the customer publishes is missing. The step's `records` list each one by name, type and value: give them exactly that |
+| `RecordNotInEffect` | Datum has a record for it in its own zone that has not taken effect yet. Nothing for the customer to do |
 
 ## Checking your work
 

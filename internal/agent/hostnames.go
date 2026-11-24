@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -72,9 +73,7 @@ func customHostnameProgress(
 		p.Domain = domainView(domain)
 	}
 
-	p.Steps = append(p.Steps, stepFrom(
-		StepDNSRecord, hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed,
-		"Nothing reports whether a DNS record for this hostname has been written."))
+	p.Steps = append(p.Steps, dnsRecordStep(hs))
 
 	p.Steps = append(p.Steps, stepFrom(
 		StepCertificate, hs.Conditions, networkingv1alpha.HostnameConditionCertificateReady,
@@ -115,6 +114,65 @@ func stepFrom(step string, conditions []metav1.Condition, conditionType, absentN
 		out.State = StepFailed
 	}
 	return out
+}
+
+// dnsRecordStep reads the DNS record step from the records the hostname lists,
+// which say what is left to do, and from the condition only when it lists none.
+// Ownership records are left to the ownership step, which reads the Domain.
+//
+// A missing record Datum publishes is in flight unless the condition reports
+// why, because that reason is the more specific answer.
+func dnsRecordStep(hs networkingv1alpha.HostnameStatus) HostnameStep {
+	fromCondition := stepFrom(
+		StepDNSRecord, hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+		"Nothing reports whether a DNS record for this hostname has been written.")
+
+	listed, platformMissing := false, false
+	var userMissing []DNSRecordView
+	for _, r := range hs.DNSRecords {
+		if r.Purpose != networkingv1alpha.HostnameDNSRecordPurposeRouting &&
+			r.Purpose != networkingv1alpha.HostnameDNSRecordPurposeCertificate {
+			continue
+		}
+		listed = true
+		if r.State == networkingv1alpha.HostnameDNSRecordPresent {
+			continue
+		}
+		if r.ManagedBy == networkingv1alpha.HostnameDNSRecordManagedByPlatform {
+			platformMissing = true
+			continue
+		}
+		userMissing = append(userMissing, DNSRecordView{Name: r.Name, Type: r.Type, Content: r.Content})
+	}
+
+	switch {
+	case !listed:
+		return fromCondition
+	case len(userMissing) > 0:
+		instructions := make([]string, 0, len(userMissing))
+		for _, r := range userMissing {
+			instructions = append(instructions, recordFields(r))
+		}
+		return HostnameStep{
+			Step:    StepDNSRecord,
+			State:   StepFailed,
+			Reason:  ReasonRecordNotPublished,
+			Note:    "Publish at your DNS provider: " + strings.Join(instructions, "; ") + ".",
+			Records: userMissing,
+		}
+	case platformMissing && (fromCondition.State == StepFailed || fromCondition.State == StepPending):
+		return fromCondition
+	case platformMissing:
+		info, _ := ExplainReason(networkingv1alpha.HostnameConditionDNSRecordProgrammed, ReasonRecordNotInEffect)
+		return HostnameStep{Step: StepDNSRecord, State: StepPending, Reason: ReasonRecordNotInEffect, Note: info.Explanation}
+	default:
+		return HostnameStep{Step: StepDNSRecord, State: StepOK}
+	}
+}
+
+// recordFields renders a DNS record in the fields a DNS provider's form asks for.
+func recordFields(r DNSRecordView) string {
+	return fmt.Sprintf("name %q, type %s, value %q", r.Name, r.Type, r.Content)
 }
 
 // notApplicableReasons are set True to report that a step does not apply. They
@@ -242,6 +300,9 @@ func hostnameCauses(proxy *networkingv1alpha.HTTPProxy, progress []HostnameProgr
 				// it was actually found.
 				level = levelDomain
 				c = &metav1.Condition{Type: networkingv1alpha.DomainConditionVerified, Reason: step.Reason, Message: step.Message}
+			}
+			if step.Step == StepDNSRecord && recordReasons[step.Reason] {
+				c = &metav1.Condition{Type: conditionType, Reason: step.Reason, Message: step.Message}
 			}
 			if c == nil {
 				continue

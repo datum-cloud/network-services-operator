@@ -111,6 +111,9 @@ type HostnameStep struct {
 	// Note explains a state that would otherwise be misread, above all
 	// notReported.
 	Note string `json:"note,omitempty"`
+	// Records are the DNS records the customer still has to publish for this
+	// step, verbatim.
+	Records []DNSRecordView `json:"records,omitempty"`
 }
 
 // DomainView is what the Domain behind a custom hostname says.

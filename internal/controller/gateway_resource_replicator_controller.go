@@ -123,6 +123,7 @@ type replicationResourceConfig struct {
 
 type replicationResource struct {
 	gvk                       schema.GroupVersionKind
+	selector                  labels.Selector
 	downstreamGVK             schema.GroupVersionKind
 	replicationResourceConfig replicationResourceConfig
 	controllerName            string
@@ -312,7 +313,7 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
-	if !upstreamObj.GetDeletionTimestamp().IsZero() {
+	if !upstreamObj.GetDeletionTimestamp().IsZero() || !resourceCfg.selects(upstreamObj) {
 		return r.finalizeResource(ctx, resourceCfg, upstreamCluster, upstreamObj, downstreamStrategy)
 	}
 
@@ -1020,6 +1021,7 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 
 		resource := replicationResource{
 			gvk:            gvk,
+			selector:       selector,
 			downstreamGVK:  gvk,
 			controllerName: string(r.Config.Gateway.ControllerName),
 		}
@@ -1081,6 +1083,10 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 	return builder.Named(gatewayResourceReplicatorControllerName).Complete(r)
 }
 
+func (r replicationResource) selects(obj client.Object) bool {
+	return r.selector == nil || r.selector.Matches(labels.Set(obj.GetLabels()))
+}
+
 func newUnstructuredForGVK(gvk schema.GroupVersionKind) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(gvk)
@@ -1130,7 +1136,8 @@ func typedEnqueueRequestForGVK(
 ) mchandler.TypedEventHandlerFunc[client.Object, GVKRequest] {
 	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
-			if selector != nil && !selector.Matches(labels.Set(obj.GetLabels())) {
+			if selector != nil && !selector.Matches(labels.Set(obj.GetLabels())) &&
+				!controllerutil.ContainsFinalizer(obj, gatewayResourceReplicatorFinalizer) {
 				return nil
 			}
 

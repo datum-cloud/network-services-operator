@@ -259,6 +259,11 @@ func TestTypedEnqueueRequestForGVKFiltersBySelector(t *testing.T) {
 	queue.Done(item)
 
 	assert.Equal(t, testGVK, item.GVK, "unexpected GVK enqueued")
+
+	released := newUnstructuredObject("workloads", "released", map[string]string{"replicate": "false"}, nil)
+	released.SetFinalizers([]string{gatewayResourceReplicatorFinalizer})
+	h.Create(ctx, event.TypedCreateEvent[client.Object]{Object: released}, queue)
+	assert.Equal(t, 1, queue.Len(), "an object that lost its labels but keeps the finalizer must still be enqueued")
 }
 
 func TestReplicatorCleansDownstreamOnDelete(t *testing.T) {

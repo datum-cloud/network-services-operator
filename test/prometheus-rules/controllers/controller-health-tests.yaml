@@ -28,6 +28,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: critical
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -41,6 +42,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: warning
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -51,6 +53,7 @@ tests:
           runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh
       - exp_labels:
           severity: warning
+          team: delivery
           controller: domain
           cluster: prod
           namespace: nso-system
@@ -77,6 +80,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: critical
+          team: delivery
           controller: gateway
           cluster: staging
           namespace: nso-system
@@ -104,6 +108,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: critical
+          team: delivery
           controller: project
           cluster: prod
           namespace: nso-system
@@ -164,6 +169,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: critical
+          team: delivery
           controller: dnsrecordset-powerdns
           cluster: prod
           namespace: nso-system
@@ -177,6 +183,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: critical
+          team: delivery
           controller: dnsrecordset-powerdns
           cluster: prod
           namespace: nso-system
@@ -190,6 +197,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: critical
+          team: delivery
           controller: dnsrecordset-powerdns
           cluster: prod
           namespace: nso-system
@@ -217,6 +225,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: warning
+          team: delivery
           controller: instance-projector
           cluster: prod
           namespace: compute-system
@@ -257,6 +266,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: warning
+          team: delivery
           controller: work-status-controller
           cluster: lab
           namespace: karmada-agent-system
@@ -292,13 +302,14 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller gateway in prod/nso-system/nso-controller-manager reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled
           description: More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis.
           runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical
       - exp_labels:
           severity: critical
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -317,13 +328,14 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller gateway in prod/nso-system/nso-controller-manager reconcile error ratio is 90% (threshold 20%)
           description: 'More than 20% of the ''gateway'' controller''s reconcile attempts are failing in cluster ''prod'', namespace ''nso-system''. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for ''Reconciler error'' entries on the ''gateway'' controller.'
           runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiohigh
       - exp_labels:
           severity: warning
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -351,7 +363,7 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller gateway in prod/nso-system/nso-controller-manager has had reconcile errors in each of the last 24 hours
           description: The 'gateway' controller in cluster 'prod', namespace 'nso-system' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook.
@@ -390,7 +402,7 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller gateway in prod/nso-system/nso-controller-manager reconcile error ratio is 90% (threshold 50%) — reconciliation is stalled
           description: More than 50% of the 'gateway' controller's reconcile attempts are failing in cluster 'prod', namespace 'nso-system' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis.
@@ -409,6 +421,7 @@ tests:
           runbook_url: https://github.com/datum-cloud/network-services-operator/blob/main/docs/runbooks/controller-health.md#controllerreconcileerrorratiocritical
       - exp_labels:
           severity: critical
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: lonely-system
@@ -479,7 +492,7 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller dns in prod/nso-system/nso-controller-manager has had reconcile errors in each of the last 24 hours
           description: The 'dns' controller in cluster 'prod', namespace 'nso-system' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook.
@@ -506,7 +519,7 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller dns in prod/nso-system/nso-controller-manager has had reconcile errors in each of the last 24 hours
           description: The 'dns' controller in cluster 'prod', namespace 'nso-system' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook.
@@ -529,6 +542,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: warning
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -542,6 +556,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: warning
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -555,6 +570,7 @@ tests:
       exp_alerts:
       - exp_labels:
           severity: warning
+          team: delivery
           controller: gateway
           cluster: prod
           namespace: nso-system
@@ -570,7 +586,7 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller gateway in prod/nso-system/nso-controller-manager reconcile error ratio is 90% (threshold 20%)
           description: 'More than 20% of the ''gateway'' controller''s reconcile attempts are failing in cluster ''prod'', namespace ''nso-system''. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for ''Reconciler error'' entries on the ''gateway'' controller.'
@@ -585,7 +601,7 @@ tests:
           namespace: nso-system
           deployment: nso-controller-manager
           service: network-services
-          team: platform
+          team: delivery
         exp_annotations:
           summary: Controller gateway in prod/nso-system/nso-controller-manager reconcile error ratio is 90% (threshold 20%)
           description: 'More than 20% of the ''gateway'' controller''s reconcile attempts are failing in cluster ''prod'', namespace ''nso-system''. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for ''Reconciler error'' entries on the ''gateway'' controller.'

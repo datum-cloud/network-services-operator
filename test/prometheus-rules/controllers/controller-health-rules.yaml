@@ -29,6 +29,7 @@ groups:
     keep_firing_for: 30m
     labels:
       severity: warning
+      team: delivery
     annotations:
       summary: "Controller {{ $labels.controller }} in {{ $labels.cluster }}/{{ $labels.namespace }}/{{ $labels.deployment }} reconcile error ratio is {{ $value | humanizePercentage }} (threshold 20%)"
       description: "More than 20% of the '{{ $labels.controller }}' controller's reconcile attempts are failing in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}'. It cannot apply its intent — changes are not reaching their target and the last successfully written state stays programmed. Common causes: an object fails CRD validation, an API server admission error, or a permissions regression. Check controller logs for 'Reconciler error' entries on the '{{ $labels.controller }}' controller."
@@ -49,6 +50,7 @@ groups:
     keep_firing_for: 30m
     labels:
       severity: critical
+      team: delivery
     annotations:
       summary: "Controller {{ $labels.controller }} in {{ $labels.cluster }}/{{ $labels.namespace }}/{{ $labels.deployment }} reconcile error ratio is {{ $value | humanizePercentage }} (threshold 50%) — reconciliation is stalled"
       description: "More than 50% of the '{{ $labels.controller }}' controller's reconcile attempts are failing in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' — it has effectively stopped applying changes. Treat as an active outage for anything this controller programs. Check controller logs for 'Reconciler error' entries. See ControllerReconcileErrorRatioHigh for initial diagnosis."
@@ -70,6 +72,7 @@ groups:
     keep_firing_for: 5m
     labels:
       severity: warning
+      team: delivery
     annotations:
       summary: "Controller {{ $labels.controller }} in {{ $labels.cluster }}/{{ $labels.namespace }}/{{ $labels.deployment }} has had reconcile errors in each of the last 24 hours"
       description: "The '{{ $labels.controller }}' controller in cluster '{{ $labels.cluster }}', namespace '{{ $labels.namespace }}' has returned reconcile errors in every hour for a day. A steady error floor is almost always a failure no retry can fix, or a wait, returned as a plain error. Find the objects in the controller logs and fix the controller or the data; see the runbook."

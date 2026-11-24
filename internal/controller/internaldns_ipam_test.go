@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -15,10 +16,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
@@ -415,5 +421,83 @@ func TestInternalDNSRefusesAClaimItDidNotMake(t *testing.T) {
 				t.Fatalf("the planted claim's address was used: %#v", binding.Object["spec"])
 			}
 		})
+	}
+}
+
+type projectIPAMClient struct {
+	project string
+	client.Client
+}
+
+func (f projectIPAMClient) ClientForProject(project string) (client.Client, error) {
+	if project != f.project {
+		return nil, fmt.Errorf("IPAM client asked for project %q, want %q", project, f.project)
+	}
+	return f.Client, nil
+}
+
+func TestReplicationVerifiesIPAMDestinationInAProjectControlPlane(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := internalDNSIntentScheme(t)
+	gvk := schema.GroupVersionKind{Group: groupNetworkingDatumAPIs, Version: versionV1Alpha, Kind: KindNetworkContext}
+	const claimed = "fd70:100::99"
+
+	network, dnsContext, binding := acceptedDNSAccess(t)
+	_ = unstructured.SetNestedField(binding.Object, claimed, "spec", "destinationAddress")
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant", UID: "ns-uid"}}
+	networkContext := testNetworkContext("context", "context-uid")
+	networkContext.Annotations = verifiedDNSIntent()
+	networkContext.Annotations[InternalDNSServiceDestinationAnnotation] = claimed
+	networkContext.Finalizers = []string{gatewayResourceReplicatorFinalizer}
+
+	upstream := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(namespace, network, dnsContext, binding, networkContext).Build()
+	downstream := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ipamScheme, err := IPAMScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipam := fake.NewClientBuilder().WithScheme(ipamScheme).WithStatusSubresource(&ipamv1alpha1.IPClaim{}).Build()
+	claim := &ipamv1alpha1.IPClaim{}
+	claim.Namespace, claim.Name = "tenant", "dns-service"
+	claim.Labels = serviceClaimKey().labels(network)
+	claim.Spec = ipamv1alpha1.IPClaimSpec{
+		ClassName: "dns-service", IPFamily: ipamv1alpha1.IPFamily(networkingv1alpha.IPv6Protocol),
+		PrefixLength: ptr.To(int32(128)), ReclaimPolicy: ipamv1alpha1.ReclaimRetain,
+	}
+	if err := ipam.Create(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	claim.Status.Address = claimed
+	if err := ipam.Status().Update(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+
+	r := newReplicatorForGVKTest(gvk, upstream, downstream, scheme)
+	r.mgr = &replicatorFakeManager{clusters: map[multicluster.ClusterName]cluster.Cluster{
+		testProject: &replicatorFakeCluster{scheme: scheme, c: upstream},
+	}}
+	r.IPAM = projectIPAMClient{project: testProject, Client: ipam}
+	r.Config.InternalDNS.Enabled = true
+	r.Config.InternalDNS.ServicePrefix = testDNSServicePrefix
+	r.Config.InternalDNS.IPAM.ServiceClass = "dns-service"
+
+	req := GVKRequest{GVK: gvk, Request: mcreconcile.Request{
+		ClusterName: testProject,
+		Request:     reconcile.Request{NamespacedName: client.ObjectKeyFromObject(networkContext)},
+	}}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	replica := &unstructured.Unstructured{}
+	replica.SetGroupVersionKind(gvk)
+	if err := downstream.Get(ctx, client.ObjectKey{Namespace: "ns-ns-uid", Name: "context"}, replica); err != nil {
+		t.Fatal(err)
+	}
+	got := replica.GetAnnotations()
+	if got[InternalDNSServiceDestinationAnnotation] != claimed || got[InternalDNSAccessNameAnnotation] == "" {
+		t.Fatalf("the IPAM-held DNS intent did not reach the copy: %v", got)
 	}
 }

@@ -110,7 +110,8 @@ type HostnameStep struct {
 	Message string    `json:"message,omitempty"`
 	// Note explains a state that would otherwise be misread, above all
 	// notReported.
-	Note string `json:"note,omitempty"`
+	Note    string          `json:"note,omitempty"`
+	Records []DNSRecordView `json:"records,omitempty"`
 }
 
 // DomainView is what the Domain behind a custom hostname says.

@@ -94,7 +94,9 @@ Three more traps, each of which produces a confident wrong answer:
 - **Two reasons are set true to mean "does not apply".** `DNSZoneNotFound` and
   `NotApplicable` on a hostname's DNS record both mean Datum does not run that
   domain's DNS. That is a normal arrangement. It is not a fault, and it is not
-  something to wait for — nothing is coming. The answer is a CNAME.
+  something to wait for, because nothing is coming. The answer is a CNAME, and the
+  hostname's DNS record list says whether it is in place yet: `alb_diagnose`
+  reports a missing one as `RecordNotPublished`, with the record to create.
 - **The same reason word means different things on different conditions.**
   `Pending` on a load balancer's `Accepted` means nothing has looked at it yet.
   `Pending` on a hostname's `CertificateReady` means the certificate is not

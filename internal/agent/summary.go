@@ -63,9 +63,12 @@ func summarise(d *Diagnosis) (string, []string) {
 	}
 	if c.Hostname != "" {
 		if dom := domainOf(d, c.Hostname); dom != nil && dom.VerificationRecord != nil && !dom.Verified {
-			next = append(next, fmt.Sprintf(
-				"Create this DNS record at your provider: name %q, type %s, value %q.",
-				dom.VerificationRecord.Name, dom.VerificationRecord.Type, dom.VerificationRecord.Content))
+			next = append(next, createRecord(*dom.VerificationRecord))
+		}
+		if c.Reason == ReasonRecordNotPublished {
+			for _, r := range recordsToPublish(d, c.Hostname) {
+				next = append(next, createRecord(r))
+			}
 		}
 	}
 	if c.Skill != "" {
@@ -104,6 +107,24 @@ func healthySummary(d *Diagnosis, name string) (string, []string) {
 		next = append(next, "Not everything could be checked: "+u)
 	}
 	return b.String(), next
+}
+
+func createRecord(r DNSRecordView) string {
+	return "Create this DNS record at your provider: " + recordFields(r) + "."
+}
+
+func recordsToPublish(d *Diagnosis, hostname string) []DNSRecordView {
+	for i := range d.Hostnames {
+		if d.Hostnames[i].Hostname != hostname {
+			continue
+		}
+		for _, s := range d.Hostnames[i].Steps {
+			if s.Step == StepDNSRecord {
+				return s.Records
+			}
+		}
+	}
+	return nil
 }
 
 func domainOf(d *Diagnosis, hostname string) *DomainView {

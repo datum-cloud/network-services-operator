@@ -146,6 +146,16 @@ type ReasonInfo struct {
 // its own explanation, its own actionability and its own test.
 const ReasonCannotProgram = "CannotProgram"
 
+const (
+	ReasonRecordNotPublished = "RecordNotPublished"
+	ReasonRecordNotInEffect  = "RecordNotInEffect"
+)
+
+var recordReasons = map[string]bool{
+	ReasonRecordNotPublished: true,
+	ReasonRecordNotInEffect:  true,
+}
+
 // cannotProgramPrefix is what the controller puts in front of the real cause.
 const cannotProgramPrefix = "The HTTPProxy cannot be programmed:"
 
@@ -549,6 +559,28 @@ var dnsAndCertCatalog = []ReasonInfo{
 		Explanation:   "Datum could not write the DNS record for this hostname.",
 		Remediation:   remediationEscalate,
 		Skill:         SkillHostnameNotWorking,
+	},
+	{
+		Reason:        ReasonRecordNotPublished,
+		ConditionType: networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeOneHostname,
+		Explanation: "This hostname needs a DNS record that you publish with your own DNS provider, " +
+			"and public DNS does not answer with it yet.",
+		Remediation: "Create the record exactly as given at your DNS provider. Datum checks public " +
+			"DNS on its own and notices the record once it resolves.",
+		Skill: SkillHostnameNotWorking,
+	},
+	{
+		Reason:        ReasonRecordNotInEffect,
+		ConditionType: networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+		Actionability: ActionabilityTransient,
+		Scope:         ScopeOneHostname,
+		Explanation: "Datum publishes this hostname's DNS record in its own DNS zone, and the record " +
+			"has not taken effect yet.",
+		Remediation:      remediationWait,
+		Skill:            SkillHostnameNotWorking,
+		ExpectedDuration: windowDNSRecord,
 	},
 
 	// ----------------------------------- one hostname: the certificate

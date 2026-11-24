@@ -149,8 +149,10 @@ func TestOnlyMissingRecordsAreNextSteps(t *testing.T) {
 // TestAMissingRecordOfDatumsIsPending is the record Datum publishes in its own
 // zone, written and not yet taking effect. The customer has nothing to do.
 func TestAMissingRecordOfDatumsIsPending(t *testing.T) {
+	fresh := cond(networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+		networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue, ago(5*time.Minute))
 	d := diagnose(t, hostnameWithRecords(
-		dnsCondition(networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue),
+		&fresh,
 		routingRecord(networkingv1alpha.HostnameDNSRecordManagedByPlatform, networkingv1alpha.HostnameDNSRecordMissing),
 	))
 
@@ -203,4 +205,40 @@ func TestNoRecordsAndNoConditionIsNotReported(t *testing.T) {
 	step := stepNamed(t, d, "app.example.com", StepDNSRecord)
 	assert.Equal(t, StepNotReported, step.State)
 	assert.Nil(t, d.RootCause)
+}
+
+func TestAStaleMissingRecordOfDatumsStalls(t *testing.T) {
+	old := dnsCondition(networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue)
+	d := diagnose(t, hostnameWithRecords(old,
+		routingRecord(networkingv1alpha.HostnameDNSRecordManagedByPlatform, networkingv1alpha.HostnameDNSRecordMissing),
+	))
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, ReasonRecordNotInEffect, d.RootCause.Reason)
+	assert.Equal(t, ActionabilityStalled, d.RootCause.Actionability)
+
+	d = diagnose(t, hostnameWithRecords(nil,
+		routingRecord(networkingv1alpha.HostnameDNSRecordManagedByPlatform, networkingv1alpha.HostnameDNSRecordMissing),
+	))
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, ActionabilityStalled, d.RootCause.Actionability,
+		"with no condition the load balancer's age bounds the wait")
+
+	fresh := cond(networkingv1alpha.HostnameConditionDNSRecordProgrammed,
+		networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue, ago(5*time.Minute))
+	d = diagnose(t, hostnameWithRecords(&fresh,
+		routingRecord(networkingv1alpha.HostnameDNSRecordManagedByPlatform, networkingv1alpha.HostnameDNSRecordMissing),
+	))
+	require.NotNil(t, d.RootCause)
+	assert.Equal(t, ActionabilityTransient, d.RootCause.Actionability)
+}
+
+func TestAnUnknownRecordStateIsNotACustomerAction(t *testing.T) {
+	d := diagnose(t, hostnameWithRecords(
+		dnsCondition(networkingv1alpha.DNSRecordReasonCreated, metav1.ConditionTrue),
+		routingRecord(networkingv1alpha.HostnameDNSRecordManagedByUser, networkingv1alpha.HostnameDNSRecordState("Unheard")),
+	))
+	assert.Equal(t, StepOK, stepNamed(t, d, "app.example.com", StepDNSRecord).State)
+	if d.RootCause != nil {
+		assert.NotEqual(t, ReasonRecordNotPublished, d.RootCause.Reason)
+	}
 }

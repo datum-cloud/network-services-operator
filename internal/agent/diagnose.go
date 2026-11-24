@@ -110,9 +110,7 @@ type HostnameStep struct {
 	Message string    `json:"message,omitempty"`
 	// Note explains a state that would otherwise be misread, above all
 	// notReported.
-	Note string `json:"note,omitempty"`
-	// Records are the DNS records the customer still has to publish for this
-	// step, verbatim.
+	Note    string          `json:"note,omitempty"`
 	Records []DNSRecordView `json:"records,omitempty"`
 }
 

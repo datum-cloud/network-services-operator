@@ -116,12 +116,6 @@ func stepFrom(step string, conditions []metav1.Condition, conditionType, absentN
 	return out
 }
 
-// dnsRecordStep reads the DNS record step from the records the hostname lists,
-// which say what is left to do, and from the condition only when it lists none.
-// Ownership records are left to the ownership step, which reads the Domain.
-//
-// A missing record Datum publishes is in flight unless the condition reports
-// why, because that reason is the more specific answer.
 func dnsRecordStep(hs networkingv1alpha.HostnameStatus) HostnameStep {
 	fromCondition := stepFrom(
 		StepDNSRecord, hs.Conditions, networkingv1alpha.HostnameConditionDNSRecordProgrammed,
@@ -135,7 +129,7 @@ func dnsRecordStep(hs networkingv1alpha.HostnameStatus) HostnameStep {
 			continue
 		}
 		listed = true
-		if r.State == networkingv1alpha.HostnameDNSRecordPresent {
+		if r.State != networkingv1alpha.HostnameDNSRecordMissing {
 			continue
 		}
 		if r.ManagedBy == networkingv1alpha.HostnameDNSRecordManagedByPlatform {
@@ -170,7 +164,6 @@ func dnsRecordStep(hs networkingv1alpha.HostnameStatus) HostnameStep {
 	}
 }
 
-// recordFields renders a DNS record in the fields a DNS provider's form asks for.
 func recordFields(r DNSRecordView) string {
 	return fmt.Sprintf("name %q, type %s, value %q", r.Name, r.Type, r.Content)
 }
@@ -302,7 +295,13 @@ func hostnameCauses(proxy *networkingv1alpha.HTTPProxy, progress []HostnameProgr
 				c = &metav1.Condition{Type: networkingv1alpha.DomainConditionVerified, Reason: step.Reason, Message: step.Message}
 			}
 			if step.Step == StepDNSRecord && recordReasons[step.Reason] {
-				c = &metav1.Condition{Type: conditionType, Reason: step.Reason, Message: step.Message}
+				since := created
+				if c != nil {
+					since = c.LastTransitionTime
+				}
+				c = &metav1.Condition{
+					Type: conditionType, Reason: step.Reason, Message: step.Message, LastTransitionTime: since,
+				}
 			}
 			if c == nil {
 				continue

@@ -146,16 +146,11 @@ type ReasonInfo struct {
 // its own explanation, its own actionability and its own test.
 const ReasonCannotProgram = "CannotProgram"
 
-// ReasonRecordNotPublished and ReasonRecordNotInEffect are derived too, from
-// the DNS records a hostname lists rather than from a condition. The list says
-// which records are missing and who publishes each one; no condition does, so
-// without these a missing record of the customer's reaches nobody as a step.
 const (
 	ReasonRecordNotPublished = "RecordNotPublished"
 	ReasonRecordNotInEffect  = "RecordNotInEffect"
 )
 
-// recordReasons are the reasons read from a hostname's DNS record list.
 var recordReasons = map[string]bool{
 	ReasonRecordNotPublished: true,
 	ReasonRecordNotInEffect:  true,

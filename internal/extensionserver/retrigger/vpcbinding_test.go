@@ -12,6 +12,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -65,8 +66,11 @@ func tenantSlice(name string, addresses ...string) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "galactic-system",
+			Namespace: testNS,
 			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: testTenant},
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "v1", Kind: "Pod", Name: name, UID: types.UID(name)},
+			},
 		},
 		AddressType: discoveryv1.AddressTypeIPv6,
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: addresses}},

@@ -12,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -61,7 +62,9 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	if err := cl.List(ctx, &nsList); err != nil {
 		return fmt.Errorf("list Namespaces: %w", err)
 	}
+	namespaceLabels := make(map[string]map[string]string, len(nsList.Items))
 	for _, ns := range nsList.Items {
+		namespaceLabels[ns.Name] = ns.Labels
 		if upstreamName := ns.Labels[downstreamclient.UpstreamOwnerNamespaceLabel]; upstreamName != "" {
 			// Two-cluster edge topology (GAP-1b fix): replica namespaces carry
 			// UpstreamOwnerNamespaceLabel stamped by mappednamespace.go. Key
@@ -123,7 +126,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 	if err := cl.List(ctx, &sliceList); err != nil {
 		return fmt.Errorf("list EndpointSlices: %w", err)
 	}
-	tenantByAddress, addressesByOwner := endpointSliceAddressMaps(&sliceList)
+	lookups := newVPCLookups(&sliceList, namespaceLabels)
 
 	// --- HTTPProxies → ConnectorInfo ---
 	var proxyList networkingv1alpha.HTTPProxyList
@@ -191,8 +194,8 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					}
 
 				case backend.Instance != nil, backend.NetworkService != nil:
-					resolved := backendTenant(ctx, cl, proxy, ruleIndex, backendIndex, tenantByAddress, addressesByOwner)
-					idx.VPCPodBackends[backendKey] = VPCPodInfo{TenantID: resolved.tenantID}
+					resolved := backendTenant(ctx, cl, proxy, ruleIndex, backendIndex, lookups)
+					idx.VPCPodBackends[backendKey] = resolved.info()
 					ruleTenants = append(ruleTenants, resolved)
 				}
 			}
@@ -202,7 +205,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 					Namespace:     proxy.Namespace,
 					HTTPProxyName: proxy.Name,
 					RuleIndex:     ruleIndex,
-				}] = VPCPodInfo{TenantID: mergeTenants(ruleTenants).tenantID}
+				}] = mergeTenants(ruleTenants).info()
 			}
 		}
 	}
@@ -214,8 +217,7 @@ func backendTenant(
 	cl client.Client,
 	proxy *networkingv1alpha.HTTPProxy,
 	ruleIndex, backendIndex int,
-	tenantByAddress map[string]string,
-	addressesByOwner map[client.ObjectKey][]string,
+	lookups vpcLookups,
 ) tenantResolution {
 	backend := proxy.Spec.Rules[ruleIndex].Backends[backendIndex]
 	switch {
@@ -227,9 +229,13 @@ func backendTenant(
 		}, &endpointSlice); err != nil {
 			return tenantResolution{}
 		}
-		return tenantResolution{tenantID: endpointSlice.Labels[VPCPodTenantIDLabel]}
+		tenantID := endpointSlice.Labels[VPCPodTenantIDLabel]
+		if tenantID != "" && !trustedTenantSlice(&endpointSlice, lookups.namespaceLabels[proxy.Namespace]) {
+			return tenantResolution{untrusted: true}
+		}
+		return tenantResolution{tenantID: tenantID}
 	case backend.NetworkService != nil:
-		return tenantForAddresses(addressesByOwner[NetworkServiceBackendSliceKey(proxy, ruleIndex, backendIndex)], tenantByAddress)
+		return lookups.tenantForAddresses(proxy.Namespace, lookups.addressesByOwner[NetworkServiceBackendSliceKey(proxy, ruleIndex, backendIndex)])
 	}
 	return tenantResolution{}
 }
@@ -253,11 +259,15 @@ func VPCBackendTenants(ctx context.Context, cl client.Client, proxy *networkingv
 		return tenants, nil
 	}
 
+	var namespace corev1.Namespace
+	if err := cl.Get(ctx, client.ObjectKey{Name: proxy.Namespace}, &namespace); err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("get Namespace %s: %w", proxy.Namespace, err)
+	}
 	var sliceList discoveryv1.EndpointSliceList
-	if err := cl.List(ctx, &sliceList); err != nil {
+	if err := cl.List(ctx, &sliceList, client.InNamespace(proxy.Namespace)); err != nil {
 		return nil, fmt.Errorf("list EndpointSlices: %w", err)
 	}
-	tenantByAddress, addressesByOwner := endpointSliceAddressMaps(&sliceList)
+	lookups := newVPCLookups(&sliceList, map[string]map[string]string{proxy.Namespace: namespace.Labels})
 
 	for ruleIndex, rule := range proxy.Spec.Rules {
 		for backendIndex, backend := range rule.Backends {
@@ -270,7 +280,7 @@ func VPCBackendTenants(ctx context.Context, cl client.Client, proxy *networkingv
 				RuleIndex:     ruleIndex,
 				BackendIndex:  backendIndex,
 			}
-			tenants[key] = backendTenant(ctx, cl, proxy, ruleIndex, backendIndex, tenantByAddress, addressesByOwner).tenantID
+			tenants[key] = backendTenant(ctx, cl, proxy, ruleIndex, backendIndex, lookups).tenantID
 		}
 	}
 	return tenants, nil
@@ -288,32 +298,59 @@ func HasVPCBackend(proxy *networkingv1alpha.HTTPProxy) bool {
 	return false
 }
 
-// endpointSliceAddressMaps builds the two lookups a networkService backend's
-// VRF binding is resolved through, in one pass over the cluster's
-// EndpointSlices.
+func trustedTenantSlice(slice *discoveryv1.EndpointSlice, nsLabels map[string]string) bool {
+	for _, owner := range slice.OwnerReferences {
+		if owner.APIVersion == "v1" && owner.Kind == "Pod" {
+			return true
+		}
+	}
+	if slice.Labels[VPCEndpointSliceProjectionLabel] != "true" {
+		return false
+	}
+	clusterName := nsLabels[downstreamclient.UpstreamOwnerClusterNameLabel]
+	return clusterName != "" && slice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] == clusterName
+}
+
+type namespacedAddress struct {
+	namespace string
+	address   string
+}
+
+// vpcLookups holds what a VPC backend's binding is resolved through, built in
+// one pass over the cluster's EndpointSlices.
 //
-// tenantByAddress maps a member address to the tenant galactic labelled that
-// address's own slice with. An edge holds both the slices galactic publishes
-// for workloads it hosts and the copies federated in from other cells, so a
-// member resolves from any edge, not only the one it runs on.
+// tenantByAddress maps a member address to the tenant its own trusted slice
+// carries, within the namespace that slice sits in. An edge holds both the
+// slices galactic publishes for workloads it hosts and the copies federated in
+// from other cells, so a member resolves from any edge, not only the one it
+// runs on.
 //
 // addressesByOwner maps a synthesized backend slice to the member addresses
 // its downstream copy carries. The copy is what exists at an edge, and it
-// names its origin through UpstreamOwnerNameLabel — without which the
-// lookup would need the copy's own UID-derived name.
+// names its origin through UpstreamOwnerNameLabel, without which the lookup
+// would need the copy's own UID-derived name.
 //
 // Addresses are canonicalised on both sides so the join survives the two
 // sources spelling one IPv6 address differently.
-func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
-	tenantByAddress map[string]string,
-	addressesByOwner map[client.ObjectKey][]string,
-) {
-	tenantByAddress = make(map[string]string)
-	addressesByOwner = make(map[client.ObjectKey][]string)
+type vpcLookups struct {
+	namespaceLabels  map[string]map[string]string
+	tenantByAddress  map[namespacedAddress]tenantResolution
+	addressesByOwner map[client.ObjectKey][]string
+}
+
+func newVPCLookups(sliceList *discoveryv1.EndpointSliceList, namespaceLabels map[string]map[string]string) vpcLookups {
+	lookups := vpcLookups{
+		namespaceLabels:  namespaceLabels,
+		tenantByAddress:  make(map[namespacedAddress]tenantResolution),
+		addressesByOwner: make(map[client.ObjectKey][]string),
+	}
 
 	for i := range sliceList.Items {
 		slice := &sliceList.Items[i]
 		tenantID := slice.Labels[VPCPodTenantIDLabel]
+		if tenantID != "" && !trustedTenantSlice(slice, namespaceLabels[slice.Namespace]) {
+			tenantID = ""
+		}
 		owner := slice.Labels[downstreamclient.UpstreamOwnerNameLabel]
 		if tenantID == "" && owner == "" {
 			continue
@@ -327,16 +364,21 @@ func endpointSliceAddressMaps(sliceList *discoveryv1.EndpointSliceList) (
 					continue
 				}
 				if tenantID != "" {
-					tenantByAddress[address] = tenantID
+					key := namespacedAddress{namespace: slice.Namespace, address: address}
+					claim := tenantResolution{tenantID: tenantID}
+					if existing, ok := lookups.tenantByAddress[key]; ok {
+						claim = mergeTenants([]tenantResolution{existing, claim})
+					}
+					lookups.tenantByAddress[key] = claim
 				}
 				if owner != "" {
-					addressesByOwner[ownerKey] = append(addressesByOwner[ownerKey], address)
+					lookups.addressesByOwner[ownerKey] = append(lookups.addressesByOwner[ownerKey], address)
 				}
 			}
 		}
 	}
 
-	return tenantByAddress, addressesByOwner
+	return lookups
 }
 
 // canonicalAddress normalises an endpoint address so two spellings of one
@@ -350,27 +392,40 @@ func canonicalAddress(address string) string {
 }
 
 // tenantForAddresses resolves the one tenant every member of a networkService
-// backend sits behind.
+// backend sits behind, from the trusted slices in the backend's own namespace.
 //
 // A VRF binding is a property of the whole Envoy cluster rather than of an
 // individual endpoint, so a backend whose members span more than one VPC has
-// no correct answer and is given none — binding to either VPC's device would
+// no correct answer and is given none: binding to either VPC's device would
 // black-hole the other's members. Members that resolve to no tenant are
 // skipped rather than treated as a conflict: a slice that has not federated
 // in yet must not unbind the members that have.
-func tenantForAddresses(addresses []string, tenantByAddress map[string]string) tenantResolution {
+func (l vpcLookups) tenantForAddresses(namespace string, addresses []string) tenantResolution {
 	candidates := make([]tenantResolution, 0, len(addresses))
 	for _, address := range addresses {
-		if candidate, ok := tenantByAddress[address]; ok {
-			candidates = append(candidates, tenantResolution{tenantID: candidate})
+		if candidate, ok := l.tenantByAddress[namespacedAddress{namespace: namespace, address: address}]; ok {
+			candidates = append(candidates, candidate)
 		}
 	}
 	return mergeTenants(candidates)
 }
 
 type tenantResolution struct {
-	tenantID string
-	conflict bool
+	tenantID  string
+	conflict  bool
+	untrusted bool
+}
+
+func (r tenantResolution) info() VPCPodInfo {
+	switch {
+	case r.conflict:
+		return VPCPodInfo{Refusal: VPCBindingRefusalConflict}
+	case r.untrusted:
+		return VPCPodInfo{Refusal: VPCBindingRefusalUntrusted}
+	case r.tenantID == "":
+		return VPCPodInfo{Refusal: VPCBindingRefusalUnresolved}
+	}
+	return VPCPodInfo{TenantID: r.tenantID}
 }
 
 func mergeTenants(candidates []tenantResolution) tenantResolution {
@@ -382,6 +437,7 @@ func mergeTenants(candidates []tenantResolution) tenantResolution {
 		}
 		candidateVPC, ok := TenantVPC(candidate.tenantID)
 		if !ok {
+			merged.untrusted = merged.untrusted || candidate.untrusted
 			continue
 		}
 		if vpc == "" {
@@ -391,6 +447,9 @@ func mergeTenants(candidates []tenantResolution) tenantResolution {
 		if candidateVPC != vpc {
 			return tenantResolution{conflict: true}
 		}
+	}
+	if merged.tenantID != "" {
+		merged.untrusted = false
 	}
 	return merged
 }

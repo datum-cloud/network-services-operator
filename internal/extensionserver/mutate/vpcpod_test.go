@@ -26,6 +26,10 @@ import (
 // are base62, as galactic's crdnames.TenantIdentifier guarantees.
 const testTenantID = "2wJqT7d-9xKp2Qm"
 
+func podOwner() []metav1.OwnerReference {
+	return []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: "pod", UID: "pod-uid"}}
+}
+
 // vpcPodPolicyIndex builds a PolicyIndex with a single vpcPod entry, reusing
 // the connector test fixtures' dsNS/upstreamNS/proxyName so testClusterName()
 // (defined in connector_test.go) applies unchanged — EG names every
@@ -266,9 +270,10 @@ func TestApplyVPCPodSocketBind_NetworkServiceBackendEndToEnd(t *testing.T) {
 	// edge from the cell that hosts it.
 	galactic := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "vpc-us-central-1-pod-a",
-			Namespace: testDSNS,
-			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+			Name:            "vpc-us-central-1-pod-a",
+			Namespace:       testDSNS,
+			Labels:          map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+			OwnerReferences: podOwner(),
 		},
 		AddressType: discoveryv1.AddressTypeIPv6,
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"fd20:0:2::1:0:0"}}},
@@ -388,9 +393,10 @@ func TestApplyVPCPodSocketBind_MultipleNetworkServiceBackendsEndToEnd(t *testing
 	galacticSlice := func(name, address string) *discoveryv1.EndpointSlice {
 		return &discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: testDSNS,
-				Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+				Name:            name,
+				Namespace:       testDSNS,
+				Labels:          map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+				OwnerReferences: podOwner(),
 			},
 			AddressType: discoveryv1.AddressTypeIPv6,
 			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{address}}},
@@ -457,9 +463,10 @@ func collisionProjectVPCBackend(ns, tenantID, address string, instance bool) []c
 		},
 		&discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      instanceName,
-				Namespace: ns,
-				Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+				Name:            instanceName,
+				Namespace:       ns,
+				Labels:          map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+				OwnerReferences: podOwner(),
 			},
 			AddressType: discoveryv1.AddressTypeIPv6,
 			Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{address}}},

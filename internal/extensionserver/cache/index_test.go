@@ -179,6 +179,9 @@ func newTenantEndpointSlice(ns, name, tenantID string) *discoveryv1.EndpointSlic
 			Name:      name,
 			Namespace: ns,
 			Labels:    map[string]string{VPCPodTenantIDLabel: tenantID},
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "v1", Kind: "Pod", Name: name, UID: types.UID(name)},
+			},
 		},
 	}
 }
@@ -1429,9 +1432,7 @@ func TestBuildPolicyIndexFromClient_FullIndex(t *testing.T) {
 // networkService backend → tenant, joined by member address
 // =============================================================================
 
-// nsvcTestNS is the namespace every fixture in this section lives in. The
-// join under test is by address, not by namespace, so varying it would add
-// noise without adding coverage.
+// nsvcTestNS is the namespace every fixture in this section lives in.
 const nsvcTestNS = "test-project"
 
 // newNetworkServiceHTTPProxy builds an HTTPProxy whose single rule has a
@@ -1938,4 +1939,157 @@ func TestBuildPolicyIndexFromClient_SameProxyNameAcrossProjects_KeyedByReplicaNa
 	assert.False(t, ok, "upstream namespace must not be a shared vpcPod bucket")
 	_, ok = idx.Connectors[ConnectorKey{Namespace: upstreamNamespace, HTTPProxyName: proxyName, RuleIndex: 2}]
 	assert.False(t, ok, "upstream namespace must not be a shared connector bucket")
+}
+
+const provenanceClusterLabel = "cluster-my-project"
+
+func provenanceNamespace() *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   nsvcTestNS,
+		Labels: map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: provenanceClusterLabel},
+	}}
+}
+
+func ownerlessTenantSlice(namespace, name, tenantID, address string) *discoveryv1.EndpointSlice {
+	slice := newGalacticEndpointSlice(name, tenantID, address)
+	slice.Namespace = namespace
+	slice.OwnerReferences = nil
+	return slice
+}
+
+func projectedTenantSlice(name, tenantID, address, clusterLabel string) *discoveryv1.EndpointSlice {
+	slice := ownerlessTenantSlice(nsvcTestNS, name, tenantID, address)
+	slice.Labels[VPCEndpointSliceProjectionLabel] = "true"
+	slice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = clusterLabel
+	return slice
+}
+
+func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
+	const (
+		tenantID   = "2wJqT7d-9xKp2Qm"
+		otherID    = "5hLm3Xc-9xKp2Qm"
+		member     = "fd20:0:2::1:0:0"
+		otherNS    = "other-project"
+		instanceID = "pod-slice"
+	)
+
+	tests := []struct {
+		name        string
+		tenantSlice client.Object
+		extra       []client.Object
+		wantTenant  string
+		wantRefusal string
+	}{
+		{
+			name:        "pod-owned slice resolves",
+			tenantSlice: newGalacticEndpointSlice("vpc-pod-a", tenantID, member),
+			wantTenant:  tenantID,
+		},
+		{
+			name:        "projected ownerless copy resolves",
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, provenanceClusterLabel),
+			wantTenant:  tenantID,
+		},
+		{
+			name:        "forged label on an ownerless unprojected slice gives no tenant",
+			tenantSlice: ownerlessTenantSlice(nsvcTestNS, "forged", tenantID, member),
+			wantRefusal: VPCBindingRefusalUnresolved,
+		},
+		{
+			name:        "projected copy naming another project gives no tenant",
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, "cluster-other-project"),
+			wantRefusal: VPCBindingRefusalUnresolved,
+		},
+		{
+			name: "owner of another kind is not trusted",
+			tenantSlice: func() client.Object {
+				slice := ownerlessTenantSlice(nsvcTestNS, "forged", tenantID, member)
+				slice.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", UID: "cm"}}
+				return slice
+			}(),
+			wantRefusal: VPCBindingRefusalUnresolved,
+		},
+		{
+			name: "same address in another namespace is not used",
+			tenantSlice: func() client.Object {
+				slice := newGalacticEndpointSlice("vpc-pod-a", tenantID, member)
+				slice.Namespace = otherNS
+				return slice
+			}(),
+			extra: []client.Object{
+				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherNS}},
+			},
+			wantRefusal: VPCBindingRefusalUnresolved,
+		},
+		{
+			name:        "two trusted tenants claiming one address conflict",
+			tenantSlice: newGalacticEndpointSlice("vpc-pod-a", tenantID, member),
+			extra: []client.Object{
+				projectedTenantSlice("vpc-us-central-1-pod-b", otherID, member, provenanceClusterLabel),
+			},
+			wantRefusal: VPCBindingRefusalConflict,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objects := append([]client.Object{
+				provenanceNamespace(),
+				newNetworkServiceHTTPProxy(0),
+				newMemberEndpointSlice("my-proxy-0-0", member),
+				tt.tenantSlice,
+			}, tt.extra...)
+			cl := fake.NewClientBuilder().WithScheme(indexTestScheme(t)).WithObjects(objects...).Build()
+
+			idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+
+			want := VPCPodInfo{TenantID: tt.wantTenant, Refusal: tt.wantRefusal}
+			assert.Equal(t, want, idx.VPCPods[VPCPodKey{Namespace: nsvcTestNS, HTTPProxyName: "my-proxy"}])
+			assert.Equal(t, want, idx.VPCPodBackends[VPCPodBackendKey{Namespace: nsvcTestNS, HTTPProxyName: "my-proxy"}])
+		})
+	}
+
+	instanceTests := []struct {
+		name        string
+		slice       *discoveryv1.EndpointSlice
+		wantTenant  string
+		wantRefusal string
+	}{
+		{
+			name:       "pod-owned instance slice resolves",
+			slice:      newGalacticEndpointSlice(instanceID, tenantID, member),
+			wantTenant: tenantID,
+		},
+		{
+			name:       "projected ownerless instance slice resolves",
+			slice:      projectedTenantSlice(instanceID, tenantID, member, provenanceClusterLabel),
+			wantTenant: tenantID,
+		},
+		{
+			name:        "forged label on an instance slice gives no tenant",
+			slice:       ownerlessTenantSlice(nsvcTestNS, instanceID, tenantID, member),
+			wantRefusal: VPCBindingRefusalUntrusted,
+		},
+	}
+
+	for _, tt := range instanceTests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := newVPCPodHTTPProxy(nsvcTestNS, instanceID)
+			cl := fake.NewClientBuilder().WithScheme(indexTestScheme(t)).
+				WithObjects(provenanceNamespace(), proxy, tt.slice).
+				Build()
+
+			idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+
+			want := VPCPodInfo{TenantID: tt.wantTenant, Refusal: tt.wantRefusal}
+			assert.Equal(t, want, idx.VPCPods[VPCPodKey{Namespace: nsvcTestNS, HTTPProxyName: "my-proxy"}])
+			assert.Equal(t, want, idx.VPCPodBackends[VPCPodBackendKey{Namespace: nsvcTestNS, HTTPProxyName: "my-proxy"}])
+
+			tenants, err := VPCBackendTenants(context.Background(), cl, proxy)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantTenant, tenants[VPCPodBackendKey{Namespace: nsvcTestNS, HTTPProxyName: "my-proxy"}])
+		})
+	}
 }

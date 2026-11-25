@@ -1073,6 +1073,9 @@ func TestPostTranslateModify_VPCClusterKeepsAddressesAndBindsDevice(t *testing.T
 			Name:      "pod-a",
 			Namespace: dsNS,
 			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "v1", Kind: "Pod", Name: "pod-a", UID: "pod-a"},
+			},
 		},
 		AddressType: discoveryv1.AddressTypeIPv6,
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"fd20:0:2::1:0:0"}}},

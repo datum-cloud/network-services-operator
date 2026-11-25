@@ -138,6 +138,15 @@ type ConnectorKey struct {
 // controller packages are kept decoupled.
 const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
 
+const VPCEndpointSliceProjectionLabel = "networking.datumapis.com/vpc-endpointslice-projection"
+
+const (
+	VPCBindingRefusalUnresolved    = "unresolved"
+	VPCBindingRefusalUntrusted     = "untrusted_slice"
+	VPCBindingRefusalConflict      = "conflict"
+	VPCBindingRefusalInvalidTenant = "invalid_tenant"
+)
+
 // TenantVPC returns the VPC half of a "<vpc>-<vpcAttachment>" tenant
 // identifier. galactic names a VRF device by the VPC alone, so every
 // attachment landing on one VPC shares a single device and the attachment
@@ -162,6 +171,8 @@ type VPCPodInfo struct {
 	// when no tenant could be resolved; callers must treat that as "skip
 	// mutation," never bind to a zero-value device name.
 	TenantID string
+
+	Refusal string
 }
 
 // VPCPodKey uniquely identifies an HTTPProxy rule that has a vpcPod backend.

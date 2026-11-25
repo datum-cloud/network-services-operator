@@ -108,7 +108,7 @@ func TestTenantEndpointSliceAddressesAreChecked(t *testing.T) {
 
 func TestATenantIDLabelCarriesNoAddressesToTheEdge(t *testing.T) {
 	rig := newMissingBackendRig(t, routeToEndpointSlice("route", "tenant"))
-	require.NoError(t, rig.upstream.Create(rig.ctx, tenantSlice(discoveryv1.AddressTypeIPv4, map[string]string{VPCPodTenantIDLabel: "tenant-1"}, "127.0.0.1")))
+	require.NoError(t, rig.upstream.Create(rig.ctx, tenantSlice(discoveryv1.AddressTypeIPv4, map[string]string{VPCPodTenantIDLabel: "tenant-1"}, "8.8.8.8")))
 
 	rig.reconcileRoutes()
 
@@ -144,4 +144,19 @@ func TestARefusedSliceRecoversOnceItsAddressesAreFixed(t *testing.T) {
 
 	assert.NoError(t, rig.hubSlice(ref.Name))
 	assert.Nil(t, rig.resolvedRefs("route"), "the refusal is retracted")
+}
+
+func TestALabelledSliceWithAnInternalAddressIsRefused(t *testing.T) {
+	rig := newMissingBackendRig(t, routeToEndpointSlice("route", "tenant"))
+	require.NoError(t, rig.upstream.Create(rig.ctx, tenantSlice(discoveryv1.AddressTypeIPv4, map[string]string{VPCPodTenantIDLabel: "tenant-1"}, "127.0.0.1")))
+
+	rig.reconcileRoutes()
+
+	ref := rig.hubRoute("route").Spec.Rules[0].BackendRefs[0]
+	assert.Equal(t, KindService, string(ptr.Deref(ref.Kind, "")), "a refused slice is not passed through")
+	condition := rig.resolvedRefs("route")
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, string(gatewayv1.RouteReasonRefNotPermitted), condition.Reason)
+	assert.Contains(t, condition.Message, "127.0.0.1")
 }

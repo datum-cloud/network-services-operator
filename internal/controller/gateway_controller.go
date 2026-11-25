@@ -2804,23 +2804,23 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				// finalizer stamp below — that stamp (and everything after
 				// it) assumes an object this controller owns the lifecycle
 				// of, which a CNI-published EndpointSlice never is.
+				refusal, err := r.refuseInternalEndpoints(ctx, upstreamClient, &upstreamEndpointSlice)
+				if err != nil {
+					return nil, nil, unresolvedBackends{}, err
+				}
+				if refusal != "" {
+					logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
+					unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
+					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
+						{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
+					}))
+					backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+					continue
+				}
+
 				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
 					backendRefs = append(backendRefs, passThroughVPCPodBackendRef(downstreamGateway.Namespace, backendRef))
 				} else {
-					refusal, err := r.refuseInternalEndpoints(ctx, upstreamClient, &upstreamEndpointSlice)
-					if err != nil {
-						return nil, nil, unresolvedBackends{}, err
-					}
-					if refusal != "" {
-						logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
-						unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
-						downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
-							{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
-						}))
-						backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
-						continue
-					}
-
 					if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
 						controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
 						if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {

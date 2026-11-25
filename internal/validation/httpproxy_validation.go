@@ -31,10 +31,15 @@ type HTTPProxyValidationOptions struct {
 	// MaxRequestTimeout caps every rule's request and backendRequest timeouts.
 	// Zero leaves them uncapped.
 	MaxRequestTimeout time.Duration
+
+	PermittedInternalHostSuffixes []string
 }
 
 func HTTPProxyOptions(gatewayConfig config.GatewayConfig) HTTPProxyValidationOptions {
-	opts := HTTPProxyValidationOptions{Hostnames: CustomHostnameOptions(gatewayConfig)}
+	opts := HTTPProxyValidationOptions{
+		Hostnames:                     CustomHostnameOptions(gatewayConfig),
+		PermittedInternalHostSuffixes: gatewayConfig.PermittedInternalUpstreamHostSuffixes,
+	}
 	if max := gatewayConfig.ExtensionAPIValidationOptions.BackendTrafficPolicies.ClusterSettings.HTTPMaxRequestTimeout; max != nil {
 		opts.MaxRequestTimeout = max.Duration
 	}
@@ -168,7 +173,7 @@ func validateHTTPProxyRule(rule networkingv1alpha.HTTPProxyRule, fldPath *field.
 
 	allErrs = append(allErrs, validateFilters(rule.Filters, supportedHTTPRouteRuleFilters, fldPath.Child("filters"))...)
 	allErrs = append(allErrs, validateHostHeaderOverride(rule.Filters, fldPath.Child("filters"))...)
-	allErrs = append(allErrs, validateHTTPProxyRuleBackends(rule, fldPath.Child("backends"))...)
+	allErrs = append(allErrs, validateHTTPProxyRuleBackends(rule, fldPath.Child("backends"), opts.PermittedInternalHostSuffixes)...)
 	allErrs = append(allErrs, validateHTTPProxyRuleTimeouts(rule.Timeouts, fldPath.Child("timeouts"), opts.MaxRequestTimeout)...)
 
 	return allErrs
@@ -196,7 +201,7 @@ func validateHTTPProxyRuleTimeouts(timeouts *gatewayv1.HTTPRouteTimeouts, fldPat
 	return allErrs
 }
 
-func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path) field.ErrorList {
+func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath *field.Path, permittedInternalHostSuffixes []string) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if len(rule.Backends) == 0 {
@@ -215,19 +220,19 @@ func validateHTTPProxyRuleBackends(rule networkingv1alpha.HTTPProxyRule, fldPath
 	}
 
 	for i, backend := range rule.Backends {
-		allErrs = append(allErrs, validateHTTPProxyRuleBackend(backend, fldPath.Index(i))...)
+		allErrs = append(allErrs, validateHTTPProxyRuleBackend(backend, fldPath.Index(i), permittedInternalHostSuffixes)...)
 	}
 
 	return allErrs
 }
 
-func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
+func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path, permittedInternalHostSuffixes []string) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	// instance and networkService backends don't use the endpoint field at all
 	// — see their own validation blocks below instead.
 	if backend.Instance == nil && backend.NetworkService == nil {
-		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath)...)
+		allErrs = append(allErrs, validateHTTPProxyRuleBackendEndpoint(backend, fldPath, permittedInternalHostSuffixes)...)
 	}
 
 	// tls.hostname becomes the generated route's URLRewrite.Hostname and the
@@ -287,7 +292,7 @@ func validateHTTPProxyRuleBackend(backend networkingv1alpha.HTTPProxyRuleBackend
 // validateHTTPProxyRuleBackendEndpoint validates the endpoint field. Only
 // called for endpoint/connector backends — instance backends don't carry an
 // endpoint URL at all.
-func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path) field.ErrorList {
+func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRuleBackend, fldPath *field.Path, permittedInternalHostSuffixes []string) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	endpointFieldPath := fldPath.Child("endpoint")
@@ -308,15 +313,13 @@ func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRul
 		hostFieldPath := endpointFieldPath.Key("host")
 		host := u.Hostname()
 		hasConnector := backend.Connector != nil
-		isIPAddress := false
-		if ip := net.ParseIP(host); ip != nil {
-			isIPAddress = true
+		isIPAddress := net.ParseIP(host) != nil
+		if !hasConnector {
+			allErrs = append(allErrs, validateExternalHost(hostFieldPath, host, permittedInternalHostSuffixes...)...)
+		} else if ip := net.ParseIP(host); ip != nil {
 			// Adapted from https://github.com/kubernetes/kubernetes/blob/d21da29c9ec486956b204050cdfaa46c686e29cc/pkg/apis/core/validation/validation.go#L7797
 			if ip.IsUnspecified() {
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, fmt.Sprintf("may not be unspecified (%v)", host)))
-			}
-			if ip.IsLoopback() && !hasConnector {
-				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the loopback range (127.0.0.0/8, ::1/128)"))
 			}
 			if ip.IsLinkLocalUnicast() {
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the link-local range (169.254.0.0/16, fe80::/10)"))
@@ -324,10 +327,8 @@ func validateHTTPProxyRuleBackendEndpoint(backend networkingv1alpha.HTTPProxyRul
 			if ip.IsLinkLocalMulticast() {
 				allErrs = append(allErrs, field.Invalid(hostFieldPath, host, "may not be in the link-local multicast range (224.0.0.0/24, ff02::/10)"))
 			}
-		} else {
-			if !hasConnector || host != "localhost" {
-				allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
-			}
+		} else if host != "localhost" {
+			allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(hostFieldPath, host)...)
 		}
 
 		// HTTPS endpoints with IP addresses require tls.hostname for certificate validation

@@ -1298,6 +1298,8 @@ type GatewayConfig struct {
 	// Defaults to an empty map.
 	PermittedTLSOptions map[string][]string `json:"permittedTLSOptions,omitempty"`
 
+	PermittedInternalUpstreamHostSuffixes []string `json:"permittedInternalUpstreamHostSuffixes,omitempty"`
+
 	// ClusterIssuerMap is a map of external cluster issuer names to internal
 	// ClusterIssuer resource names. If no entry is found for a given external
 	// issuer name, the operator will use the value as is.

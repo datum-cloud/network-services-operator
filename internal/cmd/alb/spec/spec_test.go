@@ -398,7 +398,7 @@ func TestParseBackendFlags(t *testing.T) {
 	t.Parallel()
 
 	backends, err := ParseBackendFlags(BackendFlags{
-		Endpoints:       []string{"https://a.example.com", "https://203.0.113.10"},
+		Endpoints:       []string{"https://a.example.com", "https://8.8.8.8"},
 		NetworkServices: []string{"storefront"},
 		Ports:           []string{"http"},
 		TLSHostname:     "origin.example.com",

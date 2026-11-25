@@ -3012,6 +3012,9 @@ func (r *GatewayReconciler) refuseInternalEndpoints(
 		return "", fmt.Errorf("failed listing network interfaces: %w", err)
 	}
 	for i := range interfaces.Items {
+		if !isServiceMember(&interfaces.Items[i]) {
+			continue
+		}
 		vouched.Insert(interfaceBackhaulAddresses(&interfaces.Items[i])...)
 	}
 

@@ -22,6 +22,7 @@ func TestValidateEndpointSliceAddresses(t *testing.T) {
 		{name: "octal loopback", addresses: []string{"0177.0.0.1"}, fields: []string{"endpoints[0].addresses[0]"}},
 		{name: "cluster name", addresses: []string{"api.kube-system.svc"}, fields: []string{"endpoints[0].addresses[0]"}},
 		{name: "vouched", addresses: []string{"fd20::7"}, vouched: sets.New("fd20::7")},
+		{name: "vouched in another spelling", addresses: []string{"fd20:0:0:0:0:0:0:7"}, vouched: sets.New("FD20::7")},
 		{name: "permitted suffix", addresses: []string{"origin.e2e.svc.cluster.local"}, suffixes: []string{"svc.cluster.local"}},
 	}
 

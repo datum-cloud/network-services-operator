@@ -28,6 +28,7 @@ func tenantSlice(addressType discoveryv1.AddressType, labels map[string]string, 
 func networkInterfaceHolding(namespace, name, address string) *networkingv1alpha.NetworkInterface {
 	return &networkingv1alpha.NetworkInterface{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
+		Status:     networkingv1alpha.NetworkInterfaceStatus{Phase: networkingv1alpha.NetworkInterfacePhaseBound},
 		Spec: networkingv1alpha.NetworkInterfaceSpec{
 			Network: networkingv1alpha.LocalNetworkRef{Name: "default"},
 			Addresses: []networkingv1alpha.NetworkInterfaceAddress{
@@ -62,9 +63,20 @@ func TestTenantEndpointSliceAddressesAreChecked(t *testing.T) {
 			interfaces: []client.Object{networkInterfaceHolding("other", "vm-1", "fd20:0:2::7")},
 			refused:    "fd20:0:2::7",
 		},
+		{
+			name:       "an address held by a released interface",
+			slice:      tenantSlice(ipv6, nil, "fd20:0:2::7"),
+			interfaces: []client.Object{releasedNetworkInterfaceHolding("test", "vm-1", "fd20:0:2::7")},
+			refused:    "fd20:0:2::7",
+		},
 		{name: "public address", slice: tenantSlice(ipv4, nil, "8.8.8.8")},
 		{name: "public IPv6 address", slice: tenantSlice(ipv6, nil, "2001:4860:4860::8888")},
 		{name: "public name", slice: tenantSlice(fqdn, nil, "origin.example.com")},
+		{
+			name:       "an address in another spelling than the held one",
+			slice:      tenantSlice(ipv6, nil, "FD20:0:2:0:0:0:0:7"),
+			interfaces: []client.Object{networkInterfaceHolding("test", "vm-1", "fd20:0:2::7")},
+		},
 		{name: "connector placeholder", slice: tenantSlice(fqdn, nil, connectorPlaceholderHost)},
 		{
 			name:       "network service member address",
@@ -159,4 +171,10 @@ func TestALabelledSliceWithAnInternalAddressIsRefused(t *testing.T) {
 	assert.Equal(t, metav1.ConditionFalse, condition.Status)
 	assert.Equal(t, string(gatewayv1.RouteReasonRefNotPermitted), condition.Reason)
 	assert.Contains(t, condition.Message, "127.0.0.1")
+}
+
+func releasedNetworkInterfaceHolding(namespace, name, address string) *networkingv1alpha.NetworkInterface {
+	iface := networkInterfaceHolding(namespace, name, address)
+	iface.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
+	return iface
 }

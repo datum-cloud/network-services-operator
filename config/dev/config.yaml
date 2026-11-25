@@ -14,6 +14,8 @@ gateway:
   targetDomain: prism.e2e.env.datum.net
   downstreamGatewayClassName: datum-downstream-gateway
   downstreamGatewayNamespace: datum-downstream-gateway
+  permittedInternalUpstreamHostSuffixes:
+    - svc.cluster.local
   permittedTLSOptions:
     gateway.networking.datumapis.com/certificate-issuer: []
   listenerTLSOptions:

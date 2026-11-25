@@ -56,7 +56,7 @@ func TestApplyVPCPodSocketBind_BindsMatchingCluster(t *testing.T) {
 		{Name: "infra-cluster"}, // must be untouched
 	}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, mutated)
 
@@ -94,7 +94,7 @@ func TestApplyVPCPodSocketBind_ClusterNotInPolicyIndex_Skipped(t *testing.T) {
 
 	clusters := []*clusterv3.Cluster{{Name: testClusterName()}}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	assert.Zero(t, mutated)
 	assert.Nil(t, clusters[0].GetUpstreamBindConfig())
@@ -108,7 +108,7 @@ func TestApplyVPCPodSocketBind_EmptyTenantID_Skipped(t *testing.T) {
 
 	clusters := []*clusterv3.Cluster{{Name: testClusterName()}}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	assert.Zero(t, mutated)
 	assert.Nil(t, clusters[0].GetUpstreamBindConfig())
@@ -119,7 +119,7 @@ func TestApplyVPCPodSocketBind_NonMatchingClusterName_Untouched(t *testing.T) {
 
 	clusters := []*clusterv3.Cluster{{Name: "grpc-backend"}}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	assert.Zero(t, mutated)
 	assert.Nil(t, clusters[0].GetUpstreamBindConfig())
@@ -289,7 +289,7 @@ func TestApplyVPCPodSocketBind_NetworkServiceBackendEndToEnd(t *testing.T) {
 
 	clusters := []*clusterv3.Cluster{{Name: testClusterName()}}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	require.Equal(t, 1, mutated, "a networkService backend on a tenant VPC must be bound")
 
@@ -319,7 +319,7 @@ func TestApplyVPCPodSocketBind_BindsPerBackendClusters(t *testing.T) {
 		{Name: testClusterName() + "/backend/3"},
 	}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	assert.Equal(t, 2, mutated)
 
@@ -339,7 +339,7 @@ func TestApplyVPCPodSocketBind_RuleWideEntryDoesNotBindBackendClusters(t *testin
 
 	clusters := []*clusterv3.Cluster{{Name: testClusterName() + "/backend/0"}}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	assert.Zero(t, mutated)
 	assert.Nil(t, clusters[0].GetUpstreamBindConfig())
@@ -423,7 +423,7 @@ func TestApplyVPCPodSocketBind_MultipleNetworkServiceBackendsEndToEnd(t *testing
 		{Name: testClusterName() + "/backend/1"},
 	}
 
-	mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+	mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 	require.NoError(t, err)
 	require.Equal(t, 2, mutated)
 
@@ -547,7 +547,7 @@ func TestApplyVPCPodSocketBind_SameProxyNameAcrossProjects(t *testing.T) {
 						{Name: clusterB + "/backend/0"},
 					}
 
-					mutated, err := ApplyVPCPodSocketBind(clusters, idx)
+					mutated, _, err := ApplyVPCPodSocketBind(clusters, idx)
 					require.NoError(t, err)
 					require.Equal(t, 4, mutated)
 
@@ -564,6 +564,80 @@ func TestApplyVPCPodSocketBind_SameProxyNameAcrossProjects(t *testing.T) {
 							"%s must bind to its own project's VRF device", cluster.GetName())
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestApplyVPCPodSocketBind_BindsOnlyTrustedSlices(t *testing.T) {
+	const instanceName = "pod-slice"
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(scheme))
+	require.NoError(t, networkingv1alpha1.AddToScheme(scheme))
+
+	tests := []struct {
+		name        string
+		owners      []metav1.OwnerReference
+		wantBound   bool
+		wantRefusal string
+	}{
+		{name: "pod-owned slice binds", owners: podOwner(), wantBound: true},
+		{name: "forged ownerless slice stays unbound", wantRefusal: extcache.VPCBindingRefusalUntrusted},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := &networkingv1alpha.HTTPProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: testProxyName, Namespace: testDSNS},
+				Spec: networkingv1alpha.HTTPProxySpec{Rules: []networkingv1alpha.HTTPProxyRule{{
+					Backends: []networkingv1alpha.HTTPProxyRuleBackend{{
+						Instance: &networkingv1alpha.InstanceBackendRef{Name: instanceName, Port: 8080},
+					}},
+				}}},
+			}
+			slice := &discoveryv1.EndpointSlice{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:            instanceName,
+					Namespace:       testDSNS,
+					Labels:          map[string]string{extcache.VPCPodTenantIDLabel: testTenantID},
+					OwnerReferences: tt.owners,
+				},
+				AddressType: discoveryv1.AddressTypeIPv6,
+				Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"fd20:0:2::1:0:0"}}},
+			}
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(proxy, slice).Build()
+
+			idx, err := extcache.BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+
+			clusters := []*clusterv3.Cluster{
+				customDNSCluster(testClusterName(), "envoy.cluster.dns", "fd20:0:2::1:0:0"),
+				customDNSCluster(testClusterName()+"/backend/0", "envoy.cluster.dns", "fd20:0:2::1:0:0"),
+			}
+
+			mutated, refused, err := ApplyVPCPodSocketBind(clusters, idx)
+			require.NoError(t, err)
+
+			if tt.wantBound {
+				assert.Equal(t, 2, mutated)
+				assert.Empty(t, refused)
+				for _, cluster := range clusters {
+					require.NotNil(t, cluster.GetUpstreamBindConfig(), cluster.GetName())
+					assert.Equal(t, "G002wJqT7dV", string(cluster.GetUpstreamBindConfig().GetSocketOptions()[0].GetBufValue()))
+				}
+				return
+			}
+			assert.Zero(t, mutated)
+			assert.ElementsMatch(t, []VPCBindingRefusal{
+				{Cluster: testClusterName(), Reason: tt.wantRefusal},
+				{Cluster: testClusterName() + "/backend/0", Reason: tt.wantRefusal},
+			}, refused)
+			for _, cluster := range clusters {
+				assert.Nil(t, cluster.GetUpstreamBindConfig(), cluster.GetName())
+				assert.Equal(t, "envoy.cluster.dns", cluster.GetClusterType().GetName(), "the cluster keeps its EG form")
 			}
 		})
 	}

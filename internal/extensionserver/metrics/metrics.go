@@ -175,7 +175,7 @@ var (
 	VPCBindingRefusedTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "nso_extension_vpc_binding_refused_total",
-			Help: "Total VPC backend clusters left without a VRF device binding across all hook invocations, by reason.",
+			Help: "VPC backends left without a network device binding, by reason",
 		},
 		[]string{"reason"},
 	)

@@ -585,7 +585,7 @@ func TestApplyVPCPodSocketBind_BindsOnlyTrustedSlices(t *testing.T) {
 		wantRefusal string
 	}{
 		{name: "pod-owned slice binds", owners: podOwner(), wantBound: true},
-		{name: "forged ownerless slice stays unbound", wantRefusal: extcache.VPCBindingRefusalUntrusted},
+		{name: "unattributable ownerless slice stays unbound", wantRefusal: extcache.VPCBindingRefusalUntrusted},
 	}
 
 	for _, tt := range tests {

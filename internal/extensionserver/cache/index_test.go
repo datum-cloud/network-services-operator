@@ -1990,8 +1990,8 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 			wantTenant:  tenantID,
 		},
 		{
-			name:        "forged label on an ownerless unprojected slice gives no tenant",
-			tenantSlice: ownerlessTenantSlice(nsvcTestNS, "forged", tenantID, member),
+			name:        "unattributable label on an ownerless unprojected slice gives no tenant",
+			tenantSlice: ownerlessTenantSlice(nsvcTestNS, "unowned", tenantID, member),
 			wantRefusal: VPCBindingRefusalUnresolved,
 		},
 		{
@@ -2002,7 +2002,7 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 		{
 			name: "owner of another kind is not trusted",
 			tenantSlice: func() client.Object {
-				slice := ownerlessTenantSlice(nsvcTestNS, "forged", tenantID, member)
+				slice := ownerlessTenantSlice(nsvcTestNS, "unowned", tenantID, member)
 				slice.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", UID: "cm"}}
 				return slice
 			}(),
@@ -2066,7 +2066,7 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 			wantTenant: tenantID,
 		},
 		{
-			name:        "forged label on an instance slice gives no tenant",
+			name:        "unattributable label on an instance slice gives no tenant",
 			slice:       ownerlessTenantSlice(nsvcTestNS, instanceID, tenantID, member),
 			wantRefusal: VPCBindingRefusalUntrusted,
 		},

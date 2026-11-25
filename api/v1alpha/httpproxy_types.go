@@ -833,6 +833,12 @@ const (
 	// the service publishes. Those members are not being served.
 	HTTPProxyReasonNetworkServiceMembersUnaddressable = "NetworkServiceMembersUnaddressable"
 
+	// HTTPProxyReasonBackendSettingsNotApplied indicates that the edge refused
+	// the policy carrying the HTTP proxy's health check and load balancing
+	// settings, so traffic is served without them. A BackendTrafficPolicy
+	// attached to the HTTP proxy's route displaces that policy.
+	HTTPProxyReasonBackendSettingsNotApplied = "BackendSettingsNotApplied"
+
 	// This reason is used with the "Accepted" and "Programmed"
 	// conditions when the status is "Unknown" and no controller has reconciled
 	// the HTTPProxy.

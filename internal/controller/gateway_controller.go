@@ -3160,12 +3160,7 @@ func (r *GatewayReconciler) backendTrafficPolicy(
 	return &envoygatewayv1alpha1.BackendTrafficPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: downstreamGateway.Namespace,
-			// Keeping the "-panic-threshold" suffix, despite this object now
-			// carrying more than that one setting, keeps the identity of
-			// already-deployed policies stable across the upgrade that added
-			// loadBalancer — renaming would orphan them instead of updating
-			// them in place.
-			Name: fmt.Sprintf("route-%s-panic-threshold", upstreamRoute.UID),
+			Name:      routeBackendTrafficPolicyName(upstreamRoute.UID),
 		},
 		Spec: envoygatewayv1alpha1.BackendTrafficPolicySpec{
 			PolicyTargetReferences: envoygatewayv1alpha1.PolicyTargetReferences{
@@ -3181,6 +3176,10 @@ func (r *GatewayReconciler) backendTrafficPolicy(
 			ClusterSettings: clusterSettings,
 		},
 	}, nil
+}
+
+func routeBackendTrafficPolicyName(routeUID types.UID) string {
+	return fmt.Sprintf("route-%s-panic-threshold", routeUID)
 }
 
 // passThroughVPCPodBackendRef names the downstream-native EndpointSlice

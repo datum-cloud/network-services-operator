@@ -408,6 +408,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
+	if err := r.applyBackendSettingsNotApplied(ctx, cl.GetClient(), string(req.ClusterName), httpRoute, gateway.Name, programmedCondition); err != nil {
+		return ctrl.Result{}, err
+	}
 	applyPartialProgramming(ctx, desiredResources.partialProgramming, programmedCondition)
 	dnsRecordsCondition = dnsRecordsProgrammedFromGateway(gateway, httpProxy.Generation)
 
@@ -796,6 +799,14 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		)
 		downstreamCertificateClusterSource, _, _ := downstreamCertificateSource.ForCluster("", r.DownstreamCluster)
 		builder = builder.WatchesRawSource(downstreamCertificateClusterSource)
+
+		downstreamBackendTrafficPolicySource := mcsource.TypedKind(
+			&envoygatewayv1alpha1.BackendTrafficPolicy{},
+			downstreamclient.OwnedRequestsOnlyFunc(ownership, "httpproxy", r.enqueueHTTPProxyForDownstreamBackendTrafficPolicy()),
+			downstreamclient.OwnedByReplica[*envoygatewayv1alpha1.BackendTrafficPolicy](ownership, r.DownstreamCluster.GetClient(), "httpproxy"),
+		)
+		downstreamBackendTrafficPolicyClusterSource, _, _ := downstreamBackendTrafficPolicySource.ForCluster("", r.DownstreamCluster)
+		builder = builder.WatchesRawSource(downstreamBackendTrafficPolicyClusterSource)
 	}
 
 	if r.Config.Gateway.CertificateService.Enabled {

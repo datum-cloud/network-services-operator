@@ -295,6 +295,19 @@ var catalog = []ReasonInfo{
 		Skill:       SkillBackendNotReachable,
 	},
 	{
+		Reason:        networkingv1alpha.HTTPProxyReasonBackendSettingsNotApplied,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeDegraded,
+		Explanation: "This load balancer's health checks and load balancing settings are not in effect. " +
+			"Traffic still flows, but without them. This happens when another BackendTrafficPolicy is " +
+			"attached to the load balancer's route, where it takes the place of the settings Datum keeps there.",
+		Remediation: "Attach your BackendTrafficPolicy to the load balancer itself rather than its route: " +
+			"target kind: Gateway with the load balancer's own name. There it combines with Datum's " +
+			"settings instead of replacing them.",
+		Skill: SkillBackendNotReachable,
+	},
+	{
 		Reason:        networkingv1alpha.HTTPProxyReasonUnsupportedBackendProtocol,
 		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
 		Actionability: ActionabilityUser,

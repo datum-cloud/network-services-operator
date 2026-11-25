@@ -1099,8 +1099,9 @@ func TestPostTranslateModify_VPCClusterKeepsAddressesAndBindsDevice(t *testing.T
 	require.Len(t, opts, 1, "the VPC cluster must still be bound to its device")
 	assert.Equal(t, "G002wJqT7dV", string(opts[0].GetBufValue()))
 
-	var addrs []string
-	for _, lb := range got.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints() {
+	lbs := got.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()
+	addrs := make([]string, 0, len(lbs))
+	for _, lb := range lbs {
 		addrs = append(addrs, lb.GetEndpoint().GetAddress().GetSocketAddress().GetAddress())
 	}
 	assert.Equal(t, []string{"fd20:0:2::1:0:0", "fd20:0:2::2:0:0", "origin.example."}, addrs)

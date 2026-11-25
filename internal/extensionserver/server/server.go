@@ -297,6 +297,11 @@ func (s *Server) PostTranslateModify(
 	misdirectedSpan.SetAttributes(attribute.Int("route_configs.misdirected_guarded", misdirectedCount))
 	misdirectedSpan.End()
 
+	_, absoluteSpan := tr.Start(mctx, "upstream.absolute_names")
+	absoluteCount := mutate.ResolveUpstreamNamesAbsolute(clusters)
+	absoluteSpan.SetAttributes(attribute.Int("clusters.absolute_names", absoluteCount))
+	absoluteSpan.End()
+
 	// --- VPC pod family (#856) ---
 	// Binds a vpcPod backend's cluster to its tenant's VRF device
 	// (SO_BINDTODEVICE) so the shared multi-tenant Envoy fleet resolves the
@@ -400,6 +405,7 @@ func (s *Server) PostTranslateModify(
 		"vhosts_connector_applied", vhCount,
 		"connector_offline_routes", offlineRtCount,
 		"clusters_vpcpod_bound", vpcPodCount,
+		"clusters_absolute_names", absoluteCount,
 	)
 
 	// Envoy Gateway gave up on this call (a deadline or a cancel), so it will

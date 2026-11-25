@@ -13,6 +13,7 @@ import (
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
@@ -941,4 +942,36 @@ func TestPostTranslateModify_ReportsOnlyASuccessfulBuild(t *testing.T) {
 		_, ok := srv.reporter.take()
 		assert.False(t, ok, "a failed build must not be reported")
 	})
+}
+
+func TestPostTranslateModify_UpstreamNamesResolveAbsolute(t *testing.T) {
+	scheme := testServerScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	srv := New(cl, testServerConfig(), discardLogger())
+
+	cluster := &clusterv3.Cluster{
+		Name:                 "httproute/ns-tenant/proxy/rule/0",
+		ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STRICT_DNS},
+		LoadAssignment: &endpointv3.ClusterLoadAssignment{
+			ClusterName: "httproute/ns-tenant/proxy/rule/0",
+			Endpoints: []*endpointv3.LocalityLbEndpoints{{
+				LbEndpoints: []*endpointv3.LbEndpoint{{
+					HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{SocketAddress: &corev3.SocketAddress{
+							Address:       "origin.example",
+							PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: 443},
+						}}},
+					}},
+				}},
+			}},
+		},
+	}
+
+	resp, err := srv.PostTranslateModify(context.Background(), &pb.PostTranslateModifyRequest{
+		Clusters: []*clusterv3.Cluster{cluster},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetClusters(), 1)
+	got := resp.GetClusters()[0].GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0]
+	assert.Equal(t, "origin.example.", got.GetEndpoint().GetAddress().GetSocketAddress().GetAddress())
 }

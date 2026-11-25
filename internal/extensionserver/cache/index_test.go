@@ -1992,12 +1992,12 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 		{
 			name:        "unattributable label on an ownerless unprojected slice gives no tenant",
 			tenantSlice: ownerlessTenantSlice(nsvcTestNS, "unowned", tenantID, member),
-			wantRefusal: VPCBindingRefusalUnresolved,
+			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 		{
 			name:        "projected copy naming another project gives no tenant",
 			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, "cluster-other-project"),
-			wantRefusal: VPCBindingRefusalUnresolved,
+			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 		{
 			name: "owner of another kind is not trusted",
@@ -2006,7 +2006,7 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 				slice.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", UID: "cm"}}
 				return slice
 			}(),
-			wantRefusal: VPCBindingRefusalUnresolved,
+			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 		{
 			name: "same address in another namespace is not used",
@@ -2019,6 +2019,14 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherNS}},
 			},
 			wantRefusal: VPCBindingRefusalUnresolved,
+		},
+		{
+			name:        "unowned slice beside a trusted one leaves the trusted tenant",
+			tenantSlice: newGalacticEndpointSlice("vpc-pod-a", tenantID, member),
+			extra: []client.Object{
+				ownerlessTenantSlice(nsvcTestNS, "unowned", otherID, member),
+			},
+			wantTenant: tenantID,
 		},
 		{
 			name:        "two trusted tenants claiming one address conflict",

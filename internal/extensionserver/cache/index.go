@@ -332,8 +332,9 @@ func newVPCLookups(sliceList *discoveryv1.EndpointSliceList, namespaceLabels map
 	for i := range sliceList.Items {
 		slice := &sliceList.Items[i]
 		tenantID := slice.Labels[VPCPodTenantIDLabel]
+		claim := tenantResolution{tenantID: tenantID}
 		if tenantID != "" && !trustedTenantSlice(slice, namespaceLabels[slice.Namespace]) {
-			tenantID = ""
+			claim = tenantResolution{untrusted: true}
 		}
 		owner := slice.Labels[downstreamclient.UpstreamOwnerNameLabel]
 		if tenantID == "" && owner == "" {
@@ -349,11 +350,11 @@ func newVPCLookups(sliceList *discoveryv1.EndpointSliceList, namespaceLabels map
 				}
 				if tenantID != "" {
 					key := namespacedAddress{namespace: slice.Namespace, address: address}
-					claim := tenantResolution{tenantID: tenantID}
+					merged := claim
 					if existing, ok := lookups.tenantByAddress[key]; ok {
-						claim = mergeTenants([]tenantResolution{existing, claim})
+						merged = mergeTenants([]tenantResolution{existing, claim})
 					}
-					lookups.tenantByAddress[key] = claim
+					lookups.tenantByAddress[key] = merged
 				}
 				if owner != "" {
 					lookups.addressesByOwner[ownerKey] = append(lookups.addressesByOwner[ownerKey], address)

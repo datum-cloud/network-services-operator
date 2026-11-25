@@ -125,3 +125,20 @@ func TestHostnameAddAcceptsWildcards(t *testing.T) {
 	_, err = spec.AddHostname(&networkingv1alpha.HTTPProxy{ObjectMeta: metav1.ObjectMeta{Name: "s3"}}, "*.*.example.com")
 	assert.Error(t, err)
 }
+
+func TestPlatformCertificateRecordIsNotTheUsersToPublish(t *testing.T) {
+	proxy := &networkingv1alpha.HTTPProxy{
+		Spec: networkingv1alpha.HTTPProxySpec{Hostnames: []gatewayv1.Hostname{"*.s3.example.com"}},
+		Status: networkingv1alpha.HTTPProxyStatus{HostnameStatuses: []networkingv1alpha.HostnameStatus{{
+			Hostname: "*.s3.example.com",
+			DNSRecords: []networkingv1alpha.HostnameDNSRecord{
+				record("_acme-challenge.s3.example.com", "CNAME", "k3f9q2x7.acme-dns.example.net", networkingv1alpha.HostnameDNSRecordPurposeCertificate, networkingv1alpha.HostnameDNSRecordManagedByPlatform, networkingv1alpha.HostnameDNSRecordMissing),
+			},
+		}}},
+	}
+	var out bytes.Buffer
+	writePendingRecords(&out, collectPendingRecords(proxy, spec.Hostnames(proxy)))
+
+	assert.NotContains(t, out.String(), "DNS records to publish")
+	assert.Contains(t, out.String(), "Waiting on Datum DNS:  _acme-challenge.s3.example.com CNAME")
+}

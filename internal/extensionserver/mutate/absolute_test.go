@@ -6,7 +6,9 @@ import (
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	dnsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dns/v3"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
@@ -37,6 +39,16 @@ func dnsCluster(name string, kind clusterv3.Cluster_DiscoveryType, hosts ...stri
 			Endpoints:   []*endpointv3.LocalityLbEndpoints{{LbEndpoints: lbEndpoints}},
 		},
 	}
+}
+
+func customDNSCluster(name, typeName string, hosts ...string) *clusterv3.Cluster {
+	cl := dnsCluster(name, clusterv3.Cluster_STRICT_DNS, hosts...)
+	cfg, _ := anypb.New(&dnsv3.DnsCluster{})
+	cl.ClusterDiscoveryType = &clusterv3.Cluster_ClusterType{ClusterType: &clusterv3.Cluster_CustomClusterType{
+		Name:        typeName,
+		TypedConfig: cfg,
+	}}
+	return cl
 }
 
 func clusterHosts(cl *clusterv3.Cluster) []string {
@@ -111,6 +123,36 @@ func TestResolveUpstreamNamesAbsolute(t *testing.T) {
 			wantMutated: 0,
 		},
 		{
+			name:        "dns cluster type becomes absolute",
+			cluster:     customDNSCluster(testClusterName(), "envoy.cluster.dns", "origin.example.com"),
+			wantHosts:   []string{"origin.example.com."},
+			wantMutated: 1,
+		},
+		{
+			name:        "strict dns cluster type becomes absolute",
+			cluster:     customDNSCluster(testClusterName(), "envoy.cluster.strict_dns", "origin.example.com"),
+			wantHosts:   []string{"origin.example.com."},
+			wantMutated: 1,
+		},
+		{
+			name:        "logical dns cluster type becomes absolute",
+			cluster:     customDNSCluster(testClusterName(), "envoy.cluster.logical_dns", "origin.example.com"),
+			wantHosts:   []string{"origin.example.com."},
+			wantMutated: 1,
+		},
+		{
+			name:        "dns cluster type outside tenant namespaces is unchanged",
+			cluster:     customDNSCluster("httproute/envoy-gateway-system/proxy/rule/0", "envoy.cluster.dns", "origin.example.com"),
+			wantHosts:   []string{"origin.example.com"},
+			wantMutated: 0,
+		},
+		{
+			name:        "dynamic forward proxy cluster type is unchanged",
+			cluster:     customDNSCluster(testClusterName(), "envoy.clusters.dynamic_forward_proxy", "origin.example.com"),
+			wantHosts:   []string{"origin.example.com"},
+			wantMutated: 0,
+		},
+		{
 			name:        "static cluster is unchanged",
 			cluster:     dnsCluster(testClusterName(), clusterv3.Cluster_STATIC, "origin.example.com"),
 			wantHosts:   []string{"origin.example.com"},
@@ -140,7 +182,7 @@ func TestResolveUpstreamNamesAbsoluteIsIdempotent(t *testing.T) {
 }
 
 func TestResolveUpstreamNamesAbsoluteSetsHostname(t *testing.T) {
-	cl := dnsCluster(testClusterName(), clusterv3.Cluster_STRICT_DNS, "origin.example.com", "kept.example.com")
+	cl := customDNSCluster(testClusterName(), "envoy.cluster.dns", "origin.example.com", "kept.example.com")
 	cl.LoadAssignment.Endpoints[0].LbEndpoints[1].GetEndpoint().Hostname = "set.example.com"
 	ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}, tenantIndex())
 	lb := cl.LoadAssignment.Endpoints[0].LbEndpoints

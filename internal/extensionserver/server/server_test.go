@@ -16,8 +16,10 @@ import (
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	dnsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dns/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
@@ -946,11 +948,22 @@ func TestPostTranslateModify_ReportsOnlyASuccessfulBuild(t *testing.T) {
 	})
 }
 
+func mustAny(m proto.Message) *anypb.Any {
+	a, err := anypb.New(m)
+	if err != nil {
+		panic(err)
+	}
+	return a
+}
+
 func tlsDNSCluster(name, host string) *clusterv3.Cluster {
 	return &clusterv3.Cluster{
-		Name:                 name,
-		ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STRICT_DNS},
-		TransportSocket:      &corev3.TransportSocket{Name: "envoy.transport_sockets.tls"},
+		Name: name,
+		ClusterDiscoveryType: &clusterv3.Cluster_ClusterType{ClusterType: &clusterv3.Cluster_CustomClusterType{
+			Name:        "envoy.cluster.dns",
+			TypedConfig: mustAny(&dnsv3.DnsCluster{}),
+		}},
+		TransportSocket: &corev3.TransportSocket{Name: "envoy.transport_sockets.tls"},
 		LoadAssignment: &endpointv3.ClusterLoadAssignment{
 			ClusterName: name,
 			Endpoints: []*endpointv3.LocalityLbEndpoints{{

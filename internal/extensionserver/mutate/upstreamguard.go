@@ -26,14 +26,8 @@ const (
 	upstreamIPPortMatcherName      = "envoy.rbac.matchers.upstream_ip_port"
 	upstreamCodecFilterName        = "envoy.filters.http.upstream_codec"
 	httpProtocolOptionsKey         = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
+	dynamicForwardProxyClusterType = "envoy.clusters.dynamic_forward_proxy"
 )
-
-var nameResolvingClusterTypes = map[string]bool{
-	"envoy.cluster.dns":                    true,
-	"envoy.cluster.strict_dns":             true,
-	"envoy.cluster.logical_dns":            true,
-	"envoy.clusters.dynamic_forward_proxy": true,
-}
 
 var nonPublicIPv4Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
@@ -126,7 +120,7 @@ func ApplyUpstreamAddressGuard(clusters []*clusterv3.Cluster, idx *extcache.Poli
 }
 
 func isGuardedTenantCluster(cl *clusterv3.Cluster, idx *extcache.PolicyIndex) bool {
-	if !resolvesNames(cl) || !isTenantCluster(cl.GetName(), idx) {
+	if !guardResolvesNames(cl) || !isTenantCluster(cl.GetName(), idx) {
 		return false
 	}
 	ns, proxy, rule, backend, ok := parseTenantRouteClusterName(cl.GetName())
@@ -146,15 +140,8 @@ func isGuardedTenantCluster(cl *clusterv3.Cluster, idx *extcache.PolicyIndex) bo
 	return !vpc
 }
 
-func resolvesNames(cl *clusterv3.Cluster) bool {
-	if ct := cl.GetClusterType(); ct != nil {
-		return nameResolvingClusterTypes[ct.GetName()]
-	}
-	switch cl.GetType() {
-	case clusterv3.Cluster_STRICT_DNS, clusterv3.Cluster_LOGICAL_DNS:
-		return true
-	}
-	return false
+func guardResolvesNames(cl *clusterv3.Cluster) bool {
+	return resolvesNames(cl) || cl.GetClusterType().GetName() == dynamicForwardProxyClusterType
 }
 
 func parseTenantRouteClusterName(name string) (ns, route string, rule, backend int, ok bool) {

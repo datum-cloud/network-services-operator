@@ -66,7 +66,7 @@ func ApplySignInUpstreamGuard(
 		if strings.HasSuffix(cl.GetName(), signInGuardClusterSuffix) {
 			continue
 		}
-		if _, ok := targets[cl.GetName()]; !ok || !resolvesNames(cl) {
+		if _, ok := targets[cl.GetName()]; !ok || !guardResolvesNames(cl) {
 			continue
 		}
 		listenerName := SignInGuardListenerPrefix + cl.GetName()

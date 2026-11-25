@@ -1,0 +1,224 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: securitypolicy-rule-basic-auth
+spec:
+  description: |
+    Basic auth attached to one rule of an HTTPProxy reports whether the edge
+    accepted it (issue #936). The policy targets the generated HTTPRoute with
+    the sectionName of one rule. The upstream policy must carry Accepted=True,
+    and the edge must ask for a password on that rule's path only. A policy
+    naming a rule the route does not have must report Accepted=False, so an
+    Accepted status written regardless of the target fails here.
+  cluster: nso-standard
+  timeouts:
+    cleanup: 120s
+  steps:
+    - name: Deploy an origin on the downstream cluster
+      try:
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: rule-auth-origin
+                namespace: default
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: rule-auth-origin
+                template:
+                  metadata:
+                    labels:
+                      app: rule-auth-origin
+                  spec:
+                    containers:
+                      - name: go-httpbin
+                        image: ghcr.io/mccutchen/go-httpbin:2.18.1
+                        command: ["/bin/go-httpbin"]
+                        args: ["-host", "0.0.0.0", "-port", "8080"]
+                        ports:
+                          - containerPort: 8080
+                        resources:
+                          requests:
+                            cpu: 50m
+                            memory: 64Mi
+                          limits:
+                            cpu: 100m
+                            memory: 128Mi
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: rule-auth-origin
+                namespace: default
+              spec:
+                selector:
+                  app: rule-auth-origin
+                ports:
+                  - port: 8080
+                    targetPort: 8080
+        - assert:
+            cluster: nso-infra
+            timeout: 120s
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: rule-auth-origin
+                namespace: default
+              status:
+                availableReplicas: 1
+
+    - name: Create a two-rule proxy
+      try:
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: rule-auth
+              spec:
+                rules:
+                  - name: api
+                    matches:
+                      - path:
+                          type: PathPrefix
+                          value: /anything
+                    backends:
+                      - endpoint: http://rule-auth-origin.default.svc.cluster.local:8080
+                  - name: web
+                    matches:
+                      - path:
+                          type: PathPrefix
+                          value: /
+                    backends:
+                      - endpoint: http://rule-auth-origin.default.svc.cluster.local:8080
+        - assert:
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: rule-auth
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+
+    - name: Basic auth on one rule is accepted and reported upstream
+      try:
+        - create:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: rule-auth-users
+              type: Opaque
+              stringData:
+                .htpasswd: "alice:{SHA}GpHWL3ymc5liWkNopqtdSjuqYHM=\n"
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: rule-auth-api
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: HTTPRoute
+                    name: rule-auth
+                    sectionName: api
+                basicAuth:
+                  users:
+                    name: rule-auth-users
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: rule-auth-missing
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: HTTPRoute
+                    name: rule-auth
+                    sectionName: no-such-rule
+                basicAuth:
+                  users:
+                    name: rule-auth-users
+        - assert:
+            timeout: 180s
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: rule-auth-api
+              status:
+                ancestors:
+                  - ancestorRef:
+                      kind: Gateway
+                      name: rule-auth
+                      namespace: ($namespace)
+                    (conditions[?type == 'Accepted']):
+                      - status: "True"
+        - assert:
+            timeout: 180s
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: SecurityPolicy
+              metadata:
+                name: rule-auth-missing
+              status:
+                ancestors:
+                  - (conditions[?type == 'Accepted']):
+                      - status: "False"
+                        reason: TargetNotFound
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get securitypolicy,httproute,secret -o yaml
+              kubectl -n network-services-operator-system logs -l control-plane=controller-manager --tail=100
+
+    - name: The edge asks for a password on that rule only
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httpproxy rule-auth -o jsonpath='{.status.canonicalHostname}'
+            outputs:
+              - name: hostname
+                value: ($stdout)
+        - script:
+            timeout: 300s
+            env:
+              - name: HOST
+                value: ($hostname)
+            content: |
+              set -u
+              code() {
+                curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: ${HOST}" "$@" || echo 000
+              }
+              for i in $(seq 1 60); do
+                api=$(code http://localhost:30080/anything/x)
+                web=$(code http://localhost:30080/get)
+                echo "attempt ${i}: /anything/x=${api} /get=${web}"
+                [ "${api}" = "401" ] && [ "${web}" = "200" ] && break
+                sleep 3
+              done
+              [ "${api}" = "401" ] || { echo "the protected rule did not ask for a password"; exit 1; }
+              [ "${web}" = "200" ] || { echo "the unprotected rule did not answer 200"; exit 1; }
+              authed=$(code -u alice:pw http://localhost:30080/anything/x)
+              echo "/anything/x with credentials=${authed}"
+              [ "${authed}" = "200" ] || { echo "the protected rule refused valid credentials"; exit 1; }
+              echo ok
+      catch:
+        - script:
+            cluster: nso-infra
+            content: |
+              kubectl -n datum-downstream-gateway logs -l gateway.envoyproxy.io/owning-gateway-namespace --all-containers --tail=50 || true

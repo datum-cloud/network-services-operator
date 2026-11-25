@@ -181,6 +181,9 @@ func isVPCBindingInput(obj client.Object) bool {
 func vpcBindingInputChanged(oldSlice, newSlice *discoveryv1.EndpointSlice) bool {
 	return oldSlice.Labels[extcache.VPCPodTenantIDLabel] != newSlice.Labels[extcache.VPCPodTenantIDLabel] ||
 		oldSlice.Labels[downstreamclient.UpstreamOwnerNameLabel] != newSlice.Labels[downstreamclient.UpstreamOwnerNameLabel] ||
+		oldSlice.Labels[extcache.VPCEndpointSliceProjectionLabel] != newSlice.Labels[extcache.VPCEndpointSliceProjectionLabel] ||
+		oldSlice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] != newSlice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] ||
+		!equality.Semantic.DeepEqual(oldSlice.OwnerReferences, newSlice.OwnerReferences) ||
 		!equality.Semantic.DeepEqual(sliceAddresses(oldSlice), sliceAddresses(newSlice))
 }
 

@@ -200,6 +200,18 @@ func TestVPCBinding_EndpointSlicePredicate(t *testing.T) {
 	relabelled.Labels[extcache.VPCPodTenantIDLabel] = "vpc2-attach1"
 	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: relabelled}))
 
+	disowned := tenant.DeepCopy()
+	disowned.OwnerReferences = nil
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: disowned}))
+
+	projected := tenant.DeepCopy()
+	projected.Labels[extcache.VPCEndpointSliceProjectionLabel] = "true"
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: projected}))
+
+	reclustered := projected.DeepCopy()
+	reclustered.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = "cluster-other"
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: projected, ObjectNew: reclustered}))
+
 	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: plain, ObjectNew: plain.DeepCopy()}))
 }
 

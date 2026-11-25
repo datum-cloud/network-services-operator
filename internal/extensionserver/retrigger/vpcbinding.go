@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -86,6 +87,11 @@ func (r *VPCBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.proxiesForEndpointSlice),
 			builder.WithPredicates(endpointSlicePredicate()),
 		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.proxiesInNamespace),
+			builder.WithPredicates(namespacePredicate()),
+		).
 		Named("extension-server-vpc-binding-retrigger").
 		Complete(r)
 }
@@ -135,6 +141,21 @@ func (r *VPCBindingReconciler) proxiesForEndpointSlice(ctx context.Context, obj 
 			if proxyUsesSlice(&proxies.Items[i], slice, owners) {
 				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&proxies.Items[i])})
 			}
+		}
+	}
+	return requests
+}
+
+func (r *VPCBindingReconciler) proxiesInNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	var proxies networkingv1alpha.HTTPProxyList
+	if err := r.Client.List(ctx, &proxies, client.InNamespace(obj.GetName())); err != nil {
+		log.FromContext(ctx).Error(err, "list HTTPProxies for vpc binding", "namespace", obj.GetName())
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range proxies.Items {
+		if extcache.HasVPCBackend(&proxies.Items[i]) {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&proxies.Items[i])})
 		}
 	}
 	return requests
@@ -202,6 +223,18 @@ func endpointSlicePredicate() predicate.Predicate {
 				return false
 			}
 			return vpcBindingInputChanged(oldSlice, newSlice)
+		},
+	}
+}
+
+func namespacePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetLabels()[downstreamclient.UpstreamOwnerClusterNameLabel] !=
+				e.ObjectNew.GetLabels()[downstreamclient.UpstreamOwnerClusterNameLabel]
 		},
 	}
 }

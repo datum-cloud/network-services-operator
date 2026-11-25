@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -213,6 +214,43 @@ func TestVPCBinding_EndpointSlicePredicate(t *testing.T) {
 	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: projected, ObjectNew: reclustered}))
 
 	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: plain, ObjectNew: plain.DeepCopy()}))
+}
+
+func TestVPCBinding_NamespacePredicate(t *testing.T) {
+	p := namespacePredicate()
+	unlabelled := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS}}
+	labelled := unlabelled.DeepCopy()
+	labelled.Labels = map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-my-project"}
+
+	assert.True(t, p.Create(event.CreateEvent{Object: unlabelled}))
+	assert.False(t, p.Delete(event.DeleteEvent{Object: labelled}))
+	assert.False(t, p.Generic(event.GenericEvent{Object: labelled}))
+
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: unlabelled, ObjectNew: labelled}))
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: labelled, ObjectNew: unlabelled}))
+
+	renamed := labelled.DeepCopy()
+	renamed.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = "cluster-other"
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: labelled, ObjectNew: renamed}))
+
+	otherLabel := labelled.DeepCopy()
+	otherLabel.Labels["team"] = "edge"
+	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: labelled, ObjectNew: otherLabel}))
+	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: unlabelled, ObjectNew: unlabelled.DeepCopy()}))
+}
+
+func TestVPCBinding_NamespaceMapsToItsVPCProxies(t *testing.T) {
+	otherNS := networkServiceProxy(testOtherProxy)
+	otherNS.Namespace = "other-project"
+	connectorOnly := proxyRefersConnector()
+	connectorOnly.Name = "connector-only"
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
+		WithObjects(networkServiceProxy(testProxy), connectorOnly, otherNS).
+		Build()
+
+	r := &VPCBindingReconciler{Client: cl}
+	requests := r.proxiesInNamespace(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS}})
+	assert.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKey{Namespace: testNS, Name: testProxy}}}, requests)
 }
 
 func TestVPCBindingAnnotationReachesEnvoyGatewayIR(t *testing.T) {

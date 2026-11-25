@@ -15,7 +15,7 @@
 # The scenario proves the refusal is in the path and that the allowed path
 # leaves the health check in effect: after the Gateway-level policy lands, the
 # operator's route policy is still Accepted on the edge and the route's Envoy
-# cluster still carries outlier detection.
+# cluster still carries outlier detection and the user's max_connections.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -241,13 +241,18 @@ spec:
                   print('  %s outlier_detection=%s' % (cluster['name'], has))
                   if not has:
                       sys.exit(1)
+                  thresholds = cluster.get('circuit_breakers', {}).get('thresholds', [])
+                  maxes = [t.get('max_connections') for t in thresholds]
+                  print('  %s max_connections=%s' % (cluster['name'], maxes))
+                  if 500 not in maxes:
+                      sys.exit(1)
               PY
                 then
                   echo "ok"; exit 0
                 fi
                 sleep 5
               done
-              echo "the route's Envoy cluster never carried outlier detection"
+              echo "the route's Envoy cluster never carried outlier detection and the max_connections threshold"
               exit 1
       catch:
         - script:

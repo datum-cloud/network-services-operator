@@ -79,7 +79,7 @@ func ApplySignInUpstreamGuard(
 		if la := inner.GetLoadAssignment(); la != nil {
 			la.ClusterName = inner.Name
 		}
-		if _, err := addUpstreamHTTPFilter(inner, filter); err != nil {
+		if _, err := guardCluster(inner, filter); err != nil {
 			return listeners, clusters, guarded, fmt.Errorf("guard sign-in cluster %q: %w", cl.GetName(), err)
 		}
 
@@ -111,6 +111,7 @@ func signInClusterNames(
 ) (map[string]struct{}, error) {
 	requirements := map[string]*jwtauthnv3.JwtRequirement{}
 	providers := map[string]*jwtauthnv3.JwtProvider{}
+	shared := map[string]struct{}{}
 	for _, l := range listeners {
 		for _, fc := range append(l.GetFilterChains(), l.GetDefaultFilterChain()) {
 			for _, f := range fc.GetFilters() {
@@ -122,18 +123,29 @@ func signInClusterNames(
 					continue
 				}
 				for _, hf := range hcm.GetHttpFilters() {
-					if hf.GetName() != jwtAuthnFilterName || hf.GetTypedConfig() == nil {
+					if hf.GetTypedConfig() == nil {
 						continue
 					}
-					cfg := &jwtauthnv3.JwtAuthentication{}
-					if err := hf.GetTypedConfig().UnmarshalTo(cfg); err != nil {
-						return nil, fmt.Errorf("decode jwt_authn on listener %q: %w", l.GetName(), err)
-					}
-					for k, v := range cfg.GetRequirementMap() {
-						requirements[k] = v
-					}
-					for k, v := range cfg.GetProviders() {
-						providers[k] = v
+					switch hf.GetName() {
+					case jwtAuthnFilterName:
+						cfg := &jwtauthnv3.JwtAuthentication{}
+						if err := hf.GetTypedConfig().UnmarshalTo(cfg); err != nil {
+							return nil, fmt.Errorf("decode jwt_authn on listener %q: %w", l.GetName(), err)
+						}
+						for k, v := range cfg.GetRequirementMap() {
+							requirements[k] = v
+						}
+						for k, v := range cfg.GetProviders() {
+							providers[k] = v
+						}
+						for _, rule := range cfg.GetRules() {
+							addSignInClusters(shared, rule.GetRequires(), cfg.GetProviders())
+						}
+					case oauth2FilterName:
+						cfg := &oauth2v3.OAuth2{}
+						if err := hf.GetTypedConfig().UnmarshalTo(cfg); err == nil {
+							addCluster(shared, cfg.GetConfig().GetTokenEndpoint().GetCluster())
+						}
 					}
 				}
 			}
@@ -144,32 +156,46 @@ func signInClusterNames(
 	for _, rc := range routes {
 		for _, vh := range rc.GetVirtualHosts() {
 			for _, rt := range vh.GetRoutes() {
+				into := targets
 				if !isTenantCluster(rt.GetName(), idx) {
-					continue
+					into = shared
+					addCluster(shared, rt.GetRoute().GetCluster())
+					for _, wc := range rt.GetRoute().GetWeightedClusters().GetClusters() {
+						addCluster(shared, wc.GetName())
+					}
 				}
 				per := rt.GetTypedPerFilterConfig()
 				if raw, ok := per[oauth2FilterName]; ok {
 					cfg := &oauth2v3.OAuth2PerRoute{}
 					if err := raw.UnmarshalTo(cfg); err == nil {
-						if c := cfg.GetConfig().GetTokenEndpoint().GetCluster(); c != "" {
-							targets[c] = struct{}{}
-						}
+						addCluster(into, cfg.GetConfig().GetTokenEndpoint().GetCluster())
 					}
 				}
 				if raw, ok := per[jwtAuthnFilterName]; ok {
 					cfg := &jwtauthnv3.PerRouteConfig{}
 					if err := raw.UnmarshalTo(cfg); err == nil {
-						for _, name := range requirementProviders(requirements[cfg.GetRequirementName()]) {
-							if c := providers[name].GetRemoteJwks().GetHttpUri().GetCluster(); c != "" {
-								targets[c] = struct{}{}
-							}
-						}
+						addSignInClusters(into, requirements[cfg.GetRequirementName()], providers)
 					}
 				}
 			}
 		}
 	}
+	for name := range shared {
+		delete(targets, name)
+	}
 	return targets, nil
+}
+
+func addSignInClusters(into map[string]struct{}, req *jwtauthnv3.JwtRequirement, providers map[string]*jwtauthnv3.JwtProvider) {
+	for _, name := range requirementProviders(req) {
+		addCluster(into, providers[name].GetRemoteJwks().GetHttpUri().GetCluster())
+	}
+}
+
+func addCluster(into map[string]struct{}, name string) {
+	if name != "" {
+		into[name] = struct{}{}
+	}
 }
 
 func requirementProviders(req *jwtauthnv3.JwtRequirement) []string {

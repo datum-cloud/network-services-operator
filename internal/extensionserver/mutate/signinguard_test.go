@@ -200,3 +200,73 @@ func TestApplySignInUpstreamGuard_NoSignInConfig(t *testing.T) {
 	assert.Empty(t, l)
 	assert.Len(t, c, 2)
 }
+
+func TestApplySignInUpstreamGuard_ConvertsLogicalDNS(t *testing.T) {
+	listeners, routes := signInFixture(t)
+	clusters := signInClusters()
+	clusters[0] = legacyLogicalDNS(tenantJWKSCluster)
+
+	_, got, n, err := ApplySignInUpstreamGuard(listeners, routes, clusters, guardTestIndex())
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	for _, c := range got {
+		if c.GetName() == tenantJWKSCluster+signInGuardClusterSuffix {
+			assert.False(t, clusterDNSConfig(t, c).GetAllAddressesInSingleEndpoint())
+			return
+		}
+	}
+	t.Fatal("guarded sign-in cluster missing")
+}
+
+func TestApplySignInUpstreamGuard_SkipsClustersSharedWithPlatform(t *testing.T) {
+	const (
+		listenerTokenCluster = "login_platform_example_443"
+		platformRouteCluster = "platform_origin_443"
+	)
+	listeners, routes := signInFixture(t)
+
+	oauthFilter, err := anypb.New(&oauth2v3.OAuth2{Config: &oauth2v3.OAuth2Config{
+		TokenEndpoint: &corev3.HttpUri{Uri: "https://login.platform.example/token", HttpUpstreamType: &corev3.HttpUri_Cluster{Cluster: listenerTokenCluster}},
+	}})
+	require.NoError(t, err)
+	hcm := &hcmv3.HttpConnectionManager{}
+	require.NoError(t, listeners[0].GetFilterChains()[0].GetFilters()[0].GetTypedConfig().UnmarshalTo(hcm))
+	hcm.HttpFilters = append(hcm.HttpFilters, &hcmv3.HttpFilter{Name: oauth2FilterName, ConfigType: &hcmv3.HttpFilter_TypedConfig{TypedConfig: oauthFilter}})
+	packed, err := anypb.New(hcm)
+	require.NoError(t, err)
+	listeners[0].GetFilterChains()[0].GetFilters()[0].ConfigType = &listenerv3.Filter_TypedConfig{TypedConfig: packed}
+
+	tenantOAuth := func(cluster string) *anypb.Any {
+		a, err := anypb.New(&oauth2v3.OAuth2PerRoute{Config: &oauth2v3.OAuth2Config{
+			TokenEndpoint: &corev3.HttpUri{Uri: "https://collide/token", HttpUpstreamType: &corev3.HttpUri_Cluster{Cluster: cluster}},
+		}})
+		require.NoError(t, err)
+		return a
+	}
+	vh := routes[0].GetVirtualHosts()[0]
+	vh.Routes[1].Action = &routev3.Route_Route{Route: &routev3.RouteAction{
+		ClusterSpecifier: &routev3.RouteAction_Cluster{Cluster: platformRouteCluster},
+	}}
+	for i, c := range []string{platformJWKSCluster, listenerTokenCluster, platformRouteCluster} {
+		vh.Routes = append(vh.Routes, &routev3.Route{
+			Name:                 "httproute/" + testDSNS + "/collide-" + string(rune('a'+i)) + "/rule/0/match/0/x",
+			TypedPerFilterConfig: map[string]*anypb.Any{oauth2FilterName: tenantOAuth(c)},
+		})
+	}
+
+	clusters := append(signInClusters(),
+		guardDNSCluster(listenerTokenCluster),
+		guardDNSCluster(platformRouteCluster),
+	)
+	_, got, n, err := ApplySignInUpstreamGuard(listeners, routes, clusters, guardTestIndex())
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	names := map[string]bool{}
+	for _, c := range got {
+		names[c.GetName()] = true
+	}
+	for _, c := range []string{platformJWKSCluster, listenerTokenCluster, platformRouteCluster} {
+		assert.False(t, names[c+signInGuardClusterSuffix], c)
+	}
+	assert.True(t, names[tenantJWKSCluster+signInGuardClusterSuffix])
+}

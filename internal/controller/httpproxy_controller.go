@@ -149,6 +149,7 @@ const (
 )
 
 const retryAfterInvalid = 5 * time.Minute
+const connectorPlaceholderHost = "connector.local"
 const connectorOfflineFilterPrefix = "connector-offline"
 
 // BackendCertHostnameAnnotation is set on the upstream EndpointSlice by the
@@ -1259,7 +1260,7 @@ func (r *HTTPProxyReconciler) collectDesiredResources(
 			isIPAddress := false
 			if backend.Connector != nil {
 				// Connector backends don't rely on EndpointSlice addresses; use a safe placeholder.
-				endpointHost = "connector.local"
+				endpointHost = connectorPlaceholderHost
 				addressType = discoveryv1.AddressTypeFQDN
 			} else if ip := net.ParseIP(host); ip != nil {
 				isIPAddress = true

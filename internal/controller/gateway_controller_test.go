@@ -3320,7 +3320,7 @@ func TestProcessDownstreamHTTPRouteRulesEmptyEndpointSlice(t *testing.T) {
 			strategy,
 		)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"test/test-0-0"}, unresolved)
+		assert.Equal(t, []string{"test/test-0-0"}, unresolved.missing)
 		require.Len(t, downstreamResources, 1, "only the Service is synthesized for a slice that does not exist")
 		service, ok := downstreamResources[0].(*corev1.Service)
 		require.True(t, ok, "expected a Service, got %T", downstreamResources[0])
@@ -3367,7 +3367,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 			},
 			AddressType: discoveryv1.AddressTypeIPv4,
 			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+				{Addresses: []string{"192.0.2.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},
@@ -3505,7 +3505,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 			},
 			AddressType: discoveryv1.AddressTypeIPv4,
 			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+				{Addresses: []string{"192.0.2.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},
@@ -3650,7 +3650,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			},
 			AddressType: discoveryv1.AddressTypeIPv4,
 			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{"10.0.0.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+				{Addresses: []string{"192.0.2.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},

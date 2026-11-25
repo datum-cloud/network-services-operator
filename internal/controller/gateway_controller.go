@@ -57,6 +57,7 @@ import (
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
+	"go.datum.net/network-services-operator/internal/validation"
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
@@ -2670,9 +2671,17 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	}
 
 	switch {
-	case len(unresolved) > 0:
+	case len(unresolved.refused) > 0:
 		apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
-			Message:            fmt.Sprintf("EndpointSlice not found: %s", strings.Join(unresolved, ", ")),
+			Message:            fmt.Sprintf("EndpointSlice refused: %s", strings.Join(unresolved.refused, "; ")),
+			Type:               string(gatewayv1.RouteConditionResolvedRefs),
+			Reason:             string(gatewayv1.RouteReasonRefNotPermitted),
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: upstreamRoute.Generation,
+		})
+	case len(unresolved.missing) > 0:
+		apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
+			Message:            fmt.Sprintf("EndpointSlice not found: %s", strings.Join(unresolved.missing, ", ")),
 			Type:               string(gatewayv1.RouteConditionResolvedRefs),
 			Reason:             string(gatewayv1.RouteReasonBackendNotFound),
 			Status:             metav1.ConditionFalse,
@@ -2693,7 +2702,7 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 		})
 	default:
 		if c := apimeta.FindStatusCondition(parentStatus.Conditions, string(gatewayv1.RouteConditionResolvedRefs)); c != nil &&
-			c.Reason == string(gatewayv1.RouteReasonBackendNotFound) {
+			(c.Reason == string(gatewayv1.RouteReasonBackendNotFound) || c.Reason == string(gatewayv1.RouteReasonRefNotPermitted)) {
 			apimeta.RemoveStatusCondition(&parentStatus.Conditions, string(gatewayv1.RouteConditionResolvedRefs))
 		}
 	}
@@ -2729,7 +2738,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	upstreamRoute gatewayv1.HTTPRoute,
 	downstreamGateway *gatewayv1.Gateway,
 	downstreamStrategy downstreamclient.ResourceStrategy,
-) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, unresolved []string, err error) {
+) (rules []gatewayv1.HTTPRouteRule, downstreamResources []client.Object, unresolved unresolvedBackends, err error) {
 
 	// We need to create a Service for each (BackendRef, EndpointSlice)
 	// combination as different backendRefs may use different hostnames in URL
@@ -2767,16 +2776,16 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				if backendRef.Port == nil {
 					// Should be protected by validation, but check just in case.
 					logger.Info("no port defined in backendRef", "backendRef", backendRef)
-					return nil, nil, nil, fmt.Errorf("no port defined in backendRef")
+					return nil, nil, unresolvedBackends{}, fmt.Errorf("no port defined in backendRef")
 				}
 
 				var upstreamEndpointSlice discoveryv1.EndpointSlice
 				if err := upstreamClient.Get(ctx, sliceKey, &upstreamEndpointSlice); err != nil {
 					if !apierrors.IsNotFound(err) {
-						return nil, nil, nil, err
+						return nil, nil, unresolvedBackends{}, err
 					}
 					logger.V(1).Info("backend endpointslice not found", "endpointslice", sliceKey.String())
-					unresolved = append(unresolved, sliceKey.String())
+					unresolved.missing = append(unresolved.missing, sliceKey.String())
 					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
 						{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
 					}))
@@ -2798,10 +2807,24 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
 					backendRefs = append(backendRefs, passThroughVPCPodBackendRef(downstreamGateway.Namespace, backendRef))
 				} else {
+					refusal, err := r.refuseInternalEndpoints(ctx, upstreamClient, &upstreamEndpointSlice)
+					if err != nil {
+						return nil, nil, unresolvedBackends{}, err
+					}
+					if refusal != "" {
+						logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
+						unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
+						downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
+							{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
+						}))
+						backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+						continue
+					}
+
 					if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
 						controllerutil.AddFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer)
 						if err := upstreamClient.Update(ctx, &upstreamEndpointSlice); err != nil {
-							return nil, nil, nil, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
+							return nil, nil, unresolvedBackends{}, fmt.Errorf("failed to add finalizer to endpointslice: %w", err)
 						}
 					}
 
@@ -2820,7 +2843,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 							if port.Name == nil {
 								// This should be protected by validation, but check just in case.
 								logger.Info("no port name defined in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", port)
-								return nil, nil, nil, fmt.Errorf("no port name defined in upstream endpointslice")
+								return nil, nil, unresolvedBackends{}, fmt.Errorf("no port name defined in upstream endpointslice")
 							}
 							appProtocol = port.AppProtocol
 							endpointPort = ptr.To(port)
@@ -2829,7 +2852,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 					if endpointPort == nil {
 						logger.Info("port not found in upstream endpointslice", "endpointslice", upstreamEndpointSlice.Name, "port", *backendRef.Port)
-						return nil, nil, nil, fmt.Errorf("port not found in upstream endpointslice")
+						return nil, nil, unresolvedBackends{}, fmt.Errorf("port not found in upstream endpointslice")
 					}
 
 					if upstreamEndpointSlice.Labels[NetworkServiceBackendLabel] != "" {
@@ -2854,7 +2877,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 					}
 
 					if err := downstreamStrategy.SetControllerReference(ctx, &upstreamEndpointSlice, downstreamEndpointSlice); err != nil {
-						return nil, nil, nil, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
+						return nil, nil, unresolvedBackends{}, fmt.Errorf("failed to set controller reference on downstream endpointslice: %w", err)
 					}
 
 					downstreamResources = append(downstreamResources, downstreamEndpointSlice)
@@ -2888,7 +2911,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 						if hostname == nil {
 							// TODO(jreese) set the RouteConditionResolvedRefs condition to
 							// False, as the hostname is not present.
-							return nil, nil, nil, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
+							return nil, nil, unresolvedBackends{}, fmt.Errorf("no hostname found in URLRewrite filters or EndpointSlice annotation on backendRef or Route %q", upstreamRoute.Name)
 						}
 
 						// BackendTLSPolicy graduated from v1alpha3 to v1 in gateway-api v1.5.
@@ -2945,12 +2968,12 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 	loadBalancer, err := loadBalancerFromUpstreamRoute(upstreamRoute)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, unresolvedBackends{}, err
 	}
 
 	passiveHealthCheck, err := passiveHealthCheckFromUpstreamRoute(upstreamRoute)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, unresolvedBackends{}, err
 	}
 
 	// A route needs the policy whenever it has a networkService backend, a
@@ -2960,12 +2983,43 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 	if networkServiceBackend || loadBalancer != nil || passiveHealthCheck != nil {
 		policy, err := r.backendTrafficPolicy(ctx, upstreamRoute, downstreamGateway, downstreamStrategy, networkServiceBackend, loadBalancer, passiveHealthCheck)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, unresolvedBackends{}, err
 		}
 		downstreamResources = append(downstreamResources, policy)
 	}
 
 	return rules, downstreamResources, unresolved, nil
+}
+
+type unresolvedBackends struct {
+	missing []string
+	refused []string
+}
+
+func (r *GatewayReconciler) refuseInternalEndpoints(
+	ctx context.Context,
+	upstreamClient client.Client,
+	slice *discoveryv1.EndpointSlice,
+) (string, error) {
+	suffixes := r.Config.Gateway.PermittedInternalUpstreamHostSuffixes
+	vouched := sets.New(connectorPlaceholderHost)
+	if len(validation.ValidateEndpointSliceAddresses(slice, vouched, suffixes)) == 0 {
+		return "", nil
+	}
+
+	var interfaces networkingv1alpha.NetworkInterfaceList
+	if err := upstreamClient.List(ctx, &interfaces, client.InNamespace(slice.Namespace)); err != nil {
+		return "", fmt.Errorf("failed listing network interfaces: %w", err)
+	}
+	for i := range interfaces.Items {
+		vouched.Insert(interfaceBackhaulAddresses(&interfaces.Items[i])...)
+	}
+
+	errs := validation.ValidateEndpointSliceAddresses(slice, vouched, suffixes)
+	if len(errs) == 0 {
+		return "", nil
+	}
+	return errs.ToAggregate().Error(), nil
 }
 
 func headlessService(namespace, name string, ports []corev1.ServicePort) *corev1.Service {

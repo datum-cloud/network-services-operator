@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -46,6 +47,7 @@ func newMissingBackendRig(t *testing.T, routes ...*gatewayv1.HTTPRoute) *missing
 	require.NoError(t, gatewayv1.Install(testScheme))
 	require.NoError(t, discoveryv1.AddToScheme(testScheme))
 	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 
 	testConfig := config.NetworkServicesOperator{Gateway: config.GatewayConfig{
 		DownstreamGatewayClassName:            "test-suite",

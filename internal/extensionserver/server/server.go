@@ -324,9 +324,12 @@ func (s *Server) PostTranslateModify(
 	}
 	extmetrics.VPCPodSocketBindTotal.Add(float64(vpcPodCount))
 
-	var guardedCount int
+	var guardedCount, signInGuardedCount int
 	if s.cfg.UpstreamAddressGuard {
 		guardedCount, err = mutate.ApplyUpstreamAddressGuard(clusters, idx)
+		if err == nil {
+			listeners, clusters, signInGuardedCount, err = mutate.ApplySignInUpstreamGuard(listeners, routes, clusters, idx)
+		}
 		if err != nil {
 			s.log.Error("apply upstream address guard", "err", err)
 			mspan.RecordError(err)
@@ -423,6 +426,7 @@ func (s *Server) PostTranslateModify(
 		"clusters_vpcpod_bound", vpcPodCount,
 		"clusters_absolute_names", absoluteCount,
 		"clusters_upstream_guarded", guardedCount,
+		"clusters_signin_guarded", signInGuardedCount,
 	)
 
 	// Envoy Gateway gave up on this call (a deadline or a cancel), so it will

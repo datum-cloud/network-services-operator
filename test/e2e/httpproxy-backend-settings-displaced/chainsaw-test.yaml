@@ -1,0 +1,187 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# An HTTPProxy whose health check settings the edge does not apply reports
+# Programmed False (issue #880).
+#
+# Envoy Gateway accepts one BackendTrafficPolicy per route and keeps the
+# oldest. A route-level policy that predates the operator's own, such as one
+# attached before admission started refusing them, displaces the policy that
+# carries the proxy's health check and load balancing settings. The proxy kept
+# reporting Programmed while traffic flowed without them.
+#
+# Admission now refuses that policy upstream, so the scenario places an older
+# conflicting policy straight onto the edge copy of the route, then turns on
+# health checks. The proxy must report BackendSettingsNotApplied, and must
+# return to Programmed once the conflicting policy is gone.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: httpproxy-backend-settings-displaced
+spec:
+  cluster: nso-standard
+  timeouts:
+    cleanup: 120s
+  steps:
+    - name: Create a proxy without health checks
+      try:
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: displaced
+              spec:
+                rules:
+                  - backends:
+                      - endpoint: http://displaced-origin.default.svc.cluster.local:8080
+        - assert:
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: displaced
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+        - assert:
+            cluster: nso-infra
+            timeout: 180s
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: displaced
+                namespace: ($downstreamNamespaceName)
+
+    - name: An older policy already holds the edge route
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            cluster: nso-infra
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: older-route-policy
+                namespace: ($downstreamNamespaceName)
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: HTTPRoute
+                    name: displaced
+                circuitBreaker:
+                  maxConnections: 500
+        - assert:
+            cluster: nso-infra
+            timeout: 120s
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: older-route-policy
+                namespace: ($downstreamNamespaceName)
+              status:
+                (ancestors[0].conditions[?type == 'Accepted']):
+                  - status: "True"
+
+    - name: Turning on health checks reports the settings as not applied
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - patch:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: displaced
+              spec:
+                healthCheck:
+                  passive: {}
+        - assert:
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: displaced
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "False"
+                    reason: BackendSettingsNotApplied
+                    (contains(message, 'another BackendTrafficPolicy is attached to its route')): true
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get httpproxy displaced -o yaml
+              kubectl -n network-services-operator-system logs -l app.kubernetes.io/name=network-services-operator --tail=100
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get httproute,backendtrafficpolicy -o yaml
+
+    - name: Removing the older policy returns the proxy to Programmed
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - delete:
+            cluster: nso-infra
+            ref:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              name: older-route-policy
+              namespace: ($downstreamNamespaceName)
+        - assert:
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: displaced
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get httpproxy displaced -o yaml
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get backendtrafficpolicy -o yaml

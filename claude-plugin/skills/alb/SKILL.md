@@ -296,7 +296,7 @@ Failures print a named exit code — `exit status 6 # ALB_INVALID`. The names ar
 - Prefer `datumctl alb` over raw manifests
 - The portal manages one route: the pool of origins on `/`, with weights, the algorithm and health checks. Those are the same fields `datumctl alb` writes, so either can change them. Once a load balancer has a second route, a path match or a per-origin filter, the portal locks its origins, weights, algorithm, health checks, TLS, redirect and Host override and points to `datumctl`; hostnames, protection and auth stay editable there. Tell the user to expect that lock after you add a route
 - Traffic protection takes paranoia 1 to 4 here; the portal offers only 1 and 2
-- Attach a `BackendTrafficPolicy` to the load balancer's Gateway, never its HTTPRoute. A route-level policy collides with the one Datum attaches for health checks and load balancing
+- Attach a `BackendTrafficPolicy` to the load balancer's Gateway, never its HTTPRoute. A route-level policy collides with the one Datum attaches for health checks and load balancing, so a new one is refused. One attached before that check reports `Programmed` `False` with reason `BackendSettingsNotApplied`: move it to the Gateway
 - Responses end after 1 hour by default. Lower it per rule with `timeouts.request` in the manifest; it cannot go above 1 hour or be switched off
 - Run `datumctl diff -f` before `apply`, and validate with `--dry-run=server`
 - `delete` has no confirmation prompt — verify the name first. Deleting a load balancer also removes its traffic protection policy and basic auth

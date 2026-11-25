@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -1975,6 +1976,7 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 	tests := []struct {
 		name        string
 		tenantSlice client.Object
+		namespace   *corev1.Namespace
 		extra       []client.Object
 		wantTenant  string
 		wantRefusal string
@@ -2029,6 +2031,17 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 			wantTenant: tenantID,
 		},
 		{
+			name:        "projected copy with an empty cluster label gives no tenant",
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, ""),
+			wantRefusal: VPCBindingRefusalUntrusted,
+		},
+		{
+			name:        "projected copy in a namespace missing the cluster label gives no tenant",
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, provenanceClusterLabel),
+			namespace:   &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsvcTestNS}},
+			wantRefusal: VPCBindingRefusalUntrusted,
+		},
+		{
 			name:        "two trusted tenants claiming one address conflict",
 			tenantSlice: newGalacticEndpointSlice("vpc-pod-a", tenantID, member),
 			extra: []client.Object{
@@ -2040,8 +2053,12 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			namespace := provenanceNamespace()
+			if tt.namespace != nil {
+				namespace = tt.namespace
+			}
 			objects := append([]client.Object{
-				provenanceNamespace(),
+				namespace,
 				newNetworkServiceHTTPProxy(0),
 				newMemberEndpointSlice("my-proxy-0-0", member),
 				tt.tenantSlice,
@@ -2097,6 +2114,103 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 			tenants, err := VPCBackendTenants(context.Background(), cl, proxy)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantTenant, tenants[VPCPodBackendKey{Namespace: nsvcTestNS, HTTPProxyName: "my-proxy"}])
+		})
+	}
+}
+
+func TestTrustedTenantSlice(t *testing.T) {
+	const clusterName = "cluster-my-project"
+
+	podOwned := func(owner metav1.OwnerReference) *discoveryv1.EndpointSlice {
+		return &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{
+			Labels:          map[string]string{VPCPodTenantIDLabel: "2wJqT7d-9xKp2Qm"},
+			OwnerReferences: []metav1.OwnerReference{owner},
+		}}
+	}
+	projected := func(sliceCluster *string) *discoveryv1.EndpointSlice {
+		slice := &discoveryv1.EndpointSlice{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+			VPCPodTenantIDLabel:             "2wJqT7d-9xKp2Qm",
+			VPCEndpointSliceProjectionLabel: "true",
+		}}}
+		if sliceCluster != nil {
+			slice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = *sliceCluster
+		}
+		return slice
+	}
+	namespaceLabels := func(nsCluster *string) map[string]string {
+		if nsCluster == nil {
+			return map[string]string{}
+		}
+		return map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: *nsCluster}
+	}
+	named, empty := clusterName, ""
+
+	tests := []struct {
+		name      string
+		slice     *discoveryv1.EndpointSlice
+		nsLabels  map[string]string
+		wantTrust bool
+	}{
+		{
+			name: "pod owner without a controller field is trusted",
+			slice: podOwned(metav1.OwnerReference{
+				APIVersion: "v1", Kind: "Pod", Name: "drawio-east-default-us-east-1-0", UID: "0b6b7c1e-5f0e-4d6c-9f55-3c1f8f0f6c11",
+			}),
+			wantTrust: true,
+		},
+		{
+			name: "pod owner with controller set is trusted",
+			slice: podOwned(metav1.OwnerReference{
+				APIVersion: "v1", Kind: "Pod", Name: "pod", UID: "pod", Controller: ptr.To(true),
+			}),
+			wantTrust: true,
+		},
+		{
+			name:      "pod owner of another group is not trusted",
+			slice:     podOwned(metav1.OwnerReference{APIVersion: "example.com/v1", Kind: "Pod", Name: "pod", UID: "pod"}),
+			wantTrust: false,
+		},
+		{
+			name:      "projected copy matching its namespace is trusted",
+			slice:     projected(&named),
+			nsLabels:  namespaceLabels(&named),
+			wantTrust: true,
+		},
+		{
+			name:      "projected copy with an empty cluster label is not trusted",
+			slice:     projected(&empty),
+			nsLabels:  namespaceLabels(&named),
+			wantTrust: false,
+		},
+		{
+			name:      "projected copy in a namespace with an empty cluster label is not trusted",
+			slice:     projected(&named),
+			nsLabels:  namespaceLabels(&empty),
+			wantTrust: false,
+		},
+		{
+			name:      "projected copy in a namespace missing the cluster label is not trusted",
+			slice:     projected(&named),
+			nsLabels:  namespaceLabels(nil),
+			wantTrust: false,
+		},
+		{
+			name:      "empty cluster labels on both sides are not trusted",
+			slice:     projected(&empty),
+			nsLabels:  namespaceLabels(&empty),
+			wantTrust: false,
+		},
+		{
+			name:      "projected copy without a cluster label in an unlabelled namespace is not trusted",
+			slice:     projected(nil),
+			nsLabels:  namespaceLabels(nil),
+			wantTrust: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantTrust, trustedTenantSlice(tt.slice, tt.nsLabels))
 		})
 	}
 }

@@ -38,8 +38,7 @@ const (
 // "httproute/<dsNS>/<proxyName>/rule/<idx>", or one per backend,
 // "httproute/<dsNS>/<proxyName>/rule/<idx>/backend/<i>".
 //
-// Returns the number of clusters mutated, and each VPC backend cluster left
-// unbound with the reason.
+// Returns the number of clusters mutated.
 func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIndex) (mutated int, refused []VPCBindingRefusal, err error) {
 	for _, cl := range clusters {
 		dsNS, proxyName, ruleIndex, backendIndex, ok := parseRouteClusterName(cl.GetName())
@@ -66,8 +65,6 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 			continue
 		}
 		if info.TenantID == "" {
-			// The referenced EndpointSlice was missing, unlabeled, or not
-			// attributable to the platform — never bind to a guessed device.
 			reason := info.Refusal
 			if reason == "" {
 				reason = extcache.VPCBindingRefusalUnresolved

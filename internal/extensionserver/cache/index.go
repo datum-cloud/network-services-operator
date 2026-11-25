@@ -316,22 +316,6 @@ type namespacedAddress struct {
 	address   string
 }
 
-// vpcLookups holds what a VPC backend's binding is resolved through, built in
-// one pass over the cluster's EndpointSlices.
-//
-// tenantByAddress maps a member address to the tenant its own trusted slice
-// carries, within the namespace that slice sits in. An edge holds both the
-// slices galactic publishes for workloads it hosts and the copies federated in
-// from other cells, so a member resolves from any edge, not only the one it
-// runs on.
-//
-// addressesByOwner maps a synthesized backend slice to the member addresses
-// its downstream copy carries. The copy is what exists at an edge, and it
-// names its origin through UpstreamOwnerNameLabel, without which the lookup
-// would need the copy's own UID-derived name.
-//
-// Addresses are canonicalised on both sides so the join survives the two
-// sources spelling one IPv6 address differently.
 type vpcLookups struct {
 	namespaceLabels  map[string]map[string]string
 	tenantByAddress  map[namespacedAddress]tenantResolution
@@ -392,11 +376,11 @@ func canonicalAddress(address string) string {
 }
 
 // tenantForAddresses resolves the one tenant every member of a networkService
-// backend sits behind, from the trusted slices in the backend's own namespace.
+// backend sits behind.
 //
 // A VRF binding is a property of the whole Envoy cluster rather than of an
 // individual endpoint, so a backend whose members span more than one VPC has
-// no correct answer and is given none: binding to either VPC's device would
+// no correct answer and is given none — binding to either VPC's device would
 // black-hole the other's members. Members that resolve to no tenant are
 // skipped rather than treated as a conflict: a slice that has not federated
 // in yet must not unbind the members that have.

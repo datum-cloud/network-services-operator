@@ -1432,7 +1432,6 @@ func TestBuildPolicyIndexFromClient_FullIndex(t *testing.T) {
 // networkService backend → tenant, joined by member address
 // =============================================================================
 
-// nsvcTestNS is the namespace every fixture in this section lives in.
 const nsvcTestNS = "test-project"
 
 // newNetworkServiceHTTPProxy builds an HTTPProxy whose single rule has a

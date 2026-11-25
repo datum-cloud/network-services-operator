@@ -9,6 +9,8 @@ import (
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	rbacv3 "github.com/envoyproxy/go-control-plane/envoy/config/rbac/v3"
+	commondnsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/common/dns/v3"
+	dnsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dns/v3"
 	rbacfilterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/rbac/v3"
 	upstreamcodecv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/upstream_codec/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
@@ -27,6 +29,8 @@ const (
 	upstreamCodecFilterName        = "envoy.filters.http.upstream_codec"
 	httpProtocolOptionsKey         = "envoy.extensions.upstreams.http.v3.HttpProtocolOptions"
 	dynamicForwardProxyClusterType = "envoy.clusters.dynamic_forward_proxy"
+	dnsClusterType                 = "envoy.cluster.dns"
+	logicalDNSClusterType          = "envoy.cluster.logical_dns"
 )
 
 var nonPublicIPv4Prefixes = []netip.Prefix{
@@ -108,7 +112,7 @@ func ApplyUpstreamAddressGuard(clusters []*clusterv3.Cluster, idx *extcache.Poli
 		if !isGuardedTenantCluster(cl, idx) {
 			continue
 		}
-		added, err := addUpstreamHTTPFilter(cl, filter)
+		added, err := guardCluster(cl, filter)
 		if err != nil {
 			return guarded, fmt.Errorf("guard cluster %q: %w", cl.GetName(), err)
 		}
@@ -214,6 +218,93 @@ func upstreamAddressGuardFilter() (*hcmv3.HttpFilter, error) {
 		Name:       UpstreamAddressGuardFilterName,
 		ConfigType: &hcmv3.HttpFilter_TypedConfig{TypedConfig: cfg},
 	}, nil
+}
+
+func guardCluster(cl *clusterv3.Cluster, filter *hcmv3.HttpFilter) (bool, error) {
+	if err := resolveEachAddressAsHost(cl); err != nil {
+		return false, err
+	}
+	return addUpstreamHTTPFilter(cl, filter)
+}
+
+func resolveEachAddressAsHost(cl *clusterv3.Cluster) error {
+	ct := cl.GetClusterType()
+	if ct == nil {
+		if cl.GetType() != clusterv3.Cluster_LOGICAL_DNS {
+			return nil
+		}
+		return setDNSClusterType(cl, dnsClusterFromLegacy(cl))
+	}
+	switch ct.GetName() {
+	case dnsClusterType:
+		cfg := &dnsv3.DnsCluster{}
+		if ct.GetTypedConfig() == nil || !ct.GetTypedConfig().MessageIs(cfg) {
+			return nil
+		}
+		if err := ct.GetTypedConfig().UnmarshalTo(cfg); err != nil {
+			return fmt.Errorf("decode %s config: %w", dnsClusterType, err)
+		}
+		if !cfg.GetAllAddressesInSingleEndpoint() {
+			return nil
+		}
+		cfg.AllAddressesInSingleEndpoint = false
+		return setDNSClusterType(cl, cfg)
+	case logicalDNSClusterType:
+		cfg := &dnsv3.DnsCluster{}
+		if tc := ct.GetTypedConfig(); tc != nil && tc.MessageIs(cfg) {
+			if err := tc.UnmarshalTo(cfg); err != nil {
+				return fmt.Errorf("decode %s config: %w", logicalDNSClusterType, err)
+			}
+		} else {
+			cfg = dnsClusterFromLegacy(cl)
+		}
+		cfg.AllAddressesInSingleEndpoint = false
+		return setDNSClusterType(cl, cfg)
+	}
+	return nil
+}
+
+func dnsClusterFromLegacy(cl *clusterv3.Cluster) *dnsv3.DnsCluster {
+	cfg := &dnsv3.DnsCluster{
+		DnsRefreshRate:         cl.GetDnsRefreshRate(),
+		RespectDnsTtl:          cl.GetRespectDnsTtl(),
+		DnsJitter:              cl.GetDnsJitter(),
+		TypedDnsResolverConfig: cl.GetTypedDnsResolverConfig(),
+		DnsLookupFamily:        legacyLookupFamilies[cl.GetDnsLookupFamily()],
+	}
+	if r := cl.GetDnsFailureRefreshRate(); r != nil {
+		cfg.DnsFailureRefreshRate = &dnsv3.DnsCluster_RefreshRate{
+			BaseInterval: r.GetBaseInterval(),
+			MaxInterval:  r.GetMaxInterval(),
+		}
+	}
+	cl.DnsRefreshRate = nil
+	cl.RespectDnsTtl = false
+	cl.DnsJitter = nil
+	cl.TypedDnsResolverConfig = nil
+	cl.DnsLookupFamily = clusterv3.Cluster_AUTO
+	cl.DnsFailureRefreshRate = nil
+	return cfg
+}
+
+var legacyLookupFamilies = map[clusterv3.Cluster_DnsLookupFamily]commondnsv3.DnsLookupFamily{
+	clusterv3.Cluster_AUTO:         commondnsv3.DnsLookupFamily_AUTO,
+	clusterv3.Cluster_V4_ONLY:      commondnsv3.DnsLookupFamily_V4_ONLY,
+	clusterv3.Cluster_V6_ONLY:      commondnsv3.DnsLookupFamily_V6_ONLY,
+	clusterv3.Cluster_V4_PREFERRED: commondnsv3.DnsLookupFamily_V4_PREFERRED,
+	clusterv3.Cluster_ALL:          commondnsv3.DnsLookupFamily_ALL,
+}
+
+func setDNSClusterType(cl *clusterv3.Cluster, cfg *dnsv3.DnsCluster) error {
+	packed, err := anypb.New(cfg)
+	if err != nil {
+		return err
+	}
+	cl.ClusterDiscoveryType = &clusterv3.Cluster_ClusterType{ClusterType: &clusterv3.Cluster_CustomClusterType{
+		Name:        dnsClusterType,
+		TypedConfig: packed,
+	}}
+	return nil
 }
 
 func addUpstreamHTTPFilter(cl *clusterv3.Cluster, filter *hcmv3.HttpFilter) (bool, error) {

@@ -251,7 +251,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				for ruleIndex, proxyRule := range h.Spec.Rules {
 					for backendIndex := range proxyRule.Backends {
-						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://192.168.1.1"
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://8.8.8.8"
 					}
 				}
 			}),
@@ -262,7 +262,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				for ruleIndex, proxyRule := range h.Spec.Rules {
 					for backendIndex := range proxyRule.Backends {
-						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://192.168.1.1"
+						h.Spec.Rules[ruleIndex].Backends[backendIndex].Endpoint = "https://8.8.8.8"
 						h.Spec.Rules[ruleIndex].Backends[backendIndex].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
 							Hostname: ptr.To("api.example.com"),
 						}
@@ -288,7 +288,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 
 						endpointSlice := endpointSlices[ruleIndex+backendRefIndex]
 						assert.Equal(t, discoveryv1.AddressTypeIPv4, endpointSlice.AddressType, backendRefIndexMsg)
-						assert.Equal(t, "192.168.1.1", endpointSlice.Endpoints[0].Addresses[0])
+						assert.Equal(t, "8.8.8.8", endpointSlice.Endpoints[0].Addresses[0])
 						assert.Equal(t, "https", *endpointSlice.Ports[0].AppProtocol, backendRefIndexMsg)
 					}
 				}
@@ -327,7 +327,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 		{
 			name: "user Host header override on a plain HTTP IP backend is rewritten via URLRewrite",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
-				h.Spec.Rules[0].Backends[0].Endpoint = "http://192.168.1.1:8080"
+				h.Spec.Rules[0].Backends[0].Endpoint = "http://8.8.8.8:8080"
 				h.Spec.Rules[0].Backends[0].Filters = []gatewayv1.HTTPRouteFilter{
 					{
 						Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
@@ -352,7 +352,7 @@ func TestHTTPProxyCollectDesiredResources(t *testing.T) {
 			name: "backend tls.hostname is lowercased for URLRewrite and the cert annotation",
 			httpProxy: newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 				h.Spec.Rules[0].Filters = nil
-				h.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+				h.Spec.Rules[0].Backends[0].Endpoint = "https://8.8.8.8"
 				h.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
 					Hostname: ptr.To("Coffee.Example.Internal"),
 				}
@@ -728,9 +728,9 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 	t.Run("weights and endpoint slices are keyed per backend, sharing one Host rewrite", func(t *testing.T) {
 		httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
 			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
-				{Endpoint: "https://198.51.100.1", Weight: ptr.To(int32(3)), TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
-				{Endpoint: "https://198.51.100.2", Weight: ptr.To(int32(1)), TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
-				{Endpoint: "https://198.51.100.3", TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
+				{Endpoint: "https://8.8.8.8", Weight: ptr.To(int32(3)), TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
+				{Endpoint: "https://8.8.4.4", Weight: ptr.To(int32(1)), TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
+				{Endpoint: "https://1.1.1.1", TLS: &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("shared.example.com")}},
 			}
 		})
 
@@ -751,9 +751,9 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 			assert.Equal(t, "test-0-0", endpointSlices[0].Name)
 			assert.Equal(t, "test-0-1", endpointSlices[1].Name)
 			assert.Equal(t, "test-0-2", endpointSlices[2].Name)
-			assert.Equal(t, "198.51.100.1", endpointSlices[0].Endpoints[0].Addresses[0])
-			assert.Equal(t, "198.51.100.2", endpointSlices[1].Endpoints[0].Addresses[0])
-			assert.Equal(t, "198.51.100.3", endpointSlices[2].Endpoints[0].Addresses[0])
+			assert.Equal(t, "8.8.8.8", endpointSlices[0].Endpoints[0].Addresses[0])
+			assert.Equal(t, "8.8.4.4", endpointSlices[1].Endpoints[0].Addresses[0])
+			assert.Equal(t, "1.1.1.1", endpointSlices[2].Endpoints[0].Addresses[0])
 		}
 
 		// Every backend agrees on the same rewrite hostname, so the rule
@@ -788,7 +788,7 @@ func TestHTTPProxyCollectDesiredResourcesMultipleBackends(t *testing.T) {
 			h.Spec.Rules[0].Backends = []networkingv1alpha.HTTPProxyRuleBackend{
 				{Endpoint: "https://storefront-blue.fly.dev", Weight: ptr.To(int32(95))},
 				{Endpoint: "https://storefront-green.fly.dev", Weight: ptr.To(int32(5))},
-				{Endpoint: "http://198.51.100.9", Weight: ptr.To(int32(0))},
+				{Endpoint: "http://1.0.0.1", Weight: ptr.To(int32(0))},
 			}
 		})
 
@@ -942,7 +942,7 @@ func TestHTTPProxyCollectDesiredResourcesConnectorHostOverride(t *testing.T) {
 
 	t.Run("IP origin records no cert hostname", func(t *testing.T) {
 		httpProxy := newHTTPProxy(withConnector, func(h *networkingv1alpha.HTTPProxy) {
-			h.Spec.Rules[0].Backends[0].Endpoint = "https://192.168.1.1"
+			h.Spec.Rules[0].Backends[0].Endpoint = "https://8.8.8.8"
 			h.Spec.Rules[0].Filters = append(h.Spec.Rules[0].Filters, hostOverride)
 		})
 
@@ -2072,7 +2072,7 @@ func TestHTTPProxyReconcileEndpointSliceAddressTypeChange(t *testing.T) {
 	}
 
 	httpProxy := newHTTPProxy(func(h *networkingv1alpha.HTTPProxy) {
-		h.Spec.Rules[0].Backends[0].Endpoint = "http://192.0.2.10"
+		h.Spec.Rules[0].Backends[0].Endpoint = "http://8.8.4.4"
 	})
 
 	existingSlice := &discoveryv1.EndpointSlice{

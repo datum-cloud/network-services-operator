@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
@@ -46,6 +47,7 @@ func newMissingBackendRig(t *testing.T, routes ...*gatewayv1.HTTPRoute) *missing
 	require.NoError(t, gatewayv1.Install(testScheme))
 	require.NoError(t, discoveryv1.AddToScheme(testScheme))
 	require.NoError(t, envoygatewayv1alpha1.AddToScheme(testScheme))
+	require.NoError(t, networkingv1alpha.AddToScheme(testScheme))
 
 	testConfig := config.NetworkServicesOperator{Gateway: config.GatewayConfig{
 		DownstreamGatewayClassName:            "test-suite",
@@ -157,7 +159,7 @@ func backendSlice(name string) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta:  metav1.ObjectMeta{Namespace: "test", Name: name},
 		AddressType: discoveryv1.AddressTypeIPv4,
-		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"192.0.2.10"}}},
+		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"8.8.8.8"}}},
 		Ports: []discoveryv1.EndpointPort{
 			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(8080))},
 		},

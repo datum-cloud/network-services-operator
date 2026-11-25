@@ -142,7 +142,7 @@ func TestHTTPProxyCRDBackendExclusivity(t *testing.T) {
 
 	t.Run("endpoint with backend tls stays valid", func(t *testing.T) {
 		proxy := backendProxy("backend-endpoint-tls", networkingv1alpha.HTTPProxyRuleBackend{
-			Endpoint: "https://203.0.113.10",
+			Endpoint: "https://8.8.4.4",
 			TLS:      &networkingv1alpha.HTTPProxyBackendTLS{Hostname: ptr.To("origin.example.com")},
 		})
 		require.NoError(t, create(t, proxy))

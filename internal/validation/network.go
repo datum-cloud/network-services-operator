@@ -2,9 +2,12 @@ package validation
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 	"net/url"
+	"strconv"
+	"strings"
 
+	"golang.org/x/net/publicsuffix"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
@@ -14,42 +17,173 @@ const (
 	schemeHTTPS = "https"
 )
 
-// validateExternalHost validates that a host (IP literal or DNS name) used as an
-// egress target by the shared data plane is not an internal or link-local
-// address that could be abused for SSRF against cluster-local or cloud-metadata
-// services (e.g. 169.254.169.254).
-//
-// The rules intentionally mirror those already enforced for HTTPProxy backends
-// (see validateHTTPProxyRuleBackend): IP literals must not be unspecified,
-// loopback, or link-local; DNS names must be fully qualified, which rejects
-// single-label internal names such as "localhost", "kubernetes", or "metadata".
-// RFC1918 / unique-local ranges are intentionally NOT blocked here, to stay
-// consistent with the HTTPProxy rules; egress allowlisting is tracked
-// separately.
-func validateExternalHost(fldPath *field.Path, host string) field.ErrorList {
-	allErrs := field.ErrorList{}
+type internalRange struct {
+	prefix netip.Prefix
+	name   string
+}
 
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsUnspecified() {
-			allErrs = append(allErrs, field.Invalid(fldPath, host, fmt.Sprintf("may not be unspecified (%v)", host)))
-		}
-		if ip.IsLoopback() {
-			allErrs = append(allErrs, field.Invalid(fldPath, host, "may not be in the loopback range (127.0.0.0/8, ::1/128)"))
-		}
-		if ip.IsLinkLocalUnicast() {
-			allErrs = append(allErrs, field.Invalid(fldPath, host, "may not be in the link-local range (169.254.0.0/16, fe80::/10)"))
-		}
-		if ip.IsLinkLocalMulticast() {
-			allErrs = append(allErrs, field.Invalid(fldPath, host, "may not be in the link-local multicast range (224.0.0.0/24, ff02::/10)"))
-		}
-		return allErrs
+var internalRanges = []internalRange{
+	{netip.MustParsePrefix("0.0.0.0/8"), "unspecified"},
+	{netip.MustParsePrefix("10.0.0.0/8"), "private"},
+	{netip.MustParsePrefix("100.64.0.0/10"), "carrier-grade NAT"},
+	{netip.MustParsePrefix("127.0.0.0/8"), "loopback"},
+	{netip.MustParsePrefix("169.254.0.0/16"), "link-local"},
+	{netip.MustParsePrefix("172.16.0.0/12"), "private"},
+	{netip.MustParsePrefix("192.0.0.0/24"), "IETF protocol assignments"},
+	{netip.MustParsePrefix("192.0.2.0/24"), "documentation"},
+	{netip.MustParsePrefix("192.168.0.0/16"), "private"},
+	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking"},
+	{netip.MustParsePrefix("198.51.100.0/24"), "documentation"},
+	{netip.MustParsePrefix("203.0.113.0/24"), "documentation"},
+	{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
+	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
+	{netip.MustParsePrefix("::/128"), "unspecified"},
+	{netip.MustParsePrefix("::1/128"), "loopback"},
+	{netip.MustParsePrefix("::/96"), "IPv4-compatible"},
+	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64"},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64"},
+	{netip.MustParsePrefix("2001::/32"), "Teredo"},
+	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
+	{netip.MustParsePrefix("2002::/16"), "6to4"},
+	{netip.MustParsePrefix("fc00::/7"), "unique local"},
+	{netip.MustParsePrefix("fe80::/10"), "link-local"},
+	{netip.MustParsePrefix("fec0::/10"), "site-local"},
+	{netip.MustParsePrefix("ff00::/8"), "multicast"},
+}
+
+var internalDomainSuffixes = []string{
+	"cluster.local",
+	"svc",
+	"pod",
+	"local",
+	"localhost",
+	"internal",
+	"home.arpa",
+}
+
+func validateExternalHost(fldPath *field.Path, host string, permittedSuffixes ...string) field.ErrorList {
+	name := strings.TrimSuffix(host, ".")
+
+	if addr, err := netip.ParseAddr(name); err == nil {
+		return validateExternalAddr(fldPath, host, addr)
 	}
 
-	// Not an IP literal: require a fully-qualified domain name so single-label
-	// internal service names cannot be used to reach cluster-local services.
-	allErrs = append(allErrs, validation.IsFullyQualifiedDomainName(fldPath, host)...)
+	if addr, ok := parseLegacyIPv4(name); ok {
+		return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
+			"is the IPv4 address %s in a non-canonical spelling; write addresses as four decimal octets", addr))}
+	}
 
-	return allErrs
+	if errs := validation.IsFullyQualifiedDomainName(fldPath, host); len(errs) > 0 {
+		return errs
+	}
+
+	name = strings.ToLower(name)
+	for _, suffix := range permittedSuffixes {
+		if hasDomainSuffix(name, strings.ToLower(strings.Trim(suffix, "."))) {
+			return nil
+		}
+	}
+
+	for _, suffix := range internalDomainSuffixes {
+		if hasDomainSuffix(name, suffix) {
+			return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
+				"is under %q, which resolves only inside a cluster or private network; use a public DNS name", suffix))}
+		}
+	}
+
+	tld := name[strings.LastIndex(name, ".")+1:]
+	if _, icann := publicsuffix.PublicSuffix(tld); !icann {
+		return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
+			"ends in %q, which is not a public top-level domain, so the resolver search path can expand it to a cluster-internal name; use a public DNS name", tld))}
+	}
+
+	return nil
+}
+
+func validateExternalAddr(fldPath *field.Path, host string, addr netip.Addr) field.ErrorList {
+	if addr.Zone() != "" {
+		return field.ErrorList{field.Invalid(fldPath, host, "may not carry an IPv6 zone")}
+	}
+
+	if addr.Is4In6() {
+		if r, ok := internalRangeOf(addr.Unmap()); ok {
+			return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
+				"is an IPv4-mapped form of %s, which is in the %s range %s; tenant upstreams must be publicly routable", addr.Unmap(), r.name, r.prefix))}
+		}
+		return nil
+	}
+
+	if r, ok := internalRangeOf(addr); ok {
+		return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
+			"is in the %s range %s; tenant upstreams must be publicly routable", r.name, r.prefix))}
+	}
+
+	return nil
+}
+
+func internalRangeOf(addr netip.Addr) (internalRange, bool) {
+	for _, r := range internalRanges {
+		if r.prefix.Contains(addr) {
+			return r, true
+		}
+	}
+	return internalRange{}, false
+}
+
+func hasDomainSuffix(name, suffix string) bool {
+	return name == suffix || strings.HasSuffix(name, "."+suffix)
+}
+
+func parseLegacyIPv4(name string) (netip.Addr, bool) {
+	parts := strings.Split(name, ".")
+	if len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+
+	values := make([]uint64, len(parts))
+	for i, part := range parts {
+		v, ok := parseLegacyIPv4Part(part)
+		if !ok {
+			return netip.Addr{}, false
+		}
+		values[i] = v
+	}
+
+	last := len(values) - 1
+	for _, v := range values[:last] {
+		if v > 0xff {
+			return netip.Addr{}, false
+		}
+	}
+	if values[last] >= 1<<(8*(4-last)) {
+		return netip.Addr{}, false
+	}
+
+	var ip uint64
+	for i, v := range values[:last] {
+		ip |= v << (8 * (3 - i))
+	}
+	ip |= values[last]
+
+	return netip.AddrFrom4([4]byte{byte(ip >> 24), byte(ip >> 16), byte(ip >> 8), byte(ip)}), true
+}
+
+func parseLegacyIPv4Part(part string) (uint64, bool) {
+	if part == "" {
+		return 0, false
+	}
+	digits, base := part, 10
+	switch {
+	case len(part) > 2 && (part[:2] == "0x" || part[:2] == "0X"):
+		digits, base = part[2:], 16
+	case len(part) > 1 && part[0] == '0':
+		digits, base = part[1:], 8
+	}
+	v, err := strconv.ParseUint(digits, base, 32)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // validateExternalHTTPSURL validates a free-form URL string that the shared data

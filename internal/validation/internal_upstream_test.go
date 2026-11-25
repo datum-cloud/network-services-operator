@@ -31,8 +31,8 @@ func TestTenantUpstreamsRefuseInternalHosts(t *testing.T) {
 		"openfga.openfga.svc.cluster.local",
 	}
 	allowed := []string{
-		"203.0.113.10",
-		"2001:db8::10",
+		"8.8.4.4",
+		"2606:4700:4700::1001",
 		"origin.example.com",
 	}
 

@@ -72,7 +72,7 @@ func TestHTTPProxyCRDHostnameConstraints(t *testing.T) {
 
 	t.Run("tls.hostname is not constrained by the schema", func(t *testing.T) {
 		proxy := hostnameProxy("schema-tls-hostname", func(p *networkingv1alpha.HTTPProxy) {
-			p.Spec.Rules[0].Backends[0].Endpoint = "https://198.51.100.10"
+			p.Spec.Rules[0].Backends[0].Endpoint = "https://1.0.0.10"
 			p.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
 				Hostname: ptr.To("not a hostname"),
 			}

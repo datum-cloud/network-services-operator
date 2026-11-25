@@ -453,7 +453,7 @@ func TestValidateHTTPProxy(t *testing.T) {
 						{
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
-									Endpoint: "https://198.51.100.1",
+									Endpoint: "https://1.0.0.1",
 								},
 							},
 						},
@@ -471,7 +471,7 @@ func TestValidateHTTPProxy(t *testing.T) {
 						{
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
-									Endpoint: "https://198.51.100.1",
+									Endpoint: "https://1.0.0.1",
 									TLS: &networkingv1alpha.HTTPProxyBackendTLS{
 										Hostname: ptr.To("api.example.com"),
 									},
@@ -506,7 +506,7 @@ func TestValidateHTTPProxy(t *testing.T) {
 						{
 							Backends: []networkingv1alpha.HTTPProxyRuleBackend{
 								{
-									Endpoint: "http://198.51.100.1",
+									Endpoint: "http://1.0.0.1",
 								},
 							},
 						},
@@ -903,7 +903,7 @@ func withEndpoint(endpoint string) func(*networkingv1alpha.HTTPProxy) {
 
 func withTLSHostname(hostname string) func(*networkingv1alpha.HTTPProxy) {
 	return func(proxy *networkingv1alpha.HTTPProxy) {
-		proxy.Spec.Rules[0].Backends[0].Endpoint = "https://198.51.100.1"
+		proxy.Spec.Rules[0].Backends[0].Endpoint = "https://1.0.0.1"
 		proxy.Spec.Rules[0].Backends[0].TLS = &networkingv1alpha.HTTPProxyBackendTLS{
 			Hostname: ptr.To(hostname),
 		}

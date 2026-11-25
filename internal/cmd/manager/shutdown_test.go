@@ -122,11 +122,15 @@ func goCallsTo(file *ast.File, method string) []*ast.CallExpr {
 	return calls
 }
 
-// callName returns "pkg.Func" for a call to a selector, or "".
+// callName returns "pkg.Func" for a call to a selector, "Func" for a call to a
+// function of this package, or "".
 func callName(expr ast.Expr) string {
 	call, ok := expr.(*ast.CallExpr)
 	if !ok {
 		return ""
+	}
+	if ident, ok := call.Fun.(*ast.Ident); ok {
+		return ident.Name
 	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {

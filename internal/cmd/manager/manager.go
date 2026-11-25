@@ -664,9 +664,9 @@ func newClusterShardingCoordinator(
 	leasePrefix string,
 	peerWeight uint,
 ) (*sharded.Coordinator, error) {
-	uncachedClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	uncachedClient, err := newClusterShardingCoordinatorClient(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("unable to create the coordinator's client: %w", err)
+		return nil, err
 	}
 
 	options := []sharded.Option{
@@ -678,6 +678,14 @@ func newClusterShardingCoordinator(
 	}
 
 	return sharded.New(uncachedClient, ctrl.Log.WithName("cluster-sharding-coordinator"), options...), nil
+}
+
+func newClusterShardingCoordinatorClient(cfg *rest.Config) (client.Client, error) {
+	uncachedClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("unable to create the coordinator's client: %w", err)
+	}
+	return uncachedClient, nil
 }
 
 func newProjectIdentityResolver(serverConfig config.NetworkServicesOperator) (*controller.APIProjectIdentityResolver, error) {

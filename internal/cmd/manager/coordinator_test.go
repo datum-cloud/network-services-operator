@@ -22,24 +22,28 @@ func TestCoordinatorReadsLeasesFromTheAPIServer(t *testing.T) {
 	require.NoError(t, err)
 
 	var coordinators []*ast.CallExpr
-	var uncached map[string]bool
+	var coordinatorClients, uncached map[string]bool
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
+		if fn.Name.Name == "newClusterShardingCoordinatorClient" {
+			uncached = namesAssignedFrom(fn.Body, "client.New")
+		}
 		calls := callsTo(fn.Body, "sharded.New")
 		if len(calls) > 0 {
 			coordinators = append(coordinators, calls...)
-			uncached = namesAssignedFrom(fn.Body, "client.New")
+			coordinatorClients = namesAssignedFrom(fn.Body, "newClusterShardingCoordinatorClient")
 		}
 	}
 
 	require.Len(t, coordinators, 1, "manager.go must build the cluster sharding coordinator once")
 	require.NotEmpty(t, coordinators[0].Args, "sharded.New takes the coordinator's client first")
 	arg := identName(coordinators[0].Args[0])
-	require.True(t, uncached[arg],
-		"the coordinator's client must come from client.New in the same function, not from a cluster's cached client")
+	require.True(t, coordinatorClients[arg],
+		"the coordinator's client must come from newClusterShardingCoordinatorClient in the same function, not from a cluster's cached client")
+	require.NotEmpty(t, uncached, "newClusterShardingCoordinatorClient must build its client with client.New")
 }
 
 // callsTo returns each call to "pkg.Func" under node.

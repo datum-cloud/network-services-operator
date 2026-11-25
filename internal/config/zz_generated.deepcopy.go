@@ -464,6 +464,11 @@ func (in *GatewayConfig) DeepCopyInto(out *GatewayConfig) {
 			(*out)[key] = outVal
 		}
 	}
+	if in.PermittedInternalUpstreamHostSuffixes != nil {
+		in, out := &in.PermittedInternalUpstreamHostSuffixes, &out.PermittedInternalUpstreamHostSuffixes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ClusterIssuerMap != nil {
 		in, out := &in.ClusterIssuerMap, &out.ClusterIssuerMap
 		*out = make(map[string]string, len(*in))

@@ -51,6 +51,8 @@ type PolicyIndex struct {
 	// single-cluster dev with no cluster name configured).
 	ProjectNames map[string]string
 
+	TenantNamespaces map[string]struct{}
+
 	// TPPs maps downstream replica namespace names to the list of
 	// TrafficProtectionPolicies in that namespace, sorted by creation
 	// timestamp then name to match NSO reconciler precedence order. Replica

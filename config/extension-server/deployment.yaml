@@ -59,6 +59,7 @@ spec:
             - --tls-client-ca=$(TLS_CLIENT_CA)
             - --server-config=$(SERVER_CONFIG)
             - --enable-programmed-set=$(ENABLE_PROGRAMMED_SET)
+            - --upstream-address-guard=$(UPSTREAM_ADDRESS_GUARD)
           env:
             - name: GRPC_ADDR
               value: ":5005"
@@ -78,6 +79,8 @@ spec:
             # to serve the read-only /debug/programmed-set endpoint the parity
             # test reads.
             - name: ENABLE_PROGRAMMED_SET
+              value: "false"
+            - name: UPSTREAM_ADDRESS_GUARD
               value: "false"
           ports:
             - name: grpc

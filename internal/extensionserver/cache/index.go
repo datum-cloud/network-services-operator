@@ -33,13 +33,14 @@ import (
 // they are prepended to every policy's per-rule directive list.
 func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string) (*PolicyIndex, error) {
 	idx := &PolicyIndex{
-		DStoUS:         make(map[string]string),
-		ProjectNames:   make(map[string]string),
-		TPPs:           make(map[string][]TPPInfo),
-		HTTPProxyRules: make(map[HTTPProxyKey][]string),
-		Connectors:     make(map[ConnectorKey]ConnectorInfo),
-		VPCPods:        make(map[VPCPodKey]VPCPodInfo),
-		VPCPodBackends: make(map[VPCPodBackendKey]VPCPodInfo),
+		DStoUS:           make(map[string]string),
+		ProjectNames:     make(map[string]string),
+		TenantNamespaces: make(map[string]struct{}),
+		TPPs:             make(map[string][]TPPInfo),
+		HTTPProxyRules:   make(map[HTTPProxyKey][]string),
+		Connectors:       make(map[ConnectorKey]ConnectorInfo),
+		VPCPods:          make(map[VPCPodKey]VPCPodInfo),
+		VPCPodBackends:   make(map[VPCPodBackendKey]VPCPodInfo),
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -68,6 +69,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 			// dsNS value in EG VH filter_metadata) and resolve to the true
 			// upstream namespace name from the label — no UID arithmetic needed.
 			idx.DStoUS[ns.Name] = upstreamName
+			idx.TenantNamespaces[ns.Name] = struct{}{}
 		} else {
 			// Single-cluster (no namespace mapping in play): EG and the Gateway
 			// resource live in the same cluster. EG puts the plain namespace name

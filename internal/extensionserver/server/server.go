@@ -43,6 +43,8 @@ type ServerConfig struct {
 	// off in production and enabled only in the test environment. When off, the
 	// build does no extra work and the endpoint is not served.
 	EnableProgrammedSet bool
+
+	UpstreamAddressGuard bool
 }
 
 // Server implements pb.EnvoyGatewayExtensionServer for the NSO production
@@ -317,6 +319,20 @@ func (s *Server) PostTranslateModify(
 	}
 	extmetrics.VPCPodSocketBindTotal.Add(float64(vpcPodCount))
 
+	var guardedCount int
+	if s.cfg.UpstreamAddressGuard {
+		guardedCount, err = mutate.ApplyUpstreamAddressGuard(clusters, idx)
+		if err != nil {
+			s.log.Error("apply upstream address guard", "err", err)
+			mspan.RecordError(err)
+			mspan.End()
+			extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
+			hspan.RecordError(err)
+			outcome = outcomeError
+			return nil, err
+		}
+	}
+
 	mspan.End()
 
 	extmetrics.PhaseDuration.WithLabelValues("mutate").Observe(time.Since(mutStart).Seconds())
@@ -400,6 +416,7 @@ func (s *Server) PostTranslateModify(
 		"vhosts_connector_applied", vhCount,
 		"connector_offline_routes", offlineRtCount,
 		"clusters_vpcpod_bound", vpcPodCount,
+		"clusters_upstream_guarded", guardedCount,
 	)
 
 	// Envoy Gateway gave up on this call (a deadline or a cancel), so it will

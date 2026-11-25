@@ -298,7 +298,7 @@ func (s *Server) PostTranslateModify(
 	misdirectedSpan.End()
 
 	_, absoluteSpan := tr.Start(mctx, "upstream.absolute_names")
-	absoluteCount := mutate.ResolveUpstreamNamesAbsolute(clusters)
+	absoluteCount := mutate.ResolveUpstreamNamesAbsolute(clusters, idx)
 	absoluteSpan.SetAttributes(attribute.Int("clusters.absolute_names", absoluteCount))
 	absoluteSpan.End()
 

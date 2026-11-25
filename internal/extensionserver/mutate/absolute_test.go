@@ -7,7 +7,15 @@ import (
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	"github.com/stretchr/testify/assert"
+
+	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
+
+func tenantIndex() *extcache.PolicyIndex {
+	return &extcache.PolicyIndex{
+		TenantNamespaces: map[string]struct{}{testDSNS: {}},
+	}
+}
 
 func dnsCluster(name string, kind clusterv3.Cluster_DiscoveryType, hosts ...string) *clusterv3.Cluster {
 	lbEndpoints := make([]*endpointv3.LbEndpoint, 0, len(hosts))
@@ -62,7 +70,7 @@ func TestResolveUpstreamNamesAbsolute(t *testing.T) {
 		},
 		{
 			name:        "logical dns name becomes absolute",
-			cluster:     dnsCluster("securitypolicy/ns/jwks/0", clusterv3.Cluster_LOGICAL_DNS, "issuer.example.com"),
+			cluster:     dnsCluster("securitypolicy/"+testDSNS+"/jwt/jwks/0", clusterv3.Cluster_LOGICAL_DNS, "issuer.example.com"),
 			wantHosts:   []string{"issuer.example.com."},
 			wantMutated: 1,
 		},
@@ -85,6 +93,24 @@ func TestResolveUpstreamNamesAbsolute(t *testing.T) {
 			wantMutated: 0,
 		},
 		{
+			name:        "operator namespace cluster is unchanged",
+			cluster:     dnsCluster("httproute/envoy-gateway-system/proxy/rule/0", clusterv3.Cluster_STRICT_DNS, "origin.example.com"),
+			wantHosts:   []string{"origin.example.com"},
+			wantMutated: 0,
+		},
+		{
+			name:        "cluster that is not derived from a tenant object is unchanged",
+			cluster:     dnsCluster("xds_cluster", clusterv3.Cluster_STRICT_DNS, "origin.example.com"),
+			wantHosts:   []string{"origin.example.com"},
+			wantMutated: 0,
+		},
+		{
+			name:        "tenant namespace in the wrong name position is unchanged",
+			cluster:     dnsCluster("ratelimit/"+testDSNS+"/x", clusterv3.Cluster_STRICT_DNS, "origin.example.com"),
+			wantHosts:   []string{"origin.example.com"},
+			wantMutated: 0,
+		},
+		{
 			name:        "static cluster is unchanged",
 			cluster:     dnsCluster(testClusterName(), clusterv3.Cluster_STATIC, "origin.example.com"),
 			wantHosts:   []string{"origin.example.com"},
@@ -99,7 +125,7 @@ func TestResolveUpstreamNamesAbsolute(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mutated := ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{tt.cluster})
+			mutated := ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{tt.cluster}, tenantIndex())
 			assert.Equal(t, tt.wantMutated, mutated)
 			assert.Equal(t, tt.wantHosts, clusterHosts(tt.cluster))
 		})
@@ -108,7 +134,22 @@ func TestResolveUpstreamNamesAbsolute(t *testing.T) {
 
 func TestResolveUpstreamNamesAbsoluteIsIdempotent(t *testing.T) {
 	cl := dnsCluster(testClusterName(), clusterv3.Cluster_STRICT_DNS, "origin.example.com")
-	assert.Equal(t, 1, ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}))
-	assert.Equal(t, 0, ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}))
+	assert.Equal(t, 1, ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}, tenantIndex()))
+	assert.Equal(t, 0, ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}, tenantIndex()))
 	assert.Equal(t, []string{"origin.example.com."}, clusterHosts(cl))
+}
+
+func TestResolveUpstreamNamesAbsoluteSetsHostname(t *testing.T) {
+	cl := dnsCluster(testClusterName(), clusterv3.Cluster_STRICT_DNS, "origin.example.com", "kept.example.com")
+	cl.LoadAssignment.Endpoints[0].LbEndpoints[1].GetEndpoint().Hostname = "set.example.com"
+	ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}, tenantIndex())
+	lb := cl.LoadAssignment.Endpoints[0].LbEndpoints
+	assert.Equal(t, "origin.example.com", lb[0].GetEndpoint().GetHostname())
+	assert.Equal(t, "set.example.com", lb[1].GetEndpoint().GetHostname())
+}
+
+func TestResolveUpstreamNamesAbsoluteWithoutIndexChangesNothing(t *testing.T) {
+	cl := dnsCluster(testClusterName(), clusterv3.Cluster_STRICT_DNS, "origin.example.com")
+	assert.Equal(t, 0, ResolveUpstreamNamesAbsolute([]*clusterv3.Cluster{cl}, nil))
+	assert.Equal(t, []string{"origin.example.com"}, clusterHosts(cl))
 }

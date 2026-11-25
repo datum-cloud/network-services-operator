@@ -43,6 +43,11 @@ type PolicyIndex struct {
 	// in this index is keyed by the value.
 	DStoUS map[string]string
 
+	// TenantNamespaces is the set of downstream namespaces the operator
+	// created for a tenant, marked by UpstreamOwnerNamespaceLabel. Namespaces
+	// that exist for other reasons never carry the label.
+	TenantNamespaces map[string]struct{}
+
 	// ProjectNames maps downstream namespace names to the project name for that
 	// namespace, read from meta.datumapis.com/upstream-cluster-name on replica
 	// namespaces (value format: "cluster-<projectName>"). That label is the

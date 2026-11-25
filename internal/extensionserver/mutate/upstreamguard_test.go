@@ -186,7 +186,7 @@ func TestApplyUpstreamAddressGuard_Idempotent(t *testing.T) {
 	assert.Equal(t, []string{UpstreamAddressGuardFilterName, upstreamCodecFilterName}, guardFilterNames(t, cl))
 }
 
-func deniedPrefixes(t *testing.T) []netip.Prefix {
+func guardPolicy(t *testing.T) *rbacv3.Policy {
 	t.Helper()
 	cl := guardDNSCluster(testClusterName())
 	_, err := ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
@@ -201,29 +201,47 @@ func deniedPrefixes(t *testing.T) []netip.Prefix {
 	policy := rbac.GetRules().GetPolicies()[upstreamAddressGuardPolicyName]
 	require.NotNil(t, policy)
 	require.True(t, policy.GetPrincipals()[0].GetAny())
-
-	rules := policy.GetPermissions()[0].GetOrRules().GetRules()
-	out := make([]netip.Prefix, 0, len(rules))
-	for _, p := range rules {
-		require.Equal(t, upstreamIPPortMatcherName, p.GetMatcher().GetName())
-		m := &upstreamipportv3.UpstreamIpPortMatcher{}
-		require.NoError(t, p.GetMatcher().GetTypedConfig().UnmarshalTo(m))
-		addr, err := netip.ParseAddr(m.GetUpstreamIp().GetAddressPrefix())
-		require.NoError(t, err)
-		out = append(out, netip.PrefixFrom(addr, int(m.GetUpstreamIp().GetPrefixLen().GetValue())))
-	}
-	return out
+	require.Len(t, policy.GetPermissions(), 1)
+	return policy
 }
 
-func TestApplyUpstreamAddressGuard_DeniedAddresses(t *testing.T) {
-	prefixes := deniedPrefixes(t)
-	denied := func(a netip.Addr) bool {
-		for _, p := range prefixes {
-			if p.Contains(a) {
+func permissionMatches(t *testing.T, p *rbacv3.Permission, a netip.Addr) bool {
+	t.Helper()
+	switch r := p.GetRule().(type) {
+	case *rbacv3.Permission_OrRules:
+		for _, sub := range r.OrRules.GetRules() {
+			if permissionMatches(t, sub, a) {
 				return true
 			}
 		}
 		return false
+	case *rbacv3.Permission_AndRules:
+		for _, sub := range r.AndRules.GetRules() {
+			if !permissionMatches(t, sub, a) {
+				return false
+			}
+		}
+		return true
+	case *rbacv3.Permission_NotRule:
+		return !permissionMatches(t, r.NotRule, a)
+	case *rbacv3.Permission_Matcher:
+		require.Equal(t, upstreamIPPortMatcherName, r.Matcher.GetName())
+		m := &upstreamipportv3.UpstreamIpPortMatcher{}
+		require.NoError(t, r.Matcher.GetTypedConfig().UnmarshalTo(m))
+		addr, err := netip.ParseAddr(m.GetUpstreamIp().GetAddressPrefix())
+		require.NoError(t, err)
+		prefix := netip.PrefixFrom(addr, int(m.GetUpstreamIp().GetPrefixLen().GetValue()))
+		require.True(t, prefix.IsValid())
+		return prefix.Contains(a)
+	}
+	t.Fatalf("unexpected permission %T", p.GetRule())
+	return false
+}
+
+func TestApplyUpstreamAddressGuard_DeniedAddresses(t *testing.T) {
+	policy := guardPolicy(t)
+	denied := func(a netip.Addr) bool {
+		return permissionMatches(t, policy.GetPermissions()[0], a)
 	}
 
 	tests := []struct {
@@ -248,7 +266,26 @@ func TestApplyUpstreamAddressGuard_DeniedAddresses(t *testing.T) {
 		{"::ffff:127.0.0.1", true},
 		{"::ffff:8.8.8.8", true},
 		{"64:ff9b::7f00:1", true},
+		{"64:ff9b::a00:1", true},
+		{"64:ff9b::ac10:1", true},
+		{"64:ff9b::c0a8:101", true},
+		{"64:ff9b::a9fe:a9fe", true},
+		{"64:ff9b::6440:1", true},
+		{"64:ff9b::1", true},
+		{"64:ff9b::e000:1", true},
+		{"64:ff9b:1::7f00:1", true},
 		{"64:ff9b:1::a00:1", true},
+		{"64:ff9b:1::a9fe:a9fe", true},
+		{"64:ff9b:1::6440:1", true},
+		{"64:ff9b:1:1::808:808", true},
+		{"64:ff9b:1:ffff::1", true},
+		{"::ffff:10.0.0.1", true},
+		{"::ffff:169.254.169.254", true},
+		{"::ffff:100.64.0.1", true},
+		{"64:ff9b::808:808", false},
+		{"64:ff9b::4321:a4e1", false},
+		{"64:ff9b:1::808:808", false},
+		{"64:ff9b::ac20:1", false},
 		{"2002:7f00:1::", true},
 		{"2001:0:4136:e378:8000:63bf:80ff:fffe", true},
 		{"fc00::1", true},
@@ -283,9 +320,24 @@ func TestApplyUpstreamAddressGuard_ConfigPassesEnvoyValidation(t *testing.T) {
 	rbac := &rbacfilterv3.RBAC{}
 	require.NoError(t, opts.GetHttpFilters()[0].GetTypedConfig().UnmarshalTo(rbac))
 	require.NoError(t, rbac.ValidateAll())
-	for _, p := range rbac.GetRules().GetPolicies()[upstreamAddressGuardPolicyName].GetPermissions()[0].GetOrRules().GetRules() {
-		m := &upstreamipportv3.UpstreamIpPortMatcher{}
-		require.NoError(t, p.GetMatcher().GetTypedConfig().UnmarshalTo(m))
-		require.NoError(t, m.ValidateAll())
+	var validate func(p *rbacv3.Permission)
+	validate = func(p *rbacv3.Permission) {
+		switch r := p.GetRule().(type) {
+		case *rbacv3.Permission_OrRules:
+			for _, sub := range r.OrRules.GetRules() {
+				validate(sub)
+			}
+		case *rbacv3.Permission_AndRules:
+			for _, sub := range r.AndRules.GetRules() {
+				validate(sub)
+			}
+		case *rbacv3.Permission_NotRule:
+			validate(r.NotRule)
+		default:
+			m := &upstreamipportv3.UpstreamIpPortMatcher{}
+			require.NoError(t, p.GetMatcher().GetTypedConfig().UnmarshalTo(m))
+			require.NoError(t, m.ValidateAll())
+		}
 	}
+	validate(rbac.GetRules().GetPolicies()[upstreamAddressGuardPolicyName].GetPermissions()[0])
 }

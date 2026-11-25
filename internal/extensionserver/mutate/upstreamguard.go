@@ -35,7 +35,7 @@ var nameResolvingClusterTypes = map[string]bool{
 	"envoy.clusters.dynamic_forward_proxy": true,
 }
 
-var nonPublicUpstreamPrefixes = []netip.Prefix{
+var nonPublicIPv4Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
@@ -46,10 +46,11 @@ var nonPublicUpstreamPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("192.168.0.0/16"),
 	netip.MustParsePrefix("198.18.0.0/15"),
 	netip.MustParsePrefix("224.0.0.0/3"),
+}
+
+var nonPublicIPv6Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("::/96"),
 	netip.MustParsePrefix("::ffff:0:0/96"),
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("100::/64"),
 	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2002::/16"),
@@ -57,6 +58,50 @@ var nonPublicUpstreamPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("fe80::/10"),
 	netip.MustParsePrefix("fec0::/10"),
 	netip.MustParsePrefix("ff00::/8"),
+}
+
+var nat64Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/96"),
+}
+
+var localUseNAT64Range = netip.MustParsePrefix("64:ff9b:1::/48")
+
+func nonPublicUpstreamPrefixes() []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(nonPublicIPv4Prefixes)*(1+len(nat64Prefixes))+len(nonPublicIPv6Prefixes))
+	out = append(out, nonPublicIPv4Prefixes...)
+	out = append(out, nonPublicIPv6Prefixes...)
+	for _, n := range nat64Prefixes {
+		for _, p := range nonPublicIPv4Prefixes {
+			out = append(out, embedIPv4(n, p))
+		}
+	}
+	return out
+}
+
+func embedIPv4(nat64 netip.Prefix, v4 netip.Prefix) netip.Prefix {
+	b := nat64.Addr().As16()
+	a := v4.Addr().As4()
+	copy(b[12:], a[:])
+	return netip.PrefixFrom(netip.AddrFrom16(b), 96+v4.Bits())
+}
+
+func cidrPermission(p netip.Prefix) (*rbacv3.Permission, error) {
+	matcher, err := anypb.New(&upstreamipportv3.UpstreamIpPortMatcher{
+		UpstreamIp: &corev3.CidrRange{
+			AddressPrefix: p.Addr().String(),
+			PrefixLen:     wrapperspb.UInt32(uint32(p.Bits())),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rbacv3.Permission{
+		Rule: &rbacv3.Permission_Matcher{Matcher: &corev3.TypedExtensionConfig{
+			Name:        upstreamIPPortMatcherName,
+			TypedConfig: matcher,
+		}},
+	}, nil
 }
 
 func ApplyUpstreamAddressGuard(clusters []*clusterv3.Cluster, idx *extcache.PolicyIndex) (int, error) {
@@ -139,24 +184,29 @@ func parseTenantRouteClusterName(name string) (ns, route string, rule, backend i
 }
 
 func upstreamAddressGuardFilter() (*hcmv3.HttpFilter, error) {
-	permissions := make([]*rbacv3.Permission, 0, len(nonPublicUpstreamPrefixes))
-	for _, p := range nonPublicUpstreamPrefixes {
-		matcher, err := anypb.New(&upstreamipportv3.UpstreamIpPortMatcher{
-			UpstreamIp: &corev3.CidrRange{
-				AddressPrefix: p.Addr().String(),
-				PrefixLen:     wrapperspb.UInt32(uint32(p.Bits())),
-			},
-		})
+	prefixes := nonPublicUpstreamPrefixes()
+	permissions := make([]*rbacv3.Permission, 0, len(prefixes)+1)
+	for _, p := range prefixes {
+		perm, err := cidrPermission(p)
 		if err != nil {
 			return nil, err
 		}
-		permissions = append(permissions, &rbacv3.Permission{
-			Rule: &rbacv3.Permission_Matcher{Matcher: &corev3.TypedExtensionConfig{
-				Name:        upstreamIPPortMatcherName,
-				TypedConfig: matcher,
-			}},
-		})
+		permissions = append(permissions, perm)
 	}
+	localUse, err := cidrPermission(localUseNAT64Range)
+	if err != nil {
+		return nil, err
+	}
+	embedded, err := cidrPermission(nat64Prefixes[1])
+	if err != nil {
+		return nil, err
+	}
+	permissions = append(permissions, &rbacv3.Permission{
+		Rule: &rbacv3.Permission_AndRules{AndRules: &rbacv3.Permission_Set{Rules: []*rbacv3.Permission{
+			localUse,
+			{Rule: &rbacv3.Permission_NotRule{NotRule: embedded}},
+		}}},
+	})
 	cfg, err := anypb.New(&rbacfilterv3.RBAC{
 		Rules: &rbacv3.RBAC{
 			Action: rbacv3.RBAC_DENY,

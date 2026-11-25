@@ -102,8 +102,8 @@ func signInClusters() []*clusterv3.Cluster {
 		guardDNSCluster("unused_by_route_443"),
 		guardDNSCluster("securitypolicy/datum-downstream-gateway/sp/extauth/0"),
 		strict("xds_cluster"),
-		strict("ratelimit_cluster"),
-		strict("otel_metric_sink_0"),
+		guardDNSCluster("ratelimit_cluster"),
+		guardDNSCluster("otel_metric_sink_0"),
 		strict("accesslog_als_0"),
 	}
 }

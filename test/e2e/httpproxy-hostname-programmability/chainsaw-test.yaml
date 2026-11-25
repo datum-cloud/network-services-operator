@@ -133,7 +133,7 @@ spec:
                           type: PathPrefix
                           value: /
                     backends:
-                      - endpoint: https://198.51.100.10
+                      - endpoint: https://1.0.0.10
                         tls:
                           hostname: Coffee.E2E.Env.Datum.Net
         - assert:
@@ -163,7 +163,7 @@ spec:
                           type: PathPrefix
                           value: /
                     backends:
-                      - endpoint: https://198.51.100.10
+                      - endpoint: https://1.0.0.10
                         tls:
                           hostname: not a hostname
       catch:

@@ -73,13 +73,13 @@ func TestValidateBackend(t *testing.T) {
 				field.Invalid(field.NewPath("spec", "endpoints").Index(0).Child("ip", "address"), "", ""),
 			},
 		},
-		"ip endpoint - public IP (203.0.113.10) is allowed": {
+		"ip endpoint - public IP (8.8.4.4) is allowed": {
 			backend: &envoygatewayv1alpha1.Backend{
 				Spec: envoygatewayv1alpha1.BackendSpec{
 					Endpoints: []envoygatewayv1alpha1.BackendEndpoint{
 						{
 							IP: &envoygatewayv1alpha1.IPEndpoint{
-								Address: "203.0.113.10",
+								Address: "8.8.4.4",
 							},
 						},
 					},

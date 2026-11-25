@@ -323,6 +323,10 @@ func (s *Server) PostTranslateModify(
 	extmetrics.VPCPodSocketBindTotal.Add(float64(vpcPodCount))
 	for _, refusal := range vpcRefused {
 		extmetrics.VPCBindingRefusedTotal.WithLabelValues(refusal.Reason).Inc()
+		if refusal.Reason == extcache.VPCBindingRefusalUnresolved {
+			s.log.Info("left VPC backend cluster unbound", "cluster", refusal.Cluster, "reason", refusal.Reason)
+			continue
+		}
 		s.log.Warn("left VPC backend cluster unbound", "cluster", refusal.Cluster, "reason", refusal.Reason)
 	}
 

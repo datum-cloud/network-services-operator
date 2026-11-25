@@ -43,6 +43,8 @@ type PolicyIndex struct {
 	// in this index is keyed by the value.
 	DStoUS map[string]string
 
+	TenantNamespaces map[string]struct{}
+
 	// ProjectNames maps downstream namespace names to the project name for that
 	// namespace, read from meta.datumapis.com/upstream-cluster-name on replica
 	// namespaces (value format: "cluster-<projectName>"). That label is the

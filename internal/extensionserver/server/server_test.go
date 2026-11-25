@@ -13,10 +13,13 @@ import (
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	dnsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dns/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +33,8 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
+	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 	"go.datum.net/network-services-operator/internal/extensionserver/mutate"
 )
 
@@ -941,4 +946,218 @@ func TestPostTranslateModify_ReportsOnlyASuccessfulBuild(t *testing.T) {
 		_, ok := srv.reporter.take()
 		assert.False(t, ok, "a failed build must not be reported")
 	})
+}
+
+func mustAny(m proto.Message) *anypb.Any {
+	a, err := anypb.New(m)
+	if err != nil {
+		panic(err)
+	}
+	return a
+}
+
+func tlsDNSCluster(name, host string) *clusterv3.Cluster {
+	return &clusterv3.Cluster{
+		Name: name,
+		ClusterDiscoveryType: &clusterv3.Cluster_ClusterType{ClusterType: &clusterv3.Cluster_CustomClusterType{
+			Name:        "envoy.cluster.dns",
+			TypedConfig: mustAny(&dnsv3.DnsCluster{}),
+		}},
+		TransportSocket: &corev3.TransportSocket{Name: "envoy.transport_sockets.tls"},
+		LoadAssignment: &endpointv3.ClusterLoadAssignment{
+			ClusterName: name,
+			Endpoints: []*endpointv3.LocalityLbEndpoints{{
+				LbEndpoints: []*endpointv3.LbEndpoint{{
+					HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{SocketAddress: &corev3.SocketAddress{
+							Address:       host,
+							PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: 443},
+						}}},
+					}},
+				}},
+			}},
+		},
+	}
+}
+
+func TestPostTranslateModify_TenantUpstreamNamesResolveAbsolute(t *testing.T) {
+	scheme := testServerScheme(t)
+	tenantNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ns-tenant",
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: "default"},
+	}}
+	systemNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "envoy-gateway-system"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tenantNS, systemNS).Build()
+	srv := New(cl, testServerConfig(), discardLogger())
+
+	tenant := tlsDNSCluster("httproute/ns-tenant/proxy/rule/0", "origin.example")
+	jwks := tlsDNSCluster("securitypolicy/ns-tenant/jwt/jwks/0", "issuer.example")
+	system := tlsDNSCluster("httproute/envoy-gateway-system/proxy/rule/0", "origin.example")
+	ratelimit := tlsDNSCluster("ratelimit_cluster", "ratelimit.example")
+
+	resp, err := srv.PostTranslateModify(context.Background(), &pb.PostTranslateModifyRequest{
+		Clusters: []*clusterv3.Cluster{tenant, jwks, system, ratelimit},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetClusters(), 4)
+
+	endpoint := func(c *clusterv3.Cluster) *endpointv3.Endpoint {
+		return c.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint()
+	}
+	byName := map[string]*clusterv3.Cluster{}
+	for _, c := range resp.GetClusters() {
+		byName[c.GetName()] = c
+	}
+
+	got := endpoint(byName["httproute/ns-tenant/proxy/rule/0"])
+	assert.Equal(t, "origin.example.", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Equal(t, "origin.example", got.GetHostname())
+
+	got = endpoint(byName["securitypolicy/ns-tenant/jwt/jwks/0"])
+	assert.Equal(t, "issuer.example.", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Equal(t, "issuer.example", got.GetHostname())
+
+	got = endpoint(byName["httproute/envoy-gateway-system/proxy/rule/0"])
+	assert.Equal(t, "origin.example", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Empty(t, got.GetHostname())
+
+	got = endpoint(byName["ratelimit_cluster"])
+	assert.Equal(t, "ratelimit.example", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Empty(t, got.GetHostname())
+}
+
+func tenantNamespace(name string) *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   name,
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: "default"},
+	}}
+}
+
+func literalEndpoint(address string) *endpointv3.LbEndpoint {
+	return &endpointv3.LbEndpoint{
+		HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+			Address: &corev3.Address{Address: &corev3.Address_SocketAddress{SocketAddress: &corev3.SocketAddress{
+				Address:       address,
+				PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: 443},
+			}}},
+		}},
+	}
+}
+
+func TestPostTranslateModify_VPCClusterKeepsAddressesAndBindsDevice(t *testing.T) {
+	const (
+		dsNS      = "ns-vpc"
+		proxyName = "vpc-proxy"
+		tenantID  = "2wJqT7d-9xKp2Qm"
+		name      = "httproute/" + dsNS + "/" + proxyName + "/rule/0"
+	)
+	proxy := &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: dsNS},
+		Spec: networkingv1alpha.HTTPProxySpec{Rules: []networkingv1alpha.HTTPProxyRule{{
+			Backends: []networkingv1alpha.HTTPProxyRuleBackend{{
+				NetworkService: &networkingv1alpha.NetworkServiceBackendRef{Name: "svc", Port: "http"},
+			}},
+		}}},
+	}
+	members := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "members",
+			Namespace: dsNS,
+			Labels:    map[string]string{downstreamclient.UpstreamOwnerNameLabel: proxyName + "-0-0"},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"fd20:0:2::1:0:0"}}},
+	}
+	galactic := &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-a",
+			Namespace: dsNS,
+			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: tenantID},
+		},
+		AddressType: discoveryv1.AddressTypeIPv6,
+		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"fd20:0:2::1:0:0"}}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(testServerScheme(t)).
+		WithObjects(tenantNamespace(dsNS), proxy, members, galactic).Build()
+	srv := New(cl, testServerConfig(), discardLogger())
+
+	vpc := tlsDNSCluster(name, "origin.example")
+	vpc.LoadAssignment.Endpoints[0].LbEndpoints = []*endpointv3.LbEndpoint{
+		literalEndpoint("fd20:0:2::1:0:0"),
+		literalEndpoint("fd20:0:2::2:0:0"),
+		literalEndpoint("origin.example"),
+	}
+
+	resp, err := srv.PostTranslateModify(context.Background(), &pb.PostTranslateModifyRequest{
+		Clusters: []*clusterv3.Cluster{vpc},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetClusters(), 1)
+
+	got := resp.GetClusters()[0]
+	opts := got.GetUpstreamBindConfig().GetSocketOptions()
+	require.Len(t, opts, 1, "the VPC cluster must still be bound to its device")
+	assert.Equal(t, "G002wJqT7dV", string(opts[0].GetBufValue()))
+
+	lbs := got.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()
+	addrs := make([]string, 0, len(lbs))
+	for _, lb := range lbs {
+		addrs = append(addrs, lb.GetEndpoint().GetAddress().GetSocketAddress().GetAddress())
+	}
+	assert.Equal(t, []string{"fd20:0:2::1:0:0", "fd20:0:2::2:0:0", "origin.example."}, addrs)
+	assert.Empty(t, got.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint().GetHostname())
+}
+
+func TestPostTranslateModify_ConnectorClusterKeepsInternalAddress(t *testing.T) {
+	const (
+		dsNS          = "ns-conn"
+		proxyName     = "conn-proxy"
+		connectorName = "conn"
+		name          = "httproute/" + dsNS + "/" + proxyName + "/rule/0"
+	)
+	proxy := &networkingv1alpha.HTTPProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: dsNS},
+		Spec: networkingv1alpha.HTTPProxySpec{Rules: []networkingv1alpha.HTTPProxyRule{{
+			Backends: []networkingv1alpha.HTTPProxyRuleBackend{{
+				Endpoint:  "http://backend.example.com:9000",
+				Connector: &networkingv1alpha.ConnectorReference{Name: connectorName},
+			}},
+		}}},
+	}
+	connector := &networkingv1alpha1.Connector{
+		ObjectMeta: metav1.ObjectMeta{Name: connectorName, Namespace: dsNS},
+		Status: networkingv1alpha1.ConnectorStatus{
+			Conditions: []metav1.Condition{{
+				Type:               networkingv1alpha1.ConnectorConditionReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             "Ready",
+				LastTransitionTime: metav1.Now(),
+			}},
+			ConnectionDetails: &networkingv1alpha1.ConnectorConnectionDetails{
+				Type:      networkingv1alpha1.PublicKeyConnectorConnectionType,
+				PublicKey: &networkingv1alpha1.ConnectorConnectionDetailsPublicKey{Id: "node"},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(testServerScheme(t)).
+		WithObjects(tenantNamespace(dsNS), proxy).
+		WithStatusSubresource(connector).WithObjects(connector).Build()
+	srv := New(cl, testServerConfig(), discardLogger())
+
+	resp, err := srv.PostTranslateModify(context.Background(), &pb.PostTranslateModifyRequest{
+		Clusters: []*clusterv3.Cluster{tlsDNSCluster(name, "backend.example.com")},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetClusters(), 1)
+
+	got := resp.GetClusters()[0]
+	assert.Equal(t, clusterv3.Cluster_STATIC, got.GetType())
+	for _, locality := range got.GetLoadAssignment().GetEndpoints() {
+		for _, lb := range locality.GetLbEndpoints() {
+			ep := lb.GetEndpoint()
+			assert.Nil(t, ep.GetAddress().GetSocketAddress(), "connector endpoints use the internal listener")
+			assert.NotNil(t, ep.GetAddress().GetEnvoyInternalAddress())
+			assert.Empty(t, ep.GetHostname())
+		}
+	}
 }

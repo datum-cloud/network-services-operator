@@ -106,7 +106,8 @@ type fakeIPAM struct {
 	// failOn refuses the named IPClaim with the given error.
 	failOn map[string]error
 	// failReleaseOn refuses the release of the named IPClaim.
-	failReleaseOn map[string]error
+	failReleaseOn           map[string]error
+	failAllocationReleaseOn map[string]error
 
 	// noProjectNamespace stands in for a control plane never bootstrapped: the
 	// namespace the platform provisions with the project is absent, so writes
@@ -145,6 +146,8 @@ func newFakeIPAM(t *testing.T, classes ...*ipamv1alpha1.IPClass) *fakeIPAM {
 		failOn:           map[string]error{},
 		failReleaseOn:    map[string]error{},
 		prefixRanges:     map[string]string{},
+
+		failAllocationReleaseOn: map[string]error{},
 	}
 }
 
@@ -233,6 +236,10 @@ func (f *fakeIPAM) ClientForProject(project string) (client.Client, error) {
 			// the name it blocks; the fake client holds no object for it.
 			if allocation, ok := obj.(*ipamv1alpha1.IPAllocation); ok {
 				f.mu.Lock()
+				if refusal := f.failAllocationReleaseOn[allocation.Name]; refusal != nil {
+					f.mu.Unlock()
+					return refusal
+				}
 				_, held := f.orphans[allocation.Name]
 				delete(f.orphans, allocation.Name)
 				f.mu.Unlock()
@@ -403,6 +410,16 @@ func (f *fakeIPAM) refuse(name string, err error) {
 	f.failOn[name] = err
 }
 
+func (f *fakeIPAM) refuseAllocationRelease(name string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		delete(f.failAllocationReleaseOn, name)
+		return
+	}
+	f.failAllocationReleaseOn[name] = err
+}
+
 func (f *fakeIPAM) refuseRelease(name string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -563,7 +580,7 @@ func (s *scenario) reconcile(claim *networkingv1alpha.NetworkInterfaceClaim) {
 func (s *scenario) reconcileInterface(name string) {
 	s.t.Helper()
 	interfaces := &NetworkInterfaceReconciler{Location: s.reconciler.Location, IPAM: s.ipam, claims: s.reconciler}
-	require.NoError(s.t, interfaces.reconcileInterface(s.ctx, s.client,
+	require.NoError(s.t, interfaces.reconcileInterface(s.ctx, s.client, s.events,
 		client.ObjectKey{Namespace: s.namespace, Name: name}))
 }
 

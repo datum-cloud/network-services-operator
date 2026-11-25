@@ -27,9 +27,9 @@ const (
 	// keeps holding the addresses, so a later claim of the same name binds the
 	// same interface and the workload comes back on the same addresses. The
 	// addresses stay reserved, and billable, for as long as the interface
-	// exists. Deleting the interface releases its claim on them but does not
-	// return them to the pool today, so a retained address is reclaimed by an
-	// operator rather than automatically.
+	// exists. Deleting the interface returns them to the pool once IPAM accepts
+	// the release. While IPAM refuses it, the interface stays and reports an
+	// AllocationReleaseBlocked event naming the allocation.
 	NetworkInterfaceReclaimPolicyRetain NetworkInterfaceReclaimPolicy = "Retain"
 )
 

@@ -1,5 +1,9 @@
 import { ConfirmDeleteDialog } from './confirm-delete-dialog';
-import { CreateNetworkServiceDialog } from './create-network-service-dialog';
+import {
+  CreateNetworkServiceDialog,
+  EditNetworkServiceDialog,
+  editableWorkloadName,
+} from './create-network-service-dialog';
 import { SortableHeader } from './sortable-header';
 import { StatTile, StatTileGrid } from './stat-tiles';
 import { ServicesSkeleton } from './skeletons';
@@ -8,14 +12,17 @@ import { StatusBadge } from './status-badge';
 import { TableSearch } from './table-search';
 import {
   useDeleteNetworkService,
+  useNetworkInterfaces,
   useNetworkPermissions,
   useNetworkServices,
   type NetworkPermissions,
 } from '../lib/api';
 import {
+  matchesLabelSelector,
   networkServiceMembersResolvedStatusToLabel,
   networkServiceReadyStatusToLabel,
   readyStatusToBadgeType,
+  type NetworkInterface,
   type NetworkService,
 } from '../schema';
 import {
@@ -42,6 +49,16 @@ function matchesSearch(service: NetworkService, search: string): boolean {
   return `${service.name} ${formatPorts(service)}`.toLowerCase().includes(needle);
 }
 
+function partitionByNetwork(services: NetworkService[], interfaces: NetworkInterface[]) {
+  const onNetwork: NetworkService[] = [];
+  const elsewhere: NetworkService[] = [];
+  for (const service of services) {
+    const matches = interfaces.some((iface) => matchesLabelSelector(iface.labels, service.networkInterfaceSelector));
+    (matches ? onNetwork : elsewhere).push(service);
+  }
+  return { onNetwork, elsewhere };
+}
+
 function ConditionalPagination() {
   const { pageCount } = useDataTablePagination();
   if (pageCount <= 1) return null;
@@ -56,24 +73,49 @@ function Muted({ children, mono }: { children: React.ReactNode; mono?: boolean }
   );
 }
 
+interface ServiceListProps {
+  projectId: string | undefined;
+  networkName: string | undefined;
+  permissions: NetworkPermissions;
+  onEdit: (service: NetworkService) => void;
+  onDelete: (service: NetworkService) => void;
+}
+
 function ServiceTable({
   services,
   projectId,
   networkName,
   permissions,
-}: {
+  onEdit,
+  onDelete,
+  showCreate = true,
+  testId = 'networking-plugin-service-table',
+}: ServiceListProps & {
   services: NetworkService[];
-  projectId: string | undefined;
-  networkName: string | undefined;
-  permissions: NetworkPermissions;
+  showCreate?: boolean;
+  testId?: string;
 }) {
-  const [deleteTarget, setDeleteTarget] = useState<NetworkService>();
-  const deleteMutation = useDeleteNetworkService(projectId);
-  const { canCreateService, canDeleteService } = permissions;
+  const { canCreateService, canUpdateService, canDeleteService } = permissions;
 
   const columns = useMemo<ServiceColumn[]>(() => {
     const actions: ActionItem<NetworkService>[] = [
-      { key: 'delete', label: 'Delete', variant: 'destructive', onClick: setDeleteTarget },
+      ...(canUpdateService
+        ? [
+            {
+              key: 'edit',
+              label: 'Edit',
+              onClick: onEdit,
+              disabled: (service: NetworkService) => editableWorkloadName(service) === undefined,
+              tooltip: (service: NetworkService) =>
+                editableWorkloadName(service) === undefined
+                  ? 'This service uses a selector or port range the portal can\'t edit. Use kubectl or datumctl.'
+                  : '',
+            },
+          ]
+        : []),
+      ...(canDeleteService
+        ? [{ key: 'delete', label: 'Delete', variant: 'destructive' as const, onClick: onDelete }]
+        : []),
     ];
     const actionsColumn: ServiceColumn = {
       id: 'actions',
@@ -158,40 +200,89 @@ function ServiceTable({
           />
         ),
       },
-      ...(canDeleteService ? [actionsColumn] : []),
+      ...(canUpdateService || canDeleteService ? [actionsColumn] : []),
     ];
-  }, [canDeleteService]);
+  }, [canUpdateService, canDeleteService, onEdit, onDelete]);
+
+  return (
+    <DataTable.Client
+      data={services}
+      columns={columns}
+      getRowId={(service) => service.uid || service.name}
+      defaultSort={[{ id: 'name', desc: false }]}
+      searchFn={matchesSearch}
+      className="space-y-4">
+      <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <TableSearch placeholder="Search services" />
+        {canCreateService && showCreate && (
+          <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
+        )}
+      </div>
+      <div className="overflow-hidden rounded-lg border" data-testid={testId}>
+        <DataTable.Content
+          emptyMessage={
+            <p className="text-muted-foreground py-8 text-center text-sm">
+              No services match your search.
+            </p>
+          }
+        />
+      </div>
+      <ConditionalPagination />
+    </DataTable.Client>
+  );
+}
+
+function ElsewhereServices({ services, ...props }: ServiceListProps & { services: NetworkService[] }) {
+  if (services.length === 0) return null;
+  const count = services.length === 1 ? '1 service' : `${services.length} services`;
+  return (
+    <details data-testid="networking-plugin-elsewhere-services">
+      <summary className="text-muted-foreground cursor-pointer text-sm">
+        {count} in this project {services.length === 1 ? "isn't" : "aren't"} on this network
+      </summary>
+      <p className="text-muted-foreground mt-2 mb-4 text-xs">
+        Their selectors match no interface here. They run on another network, or match no
+        interface yet.
+      </p>
+      <ServiceTable
+        {...props}
+        services={services}
+        showCreate={false}
+        testId="networking-plugin-elsewhere-service-table"
+      />
+    </details>
+  );
+}
+
+export function NetworkServices({
+  projectId,
+  networkName,
+}: {
+  projectId: string | undefined;
+  networkName: string | undefined;
+}) {
+  const [editTarget, setEditTarget] = useState<NetworkService>();
+  const [deleteTarget, setDeleteTarget] = useState<NetworkService>();
+  const deleteMutation = useDeleteNetworkService(projectId);
 
   return (
     <>
-      <DataTable.Client
-        data={services}
-        columns={columns}
-        getRowId={(service) => service.uid || service.name}
-        defaultSort={[{ id: 'name', desc: false }]}
-        searchFn={matchesSearch}
-        className="space-y-4">
-        <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <TableSearch placeholder="Search services" />
-          {canCreateService && (
-            <CreateNetworkServiceDialog projectId={projectId} networkName={networkName} />
-          )}
-        </div>
-        <p className="text-muted-foreground text-xs">
-          Services in this project — not limited to this network. A service's resolved network
-          isn't recorded anywhere queryable, so this list can't be filtered to just this one.
-        </p>
-        <div className="overflow-hidden rounded-lg border" data-testid="networking-plugin-service-table">
-          <DataTable.Content
-            emptyMessage={
-              <p className="text-muted-foreground py-8 text-center text-sm">
-                No services match your search.
-              </p>
-            }
-          />
-        </div>
-        <ConditionalPagination />
-      </DataTable.Client>
+      <ServicesContent
+        projectId={projectId}
+        networkName={networkName}
+        onEdit={setEditTarget}
+        onDelete={setDeleteTarget}
+      />
+
+      {editTarget && (
+        <EditNetworkServiceDialog
+          key={editTarget.uid || editTarget.name}
+          projectId={projectId}
+          networkName={networkName}
+          service={editTarget}
+          onOpenChange={(open) => !open && setEditTarget(undefined)}
+        />
+      )}
 
       <ConfirmDeleteDialog
         open={deleteTarget !== undefined}
@@ -213,17 +304,18 @@ function ServiceTable({
   );
 }
 
-export function NetworkServices({
+function ServicesContent({
   projectId,
   networkName,
-}: {
-  projectId: string | undefined;
-  networkName: string | undefined;
-}) {
+  onEdit,
+  onDelete,
+}: Omit<ServiceListProps, 'permissions'>) {
   const { data: services, isLoading, error, refetch } = useNetworkServices(projectId);
+  const interfacesQuery = useNetworkInterfaces(projectId, networkName);
   const permissions = useNetworkPermissions(projectId);
+  const listProps = { projectId, networkName, permissions, onEdit, onDelete };
 
-  if (isLoading) return <ServicesSkeleton />;
+  if (isLoading || interfacesQuery.isLoading) return <ServicesSkeleton />;
 
   if (error) {
     return (
@@ -235,16 +327,25 @@ export function NetworkServices({
     );
   }
 
-  const total = services?.length ?? 0;
-  const ready = services?.filter((s) => s.readyStatus === 'True').length ?? 0;
+  const interfaces = interfacesQuery.data;
+  const { onNetwork, elsewhere } = interfaces
+    ? partitionByNetwork(services ?? [], interfaces)
+    : { onNetwork: services ?? [], elsewhere: [] };
+
+  const total = onNetwork.length;
+  const ready = onNetwork.filter((s) => s.readyStatus === 'True').length;
   const notReady = total - ready;
-  const totalMembers = services?.reduce((sum, s) => sum + s.summary.members, 0) ?? 0;
+  const totalMembers = onNetwork.reduce((sum, s) => sum + s.summary.members, 0);
+
+  const elsewhereSection = (
+<ElsewhereServices {...listProps} services={elsewhere} />
+  );
 
   if (total === 0) {
     return (
-      <div data-testid="networking-plugin-network-services">
+      <div className="flex flex-col gap-6" data-testid="networking-plugin-network-services">
         <SectionEmpty
-          title="No services yet"
+          title={elsewhere.length > 0 ? 'No services on this network' : 'No services yet'}
           description="A service load-balances traffic across a workload's instances in every region they run in."
           action={
             permissions.canCreateService ? (
@@ -252,24 +353,26 @@ export function NetworkServices({
             ) : undefined
           }
         />
+        {elsewhereSection}
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-6" data-testid="networking-plugin-network-services">
+      {!interfaces && (
+        <p className="text-muted-foreground text-xs" data-testid="networking-plugin-services-unfiltered">
+          This network's interfaces couldn't be loaded, so this lists every service in the project.
+        </p>
+      )}
       <StatTileGrid testId="networking-plugin-service-stats">
-        <StatTile icon={ShareIcon} label="Total services" value={total} caption="in project" />
+        <StatTile icon={ShareIcon} label="Total services" value={total} caption="on this network" />
         <StatTile icon={CircleCheckIcon} label="Ready" value={ready} caption={`of ${total}`} />
         <StatTile icon={TriangleAlertIcon} label="Not ready" value={notReady} caption="needs attention" />
         <StatTile icon={UsersIcon} label="Members" value={totalMembers} caption="across all services" />
       </StatTileGrid>
-      <ServiceTable
-        services={services ?? []}
-        projectId={projectId}
-        networkName={networkName}
-        permissions={permissions}
-      />
+      <ServiceTable {...listProps} services={onNetwork} />
+      {elsewhereSection}
     </div>
   );
 }

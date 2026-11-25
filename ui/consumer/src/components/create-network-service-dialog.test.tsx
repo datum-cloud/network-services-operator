@@ -1,6 +1,6 @@
-import { CreateNetworkServiceDialog } from './create-network-service-dialog';
+import { CreateNetworkServiceDialog, EditNetworkServiceDialog, editableWorkloadName } from './create-network-service-dialog';
 import * as api from '../lib/api';
-import type { NetworkInterface } from '../schema';
+import type { NetworkInterface, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -186,4 +186,116 @@ describe('CreateNetworkServiceDialog', () => {
 
     await waitFor(() => expect(screen.getByText('Create a service')).toBeInTheDocument());
   }, SELECT_TEST_TIMEOUT);
+});
+
+function makeService(overrides: Partial<NetworkService> = {}): NetworkService {
+  return {
+    uid: 'storefront-uid',
+    name: 'storefront',
+    createdAt: new Date('2026-08-25T14:18:34Z'),
+    networkInterfaceSelector: { matchLabels: { 'compute.datumapis.com/workload-name': 'storefront' }, matchExpressions: [] },
+    ports: [{ name: 'http', port: 8080, protocol: 'TCP' }],
+    summary: { locations: 1, members: 1, healthy: 1 },
+    locations: [],
+    membersResolvedStatus: 'True',
+    readyStatus: 'True',
+    ...overrides,
+  };
+}
+
+function renderEditDialog(service: NetworkService, onOpenChange = vi.fn()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <EditNetworkServiceDialog projectId="demo-project" networkName="default" service={service} onOpenChange={onOpenChange} />
+    </QueryClientProvider>
+  );
+  return onOpenChange;
+}
+
+describe('editableWorkloadName', () => {
+  it('returns the workload for a single workload-name selector', () => {
+    expect(editableWorkloadName(makeService())).toBe('storefront');
+  });
+
+  it('rejects selectors the form cannot represent', () => {
+    expect(
+      editableWorkloadName(
+        makeService({ networkInterfaceSelector: { matchLabels: { app: 'web' }, matchExpressions: [] } })
+      )
+    ).toBeUndefined();
+    expect(
+      editableWorkloadName(
+        makeService({
+          networkInterfaceSelector: {
+            matchLabels: { 'compute.datumapis.com/workload-name': 'storefront' },
+            matchExpressions: [{ key: 'tier', operator: 'Exists', values: [] }],
+          },
+        })
+      )
+    ).toBeUndefined();
+  });
+
+  it('rejects services with a port range', () => {
+    expect(editableWorkloadName(makeService({ ports: [{ name: 'game', port: 0, protocol: 'UDP' }] }))).toBeUndefined();
+  });
+});
+
+describe('EditNetworkServiceDialog', () => {
+  it('prefills the current ports', async () => {
+    renderEditDialog(makeService());
+    await screen.findByRole('dialog');
+    expect(screen.getByText('Edit service storefront')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('e.g. http')).toHaveValue('http');
+    expect(screen.getByPlaceholderText('e.g. 8080')).toHaveValue(8080);
+    expect(screen.queryByPlaceholderText('e.g. storefront')).not.toBeInTheDocument();
+  });
+
+  it('replaces the selector and ports wholesale', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const onOpenChange = renderEditDialog(makeService());
+    await screen.findByRole('dialog');
+    selectWorkload('checkout');
+    fireEvent.click(screen.getByRole('button', { name: 'Add port' }));
+    fillPort(1, 'https', '8443');
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/networkservices/storefront');
+    expect(init.method).toBe('PATCH');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json-patch+json');
+    expect(JSON.parse(init.body as string)).toEqual([
+      {
+        op: 'replace',
+        path: '/spec/networkInterfaces/selector',
+        value: { matchLabels: { 'compute.datumapis.com/workload-name': 'checkout' } },
+      },
+      {
+        op: 'replace',
+        path: '/spec/ports',
+        value: [
+          { name: 'http', port: 8080, protocol: 'TCP' },
+          { name: 'https', port: 8443, protocol: 'TCP' },
+        ],
+      },
+    ]);
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  }, SELECT_TEST_TIMEOUT);
+
+  it('keeps the dialog open when the server rejects the change', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 409, json: async () => ({ message: 'conflict' }) }) as unknown as typeof fetch;
+
+    const onOpenChange = renderEditDialog(makeService());
+    await screen.findByRole('dialog');
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1));
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(screen.getByText('Edit service storefront')).toBeInTheDocument();
+  });
 });

@@ -317,6 +317,7 @@ export interface NetworkPermissions {
   canUpdateNetwork: boolean;
   canDeleteNetwork: boolean;
   canCreateService: boolean;
+  canUpdateService: boolean;
   canDeleteService: boolean;
 }
 
@@ -325,19 +326,21 @@ export const NO_NETWORK_PERMISSIONS: NetworkPermissions = {
   canUpdateNetwork: false,
   canDeleteNetwork: false,
   canCreateService: false,
+  canUpdateService: false,
   canDeleteService: false,
 };
 
 async function fetchNetworkPermissions(projectId: string): Promise<NetworkPermissions> {
-  const [canCreateNetwork, canUpdateNetwork, canDeleteNetwork, canCreateService, canDeleteService] =
+  const [canCreateNetwork, canUpdateNetwork, canDeleteNetwork, canCreateService, canUpdateService, canDeleteService] =
     await Promise.all([
       canPerform(projectId, NETWORKING_GROUP, 'networks', 'create'),
       canPerform(projectId, NETWORKING_GROUP, 'networks', 'patch'),
       canPerform(projectId, NETWORKING_GROUP, 'networks', 'delete'),
       canPerform(projectId, NETWORKING_GROUP, 'networkservices', 'create'),
+      canPerform(projectId, NETWORKING_GROUP, 'networkservices', 'patch'),
       canPerform(projectId, NETWORKING_GROUP, 'networkservices', 'delete'),
     ]);
-  return { canCreateNetwork, canUpdateNetwork, canDeleteNetwork, canCreateService, canDeleteService };
+  return { canCreateNetwork, canUpdateNetwork, canDeleteNetwork, canCreateService, canUpdateService, canDeleteService };
 }
 
 export function useNetworkPermissions(
@@ -554,6 +557,41 @@ export function useCreateNetworkService(
   return useMutation({
     mutationFn: (input: CreateNetworkServiceInput) =>
       createNetworkService(projectId as string, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkServices', projectId] });
+    },
+  });
+}
+
+export interface UpdateNetworkServiceInput {
+  service: NetworkService;
+  matchLabels: Record<string, string>;
+  ports: CreateNetworkServiceInput['ports'];
+}
+
+async function updateNetworkService(projectId: string, input: UpdateNetworkServiceInput): Promise<void> {
+  const { service } = input;
+  const res = await fetch(`${getProjectScopedBase(projectId)}${NETWORKSERVICES_PATH}/${encodeURIComponent(service.name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json-patch+json', Accept: 'application/json' },
+    body: JSON.stringify([
+      { op: 'replace', path: '/spec/networkInterfaces/selector', value: { matchLabels: input.matchLabels } },
+      {
+        op: 'replace',
+        path: '/spec/ports',
+        value: input.ports.map((p) => ({ name: p.name, port: p.port, protocol: p.protocol })),
+      },
+    ]),
+  });
+  if (!res.ok) throw await toApiError(res, `Request failed (${res.status}): update service ${service.name}`);
+}
+
+export function useUpdateNetworkService(
+  projectId: string | undefined
+): UseMutationResult<void, ApiError, UpdateNetworkServiceInput> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateNetworkServiceInput) => updateNetworkService(projectId as string, input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'networkServices', projectId] });
     },

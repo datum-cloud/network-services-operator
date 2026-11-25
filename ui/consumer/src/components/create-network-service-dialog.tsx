@@ -1,4 +1,5 @@
-import { useCreateNetworkService, useNetworkInterfaces } from '../lib/api';
+import { useCreateNetworkService, useNetworkInterfaces, useUpdateNetworkService } from '../lib/api';
+import type { NetworkService } from '../schema';
 import { useFormMetadata } from '@conform-to/react';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Form, useFormContext } from '@datum-cloud/datum-ui/form';
@@ -6,7 +7,7 @@ import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { Icon } from '@datum-cloud/datum-ui/icons';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { PlusIcon, Trash2Icon } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { z } from 'zod';
 
 const NAME_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -26,8 +27,7 @@ const portSchema = z.object({
   protocol: z.enum(PROTOCOLS),
 });
 
-const schema = z.object({
-  name: z.string({ error: 'Name is required.' }).regex(NAME_PATTERN, NAME_MESSAGE),
+const editSchema = z.object({
   workloadName: z.string({ error: 'Select the workload this service should route to.' }),
   ports: z
     .array(portSchema)
@@ -49,7 +49,12 @@ const schema = z.object({
     }),
 });
 
+const schema = editSchema.extend({
+  name: z.string({ error: 'Name is required.' }).regex(NAME_PATTERN, NAME_MESSAGE),
+});
+
 type CreateServiceValues = z.infer<typeof schema>;
+type EditServiceValues = z.infer<typeof editSchema>;
 
 const NEW_PORT = { name: '', port: undefined, protocol: 'TCP' };
 
@@ -134,6 +139,44 @@ function PortsField() {
   );
 }
 
+export function editableWorkloadName(service: NetworkService): string | undefined {
+  const { matchLabels, matchExpressions } = service.networkInterfaceSelector;
+  const keys = Object.keys(matchLabels);
+  if (matchExpressions.length > 0 || keys.length !== 1 || keys[0] !== WORKLOAD_NAME_LABEL) return undefined;
+  if (service.ports.some((p) => p.port <= 0)) return undefined;
+  return matchLabels[WORKLOAD_NAME_LABEL];
+}
+
+function useWorkloadOptions(projectId: string | undefined, networkName: string | undefined, current?: string) {
+  const { data: interfaces } = useNetworkInterfaces(projectId, networkName);
+  return [
+    ...new Set(
+      [...(interfaces ?? []).map((iface) => iface.workloadName), current].filter((w): w is string => !!w)
+    ),
+  ].sort();
+}
+
+function WorkloadField({ options }: { options: string[] }) {
+  return (
+    <Form.Field
+      name="workloadName"
+      label="Workload"
+      required
+      description="The service routes to every interface belonging to this workload.">
+      <Form.Select placeholder="Select a workload">
+        {options.map((w) => (
+          <Form.SelectItem key={w} value={w}>
+            {w}
+          </Form.SelectItem>
+        ))}
+      </Form.Select>
+    </Form.Field>
+  );
+}
+
+const FORM_BODY_CLASS =
+  'divide-border space-y-0 divide-y *:px-5 *:py-5 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0';
+
 export function CreateNetworkServiceDialog({
   projectId,
   networkName,
@@ -143,11 +186,7 @@ export function CreateNetworkServiceDialog({
 }) {
   const [open, setOpen] = useState(false);
   const mutation = useCreateNetworkService(projectId);
-  const { data: interfaces } = useNetworkInterfaces(projectId, networkName);
-
-  const workloadOptions = [
-    ...new Set((interfaces ?? []).map((iface) => iface.workloadName).filter((w): w is string => !!w)),
-  ].sort();
+  const workloadOptions = useWorkloadOptions(projectId, networkName);
 
   const handleSubmit = (data: CreateServiceValues) => {
     mutation.mutate(
@@ -192,27 +231,83 @@ export function CreateNetworkServiceDialog({
           submitText="Create"
           submitTextLoading="Creating..."
           className="w-full focus:ring-0 focus:outline-none sm:max-w-xl">
-          <div className="divide-border space-y-0 divide-y *:px-5 *:py-5 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">
+          <div className={FORM_BODY_CLASS}>
             <Form.Field name="name" label="Name" required>
               <Form.Input autoFocus placeholder="e.g. storefront" />
             </Form.Field>
-            <Form.Field
-              name="workloadName"
-              label="Workload"
-              required
-              description="The service routes to every interface belonging to this workload.">
-              <Form.Select placeholder="Select a workload">
-                {workloadOptions.map((w) => (
-                  <Form.SelectItem key={w} value={w}>
-                    {w}
-                  </Form.SelectItem>
-                ))}
-              </Form.Select>
-            </Form.Field>
+            <WorkloadField options={workloadOptions} />
             <PortsField />
           </div>
         </Form.Dialog>
       </ConformAdapter>
     </>
+  );
+}
+
+export function EditNetworkServiceDialog({
+  projectId,
+  networkName,
+  service,
+  onOpenChange,
+}: {
+  projectId: string | undefined;
+  networkName: string | undefined;
+  service: NetworkService;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const mutation = useUpdateNetworkService(projectId);
+  const workloadName = editableWorkloadName(service);
+  const workloadOptions = useWorkloadOptions(projectId, networkName, workloadName);
+
+  const defaultValues = {
+    workloadName,
+    ports: service.ports.map((p) => ({ name: p.name, port: p.port, protocol: p.protocol ?? 'TCP' })),
+  } as Partial<EditServiceValues>;
+
+  const failedRef = useRef(false);
+
+  const handleSubmit = async (data: EditServiceValues) => {
+    try {
+      await mutation.mutateAsync({
+        service,
+        matchLabels: { [WORKLOAD_NAME_LABEL]: data.workloadName },
+        ports: data.ports,
+      });
+      toast.success(`Updated service ${service.name}`);
+    } catch (err) {
+      failedRef.current = true;
+      toast.error((err as Error).message);
+    }
+  };
+
+  // here be dragons
+  const handleOpenChange = (open: boolean) => {
+    if (!open && failedRef.current) {
+      failedRef.current = false;
+      return;
+    }
+    onOpenChange(open);
+  };
+
+  return (
+    <ConformAdapter>
+      <Form.Dialog
+        open
+        onOpenChange={handleOpenChange}
+        title={`Edit service ${service.name}`}
+        description="Change which workload this service routes to and the ports it answers on."
+        schema={editSchema}
+        defaultValues={defaultValues}
+        onSubmit={handleSubmit}
+        loading={mutation.isPending}
+        submitText="Save"
+        submitTextLoading="Saving..."
+        className="w-full focus:ring-0 focus:outline-none sm:max-w-xl">
+        <div className={FORM_BODY_CLASS}>
+          <WorkloadField options={workloadOptions} />
+          <PortsField />
+        </div>
+      </Form.Dialog>
+    </ConformAdapter>
   );
 }

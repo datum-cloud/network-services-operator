@@ -17,7 +17,7 @@ var tenantClusterKinds = map[string]struct{}{
 func ResolveUpstreamNamesAbsolute(clusters []*clusterv3.Cluster, idx *extcache.PolicyIndex) int {
 	mutated := 0
 	for _, cl := range clusters {
-		if cl.GetType() != clusterv3.Cluster_STRICT_DNS && cl.GetType() != clusterv3.Cluster_LOGICAL_DNS {
+		if !resolvesNames(cl) {
 			continue
 		}
 		if !isTenantCluster(cl.GetName(), idx) {
@@ -43,6 +43,23 @@ func ResolveUpstreamNamesAbsolute(clusters []*clusterv3.Cluster, idx *extcache.P
 		}
 	}
 	return mutated
+}
+
+var nameResolvingClusterTypes = map[string]bool{
+	"envoy.cluster.dns":         true,
+	"envoy.cluster.strict_dns":  true,
+	"envoy.cluster.logical_dns": true,
+}
+
+func resolvesNames(cl *clusterv3.Cluster) bool {
+	if ct := cl.GetClusterType(); ct != nil {
+		return nameResolvingClusterTypes[ct.GetName()]
+	}
+	switch cl.GetType() {
+	case clusterv3.Cluster_STRICT_DNS, clusterv3.Cluster_LOGICAL_DNS:
+		return true
+	}
+	return false
 }
 
 func isTenantCluster(name string, idx *extcache.PolicyIndex) bool {

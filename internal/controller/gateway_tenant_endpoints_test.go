@@ -3,6 +3,8 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
@@ -177,4 +180,29 @@ func releasedNetworkInterfaceHolding(namespace, name, address string) *networkin
 	iface := networkInterfaceHolding(namespace, name, address)
 	iface.Status.Phase = networkingv1alpha.NetworkInterfacePhaseAvailable
 	return iface
+}
+
+func TestAFailedInterfaceLookupRefusesOnlyThatBackend(t *testing.T) {
+	rig := newMissingBackendRig(t, routeToEndpointSlice("refused", "tenant"), routeToEndpointSlice("served", "present"))
+	require.NoError(t, rig.upstream.Create(rig.ctx, tenantSlice(discoveryv1.AddressTypeIPv6, nil, "fd20:0:2::7")))
+	require.NoError(t, rig.upstream.Create(rig.ctx, backendSlice("present")))
+	rig.upstream = interceptor.NewClient(rig.upstream.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*networkingv1alpha.NetworkInterfaceList); ok {
+				return errors.New("injected list failure")
+			}
+			return cl.List(ctx, list, opts...)
+		},
+	})
+
+	rig.reconcileRoutes()
+
+	refused := rig.resolvedRefs("refused")
+	require.NotNil(t, refused)
+	assert.Equal(t, metav1.ConditionFalse, refused.Status)
+	assert.Equal(t, string(gatewayv1.RouteReasonRefNotPermitted), refused.Reason)
+	assert.Contains(t, refused.Message, "injected list failure")
+	assert.Nil(t, rig.resolvedRefs("served"))
+	servedRef := rig.hubRoute("served").Spec.Rules[0].BackendRefs[0]
+	assert.NoError(t, rig.hubSlice(servedRef.Name), "the other route is still programmed")
 }

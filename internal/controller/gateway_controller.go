@@ -2804,10 +2804,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				// finalizer stamp below — that stamp (and everything after
 				// it) assumes an object this controller owns the lifecycle
 				// of, which a CNI-published EndpointSlice never is.
-				refusal, err := r.refuseInternalEndpoints(ctx, upstreamClient, &upstreamEndpointSlice)
-				if err != nil {
-					return nil, nil, unresolvedBackends{}, err
-				}
+				refusal := r.refuseInternalEndpoints(ctx, upstreamClient, &upstreamEndpointSlice)
 				if refusal != "" {
 					logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
 					unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
@@ -3000,16 +2997,16 @@ func (r *GatewayReconciler) refuseInternalEndpoints(
 	ctx context.Context,
 	upstreamClient client.Client,
 	slice *discoveryv1.EndpointSlice,
-) (string, error) {
+) string {
 	suffixes := r.Config.Gateway.PermittedInternalUpstreamHostSuffixes
 	vouched := sets.New(connectorPlaceholderHost)
 	if len(validation.ValidateEndpointSliceAddresses(slice, vouched, suffixes)) == 0 {
-		return "", nil
+		return ""
 	}
 
 	var interfaces networkingv1alpha.NetworkInterfaceList
 	if err := upstreamClient.List(ctx, &interfaces, client.InNamespace(slice.Namespace)); err != nil {
-		return "", fmt.Errorf("failed listing network interfaces: %w", err)
+		return fmt.Sprintf("failed listing network interfaces: %v", err)
 	}
 	for i := range interfaces.Items {
 		if !isServiceMember(&interfaces.Items[i]) {
@@ -3020,9 +3017,9 @@ func (r *GatewayReconciler) refuseInternalEndpoints(
 
 	errs := validation.ValidateEndpointSliceAddresses(slice, vouched, suffixes)
 	if len(errs) == 0 {
-		return "", nil
+		return ""
 	}
-	return errs.ToAggregate().Error(), nil
+	return errs.ToAggregate().Error()
 }
 
 func headlessService(namespace, name string, ports []corev1.ServicePort) *corev1.Service {

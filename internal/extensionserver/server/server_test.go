@@ -13,6 +13,7 @@ import (
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
@@ -30,6 +31,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/extensionserver/mutate"
 )
 
@@ -941,4 +943,71 @@ func TestPostTranslateModify_ReportsOnlyASuccessfulBuild(t *testing.T) {
 		_, ok := srv.reporter.take()
 		assert.False(t, ok, "a failed build must not be reported")
 	})
+}
+
+func tlsDNSCluster(name, host string) *clusterv3.Cluster {
+	return &clusterv3.Cluster{
+		Name:                 name,
+		ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STRICT_DNS},
+		TransportSocket:      &corev3.TransportSocket{Name: "envoy.transport_sockets.tls"},
+		LoadAssignment: &endpointv3.ClusterLoadAssignment{
+			ClusterName: name,
+			Endpoints: []*endpointv3.LocalityLbEndpoints{{
+				LbEndpoints: []*endpointv3.LbEndpoint{{
+					HostIdentifier: &endpointv3.LbEndpoint_Endpoint{Endpoint: &endpointv3.Endpoint{
+						Address: &corev3.Address{Address: &corev3.Address_SocketAddress{SocketAddress: &corev3.SocketAddress{
+							Address:       host,
+							PortSpecifier: &corev3.SocketAddress_PortValue{PortValue: 443},
+						}}},
+					}},
+				}},
+			}},
+		},
+	}
+}
+
+func TestPostTranslateModify_TenantUpstreamNamesResolveAbsolute(t *testing.T) {
+	scheme := testServerScheme(t)
+	tenantNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   "ns-tenant",
+		Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: "default"},
+	}}
+	systemNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "envoy-gateway-system"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tenantNS, systemNS).Build()
+	srv := New(cl, testServerConfig(), discardLogger())
+
+	tenant := tlsDNSCluster("httproute/ns-tenant/proxy/rule/0", "origin.example")
+	jwks := tlsDNSCluster("securitypolicy/ns-tenant/jwt/jwks/0", "issuer.example")
+	system := tlsDNSCluster("httproute/envoy-gateway-system/proxy/rule/0", "origin.example")
+	ratelimit := tlsDNSCluster("ratelimit_cluster", "ratelimit.example")
+
+	resp, err := srv.PostTranslateModify(context.Background(), &pb.PostTranslateModifyRequest{
+		Clusters: []*clusterv3.Cluster{tenant, jwks, system, ratelimit},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetClusters(), 4)
+
+	endpoint := func(c *clusterv3.Cluster) *endpointv3.Endpoint {
+		return c.GetLoadAssignment().GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint()
+	}
+	byName := map[string]*clusterv3.Cluster{}
+	for _, c := range resp.GetClusters() {
+		byName[c.GetName()] = c
+	}
+
+	got := endpoint(byName["httproute/ns-tenant/proxy/rule/0"])
+	assert.Equal(t, "origin.example.", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Equal(t, "origin.example", got.GetHostname())
+
+	got = endpoint(byName["securitypolicy/ns-tenant/jwt/jwks/0"])
+	assert.Equal(t, "issuer.example.", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Equal(t, "issuer.example", got.GetHostname())
+
+	got = endpoint(byName["httproute/envoy-gateway-system/proxy/rule/0"])
+	assert.Equal(t, "origin.example", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Empty(t, got.GetHostname())
+
+	got = endpoint(byName["ratelimit_cluster"])
+	assert.Equal(t, "ratelimit.example", got.GetAddress().GetSocketAddress().GetAddress())
+	assert.Empty(t, got.GetHostname())
 }

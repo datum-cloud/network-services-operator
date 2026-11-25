@@ -18,7 +18,7 @@ import (
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
 
-func dnsCluster(name string) *clusterv3.Cluster {
+func guardDNSCluster(name string) *clusterv3.Cluster {
 	return &clusterv3.Cluster{
 		Name: name,
 		ClusterDiscoveryType: &clusterv3.Cluster_ClusterType{
@@ -81,28 +81,28 @@ func TestApplyUpstreamAddressGuard_SelectsTenantNameResolvingClusters(t *testing
 		cluster *clusterv3.Cluster
 		guarded bool
 	}{
-		{"tenant rule cluster resolving a name", dnsCluster(testClusterName()), true},
-		{"tenant per-backend cluster resolving a name", dnsCluster("httproute/" + testDSNS + "/" + testProxyName + "/rule/2/backend/0"), true},
-		{"tenant grpc route cluster", dnsCluster("grpcroute/" + testDSNS + "/svc/rule/0"), true},
+		{"tenant rule cluster resolving a name", guardDNSCluster(testClusterName()), true},
+		{"tenant per-backend cluster resolving a name", guardDNSCluster("httproute/" + testDSNS + "/" + testProxyName + "/rule/2/backend/0"), true},
+		{"tenant grpc route cluster", guardDNSCluster("grpcroute/" + testDSNS + "/svc/rule/0"), true},
 		{"tenant strict dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_STRICT_DNS), true},
 		{"tenant logical dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_LOGICAL_DNS), true},
 		{"tenant dynamic forward proxy cluster", dfp(testClusterName()), true},
 		{"tenant cluster with literal endpoints", edsCluster(testClusterName()), false},
 		{"tenant static cluster", staticCluster(testClusterName()), false},
 		{"online connector cluster", staticCluster("httproute/" + testDSNS + "/tunnel/rule/0"), false},
-		{"online connector placeholder name", dnsCluster("httproute/" + testDSNS + "/tunnel/rule/0"), false},
-		{"offline connector placeholder name", dnsCluster("httproute/" + testDSNS + "/offline/rule/0"), false},
-		{"vpc ingress rule cluster", dnsCluster("httproute/" + testDSNS + "/vpc/rule/0"), false},
-		{"vpc ingress rule with unresolved tenant", dnsCluster("httproute/" + testDSNS + "/vpc-unresolved/rule/0"), false},
-		{"vpc ingress backend in a mixed rule", dnsCluster("httproute/" + testDSNS + "/mixed/rule/0/backend/1"), false},
-		{"public backend in a mixed rule", dnsCluster("httproute/" + testDSNS + "/mixed/rule/0/backend/0"), true},
-		{"platform namespace route", dnsCluster("httproute/datum-downstream-gateway/canary/rule/0"), false},
-		{"unknown namespace route", dnsCluster("httproute/ns-other/proxy/rule/0"), false},
-		{"tls route cluster", dnsCluster("tlsroute/" + testDSNS + "/relay/rule/-1"), false},
-		{"oidc token endpoint cluster", dnsCluster("accounts_google_com_443"), false},
+		{"online connector placeholder name", guardDNSCluster("httproute/" + testDSNS + "/tunnel/rule/0"), false},
+		{"offline connector placeholder name", guardDNSCluster("httproute/" + testDSNS + "/offline/rule/0"), false},
+		{"vpc ingress rule cluster", guardDNSCluster("httproute/" + testDSNS + "/vpc/rule/0"), false},
+		{"vpc ingress rule with unresolved tenant", guardDNSCluster("httproute/" + testDSNS + "/vpc-unresolved/rule/0"), false},
+		{"vpc ingress backend in a mixed rule", guardDNSCluster("httproute/" + testDSNS + "/mixed/rule/0/backend/1"), false},
+		{"public backend in a mixed rule", guardDNSCluster("httproute/" + testDSNS + "/mixed/rule/0/backend/0"), true},
+		{"platform namespace route", guardDNSCluster("httproute/datum-downstream-gateway/canary/rule/0"), false},
+		{"unknown namespace route", guardDNSCluster("httproute/ns-other/proxy/rule/0"), false},
+		{"tls route cluster", guardDNSCluster("tlsroute/" + testDSNS + "/relay/rule/-1"), false},
+		{"oidc token endpoint cluster", guardDNSCluster("accounts_google_com_443"), false},
 		{"xds cluster", legacyDNS("xds_cluster", clusterv3.Cluster_STRICT_DNS), false},
-		{"malformed rule index", dnsCluster("httproute/" + testDSNS + "/p/rule/x"), false},
-		{"malformed backend segment", dnsCluster("httproute/" + testDSNS + "/p/rule/0/other/1"), false},
+		{"malformed rule index", guardDNSCluster("httproute/" + testDSNS + "/p/rule/x"), false},
+		{"malformed backend segment", guardDNSCluster("httproute/" + testDSNS + "/p/rule/0/other/1"), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,7 +133,7 @@ func TestApplyUpstreamAddressGuard_PreservesProtocolOptions(t *testing.T) {
 	}
 	packed, err := anypb.New(existing)
 	require.NoError(t, err)
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	cl.TypedExtensionProtocolOptions = map[string]*anypb.Any{httpProtocolOptionsKey: packed}
 
 	_, err = ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
@@ -146,7 +146,7 @@ func TestApplyUpstreamAddressGuard_PreservesProtocolOptions(t *testing.T) {
 }
 
 func TestApplyUpstreamAddressGuard_DefaultsToHTTP1(t *testing.T) {
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	_, err := ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
 	require.NoError(t, err)
 
@@ -164,7 +164,7 @@ func TestApplyUpstreamAddressGuard_KeepsExistingUpstreamFilters(t *testing.T) {
 	}
 	packed, err := anypb.New(existing)
 	require.NoError(t, err)
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	cl.TypedExtensionProtocolOptions = map[string]*anypb.Any{httpProtocolOptionsKey: packed}
 
 	_, err = ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
@@ -175,7 +175,7 @@ func TestApplyUpstreamAddressGuard_KeepsExistingUpstreamFilters(t *testing.T) {
 }
 
 func TestApplyUpstreamAddressGuard_Idempotent(t *testing.T) {
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	clusters := []*clusterv3.Cluster{cl}
 	first, err := ApplyUpstreamAddressGuard(clusters, guardTestIndex())
 	require.NoError(t, err)
@@ -187,7 +187,7 @@ func TestApplyUpstreamAddressGuard_Idempotent(t *testing.T) {
 }
 
 func TestApplyUpstreamAddressGuard_RefusesDeprecatedProtocolFields(t *testing.T) {
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	cl.Http2ProtocolOptions = &corev3.Http2ProtocolOptions{}
 	_, err := ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
 	require.Error(t, err)
@@ -195,7 +195,7 @@ func TestApplyUpstreamAddressGuard_RefusesDeprecatedProtocolFields(t *testing.T)
 
 func deniedPrefixes(t *testing.T) []netip.Prefix {
 	t.Helper()
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	_, err := ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
 	require.NoError(t, err)
 
@@ -278,7 +278,7 @@ func TestApplyUpstreamAddressGuard_DeniedAddresses(t *testing.T) {
 }
 
 func TestApplyUpstreamAddressGuard_ConfigPassesEnvoyValidation(t *testing.T) {
-	cl := dnsCluster(testClusterName())
+	cl := guardDNSCluster(testClusterName())
 	_, err := ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
 	require.NoError(t, err)
 

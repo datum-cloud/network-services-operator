@@ -81,14 +81,11 @@ func ApplyUpstreamAddressGuard(clusters []*clusterv3.Cluster, idx *extcache.Poli
 }
 
 func isGuardedTenantCluster(cl *clusterv3.Cluster, idx *extcache.PolicyIndex) bool {
-	if !resolvesNames(cl) {
+	if !resolvesNames(cl) || !isTenantCluster(cl.GetName(), idx) {
 		return false
 	}
 	ns, proxy, rule, backend, ok := parseTenantRouteClusterName(cl.GetName())
 	if !ok {
-		return false
-	}
-	if _, tenant := idx.TenantNamespaces[ns]; !tenant {
 		return false
 	}
 	if _, connector := idx.Connectors[extcache.ConnectorKey{Namespace: ns, HTTPProxyName: proxy, RuleIndex: rule}]; connector {

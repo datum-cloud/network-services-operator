@@ -34,8 +34,8 @@ import (
 func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string) (*PolicyIndex, error) {
 	idx := &PolicyIndex{
 		DStoUS:           make(map[string]string),
-		ProjectNames:     make(map[string]string),
 		TenantNamespaces: make(map[string]struct{}),
+		ProjectNames:     make(map[string]string),
 		TPPs:             make(map[string][]TPPInfo),
 		HTTPProxyRules:   make(map[HTTPProxyKey][]string),
 		Connectors:       make(map[ConnectorKey]ConnectorInfo),

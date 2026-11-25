@@ -1,0 +1,262 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# A BackendTrafficPolicy that targets the route generated for an HTTPProxy is
+# refused, and one on the HTTPProxy's Gateway is accepted (issue #880).
+#
+# The operator attaches its own BackendTrafficPolicy to the generated route to
+# carry the proxy's health check and load balancing settings. Envoy Gateway
+# accepts one policy per route and keeps the oldest, so a second route-level
+# policy silently displaced those settings. Admission now refuses it by name
+# and by label selector, and names the Gateway to use instead. A policy on one
+# rule of the route is refused by Envoy Gateway's own schema, which does not
+# accept sectionName on a BackendTrafficPolicy; the scenario keeps that case so
+# a schema change that starts accepting it fails here.
+#
+# The scenario proves the refusal is in the path and that the allowed path
+# leaves the health check in effect: after the Gateway-level policy lands, the
+# operator's route policy is still Accepted on the edge and the route's Envoy
+# cluster still carries outlier detection.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: httpproxy-backendtrafficpolicy-refused
+spec:
+  cluster: nso-standard
+  timeouts:
+    cleanup: 120s
+  steps:
+    - name: Create a proxy with passive health checks
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: checked
+              spec:
+                healthCheck:
+                  passive: {}
+                rules:
+                  - backends:
+                      - endpoint: http://checked-origin.default.svc.cluster.local:8080
+        - assert:
+            timeout: 300s
+            resource:
+              apiVersion: networking.datumapis.com/v1alpha
+              kind: HTTPProxy
+              metadata:
+                name: checked
+              status:
+                (conditions[?type == 'Programmed']):
+                  - status: "True"
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get httpproxy,httproute,gateway,backendtrafficpolicy -o yaml
+
+    - name: A policy on the generated route is refused
+      try:
+        - apply:
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'target the Gateway "checked" instead')): true
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-route
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: HTTPRoute
+                    name: checked
+                circuitBreaker:
+                  maxConnections: 500
+        - apply:
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'sectionName')): true
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-route-rule
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: HTTPRoute
+                    name: checked
+                    sectionName: rule-0
+                circuitBreaker:
+                  maxConnections: 500
+        - apply:
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'target the Gateway "checked" instead')): true
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-every-route
+              spec:
+                targetSelectors:
+                  - kind: HTTPRoute
+                circuitBreaker:
+                  maxConnections: 500
+        - error:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-route
+        - error:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-route-rule
+        - error:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-every-route
+
+    - name: A policy on the Gateway is accepted and the health check stays in effect
+      try:
+        - script:
+            cluster: nso-standard
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl get ns $NAMESPACE -o json
+            outputs:
+              - name: downstreamNamespaceName
+                value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+        - create:
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-gateway
+              spec:
+                targetRefs:
+                  - group: gateway.networking.k8s.io
+                    kind: Gateway
+                    name: checked
+                circuitBreaker:
+                  maxConnections: 500
+        - script:
+            skipCommandOutput: true
+            skipLogOutput: true
+            content: |
+              kubectl -n $NAMESPACE get httproute checked -o jsonpath='{.metadata.uid}'
+            outputs:
+              - name: routeUID
+                value: ($stdout)
+        - assert:
+            cluster: nso-infra
+            timeout: 180s
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: on-gateway
+                namespace: ($downstreamNamespaceName)
+              status:
+                (length(ancestors[].conditions[] | [?type == 'Accepted' && status == 'True']) > `0`): true
+                (length(ancestors[].conditions[] | [?type == 'Accepted' && status == 'False'])): 0
+        - assert:
+            cluster: nso-infra
+            timeout: 180s
+            resource:
+              apiVersion: gateway.envoyproxy.io/v1alpha1
+              kind: BackendTrafficPolicy
+              metadata:
+                name: (join('', ['route-', $routeUID, '-panic-threshold']))
+                namespace: ($downstreamNamespaceName)
+              status:
+                (length(ancestors[].conditions[] | [?type == 'Accepted' && status == 'True']) > `0`): true
+                (length(ancestors[].conditions[] | [?type == 'Accepted' && status == 'False'])): 0
+        - script:
+            cluster: nso-infra
+            timeout: 180s
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              set -u
+              ENVOY_NS=datum-downstream-gateway
+              ADMIN_PORT=19880
+              DUMP=$(mktemp)
+              for i in $(seq 1 24); do
+                POD=$(kubectl -n "$ENVOY_NS" get pods \
+                  -l gateway.envoyproxy.io/owning-gatewayclass=datum-downstream-gateway-e2e \
+                  --field-selector=status.phase=Running \
+                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+                if [ -z "$POD" ]; then
+                  echo "attempt ${i}: no running edge proxy pod"; sleep 5; continue
+                fi
+                kubectl -n "$ENVOY_NS" port-forward "pod/${POD}" "${ADMIN_PORT}:19000" >/dev/null 2>&1 &
+                PF=$!
+                for j in $(seq 1 10); do
+                  sleep 1
+                  curl -sf --max-time 5 "http://127.0.0.1:${ADMIN_PORT}/ready" >/dev/null 2>&1 && break
+                done
+                curl -sf --max-time 20 "http://127.0.0.1:${ADMIN_PORT}/config_dump" -o "$DUMP" || true
+                kill "$PF" 2>/dev/null || true
+                wait "$PF" 2>/dev/null || true
+
+                if DUMP="$DUMP" PREFIX="httproute/${DOWNSTREAM_NAMESPACE}/checked/" python3 - <<'PY'
+              import json, os, sys
+              try:
+                  dump = json.load(open(os.environ['DUMP']))
+              except Exception as err:
+                  print('  config dump not readable yet:', err)
+                  sys.exit(1)
+              prefix = os.environ['PREFIX']
+              clusters = []
+              for config in dump.get('configs', []):
+                  for entry in config.get('dynamic_active_clusters', []):
+                      cluster = entry.get('cluster', {})
+                      if cluster.get('name', '').startswith(prefix):
+                          clusters.append(cluster)
+              if not clusters:
+                  print('  no cluster named', prefix + '*', 'yet')
+                  sys.exit(1)
+              for cluster in clusters:
+                  has = 'outlier_detection' in cluster
+                  print('  %s outlier_detection=%s' % (cluster['name'], has))
+                  if not has:
+                      sys.exit(1)
+              PY
+                then
+                  echo "ok"; exit 0
+                fi
+                sleep 5
+              done
+              echo "the route's Envoy cluster never carried outlier detection"
+              exit 1
+      catch:
+        - script:
+            content: |
+              kubectl -n $NAMESPACE get httpproxy,httproute,gateway,backendtrafficpolicy -o yaml
+        - script:
+            cluster: nso-infra
+            env:
+              - name: DOWNSTREAM_NAMESPACE
+                value: ($downstreamNamespaceName)
+            content: |
+              kubectl -n $DOWNSTREAM_NAMESPACE get httproute,gateway,backendtrafficpolicy -o yaml

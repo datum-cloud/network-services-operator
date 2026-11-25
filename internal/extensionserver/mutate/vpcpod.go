@@ -148,7 +148,7 @@ const maxInterfaceNameLen = 15
 // never bind to a guessed device name.
 func vrfDeviceName(tenantID string) (device string, ok bool) {
 	vpc, ok := extcache.TenantVPC(tenantID)
-	if !ok || len(vpc) > 9 {
+	if !ok {
 		return "", false
 	}
 	return fmt.Sprintf("G%09sV", vpc), true

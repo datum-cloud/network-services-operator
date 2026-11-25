@@ -5,9 +5,8 @@
 package cache
 
 import (
-	"strings"
-
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/galactic/identifier"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
@@ -155,11 +154,8 @@ const (
 //
 // Mirrors crdnames.ParseTenantIdentifier in datum-cloud/galactic.
 func TenantVPC(tenantID string) (string, bool) {
-	vpc, vpcAttachment, found := strings.Cut(tenantID, "-")
-	if !found || vpc == "" || vpcAttachment == "" {
-		return "", false
-	}
-	return vpc, true
+	vpc, _, ok := identifier.ParseTenantIdentifier(tenantID)
+	return vpc, ok
 }
 
 // VPCPodInfo holds the fields the mutation layer needs to bind an Envoy

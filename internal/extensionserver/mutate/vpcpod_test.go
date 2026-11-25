@@ -188,6 +188,10 @@ func TestVRFDeviceName_UnusableTenantIDYieldsNoName(t *testing.T) {
 		{"empty attachment half", "2wJqT7d-"},
 		{"vpc half overflows IFNAMSIZ", "abcdefghijklmnop-9xKp2Qm"},
 		{"vpc half exceeds 9 base62 characters", "1234567890-x1"},
+		{"vpc half with a character outside base62", "vpc_a-x1"},
+		{"vpc half with a path separator", "../a-x1"},
+		{"attachment half with a second separator", "vpc-a-x1"},
+		{"attachment half with a dot", "vpc-x.1"},
 	}
 
 	for _, tt := range tests {

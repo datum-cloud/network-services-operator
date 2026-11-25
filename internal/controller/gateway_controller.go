@@ -55,6 +55,7 @@ import (
 	certificatesv1alpha1 "go.datum.net/network-services-operator/internal/certificates/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
+	"go.datum.net/network-services-operator/internal/galactic/identifier"
 	gatewayutil "go.datum.net/network-services-operator/internal/util/gateway"
 	"go.datum.net/network-services-operator/internal/util/resourcename"
 	"go.datum.net/network-services-operator/internal/validation"
@@ -2816,7 +2817,7 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				}
 
 				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
-					if !validTenantIdentifier(tenantID) {
+					if _, _, ok := identifier.ParseTenantIdentifier(tenantID); !ok {
 						refusal := fmt.Sprintf("label %s=%q is not a tenant identifier", VPCPodTenantIDLabel, tenantID)
 						logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
 						unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
@@ -3030,11 +3031,6 @@ func (r *GatewayReconciler) refuseInternalEndpoints(
 		return ""
 	}
 	return errs.ToAggregate().Error()
-}
-
-func validTenantIdentifier(tenantID string) bool {
-	vpc, vpcAttachment, found := strings.Cut(tenantID, "-")
-	return found && vpc != "" && vpcAttachment != ""
 }
 
 func headlessService(namespace, name string, ports []corev1.ServicePort) *corev1.Service {

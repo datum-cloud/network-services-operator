@@ -208,7 +208,7 @@ func TestAFailedInterfaceLookupRefusesOnlyThatBackend(t *testing.T) {
 }
 
 func TestAMalformedTenantIDLabelIsRefused(t *testing.T) {
-	for _, tenantID := range []string{"nodash", "-attachment", "vpc-"} {
+	for _, tenantID := range []string{"nodash", "-attachment", "vpc-", "abcdefghij-x1", "vpc_a-x1", "vpc-a-x1", "vpc.a-x1"} {
 		t.Run(tenantID, func(t *testing.T) {
 			rig := newMissingBackendRig(t, routeToEndpointSlice("route", "tenant"))
 			require.NoError(t, rig.upstream.Create(rig.ctx, tenantSlice(discoveryv1.AddressTypeIPv4, map[string]string{VPCPodTenantIDLabel: tenantID}, "8.8.8.8")))

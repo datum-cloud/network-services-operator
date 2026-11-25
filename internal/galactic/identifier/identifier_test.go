@@ -119,3 +119,58 @@ func TestVPCBase62RejectsReservedValuesAndFitsItsSegment(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTenantIdentifier(t *testing.T) {
+	tests := []struct {
+		name           string
+		id             string
+		wantVPC        string
+		wantAttachment string
+		wantOK         bool
+	}{
+		{name: "nine character vpc", id: "2wJqT7d9x-9xK", wantVPC: "2wJqT7d9x", wantAttachment: "9xK", wantOK: true},
+		{name: "short halves", id: "a-1", wantVPC: "a", wantAttachment: "1", wantOK: true},
+		{name: "vpc longer than nine characters", id: "2wJqT7d9xK-9xK"},
+		{name: "no separator", id: "2wJqT7d9x"},
+		{name: "empty vpc", id: "-9xK"},
+		{name: "empty attachment", id: "2wJqT7d-"},
+		{name: "second separator", id: "vpc-a-attachment"},
+		{name: "underscore", id: "vpc_a-9xK"},
+		{name: "dot in attachment", id: "vpc-9x.K"},
+		{name: "space", id: "vpc -9xK"},
+		{name: "trailing newline", id: "vpc-9xK\n"},
+		{name: "non-ascii letter", id: "vpcé-9xK"},
+		{name: "empty", id: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vpc, attachment, ok := ParseTenantIdentifier(tt.id)
+			if ok != tt.wantOK || vpc != tt.wantVPC || attachment != tt.wantAttachment {
+				t.Errorf("ParseTenantIdentifier(%q) = (%q, %q, %t), want (%q, %q, %t)",
+					tt.id, vpc, attachment, ok, tt.wantVPC, tt.wantAttachment, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestParseTenantIdentifierAcceptsGeneratedIdentifiers(t *testing.T) {
+	for _, value := range []uint64{1, 61, 62, MaxVPC - 1} {
+		vpc, err := VPCBase62(value)
+		if err != nil {
+			t.Fatalf("VPCBase62(%d): %v", value, err)
+		}
+		for attempt := range 50 {
+			attachment, err := VPCAttachmentBase62For(vpc, attempt)
+			if err != nil {
+				t.Fatalf("VPCAttachmentBase62For: %v", err)
+			}
+			id := vpc + "-" + attachment
+			gotVPC, gotAttachment, ok := ParseTenantIdentifier(id)
+			if !ok || gotVPC != vpc || gotAttachment != attachment {
+				t.Errorf("ParseTenantIdentifier(%q) = (%q, %q, %t), want (%q, %q, true)",
+					id, gotVPC, gotAttachment, ok, vpc, attachment)
+			}
+		}
+	}
+}

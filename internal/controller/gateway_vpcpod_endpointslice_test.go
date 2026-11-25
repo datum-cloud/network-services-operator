@@ -119,7 +119,7 @@ func TestVPCPodEndpointSliceWakesOnlyGatewaysRoutingToIt(t *testing.T) {
 	sameNameElsewhereRef.Namespace = ptr.To(gatewayv1.Namespace("ns-other"))
 
 	reqs := enqueuedForVPCPodSlice(t,
-		vpcPodTestSlice(map[string]string{VPCPodTenantIDLabel: "vpc-a-attachment-a"}),
+		vpcPodTestSlice(map[string]string{VPCPodTenantIDLabel: "vpcA-attachA"}),
 		vpcPodTestGateway("uses-pod"),
 		vpcPodTestRoute("uses-pod", vpcPodTestSliceRef(vpcPodTestSliceName)),
 		vpcPodTestGateway("uses-service"),

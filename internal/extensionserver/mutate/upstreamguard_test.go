@@ -186,13 +186,6 @@ func TestApplyUpstreamAddressGuard_Idempotent(t *testing.T) {
 	assert.Equal(t, []string{UpstreamAddressGuardFilterName, upstreamCodecFilterName}, guardFilterNames(t, cl))
 }
 
-func TestApplyUpstreamAddressGuard_RefusesDeprecatedProtocolFields(t *testing.T) {
-	cl := guardDNSCluster(testClusterName())
-	cl.Http2ProtocolOptions = &corev3.Http2ProtocolOptions{}
-	_, err := ApplyUpstreamAddressGuard([]*clusterv3.Cluster{cl}, guardTestIndex())
-	require.Error(t, err)
-}
-
 func deniedPrefixes(t *testing.T) []netip.Prefix {
 	t.Helper()
 	cl := guardDNSCluster(testClusterName())
@@ -209,8 +202,9 @@ func deniedPrefixes(t *testing.T) []netip.Prefix {
 	require.NotNil(t, policy)
 	require.True(t, policy.GetPrincipals()[0].GetAny())
 
-	var out []netip.Prefix
-	for _, p := range policy.GetPermissions()[0].GetOrRules().GetRules() {
+	rules := policy.GetPermissions()[0].GetOrRules().GetRules()
+	out := make([]netip.Prefix, 0, len(rules))
+	for _, p := range rules {
 		require.Equal(t, upstreamIPPortMatcherName, p.GetMatcher().GetName())
 		m := &upstreamipportv3.UpstreamIpPortMatcher{}
 		require.NoError(t, p.GetMatcher().GetTypedConfig().UnmarshalTo(m))

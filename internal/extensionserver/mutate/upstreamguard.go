@@ -180,12 +180,6 @@ func upstreamAddressGuardFilter() (*hcmv3.HttpFilter, error) {
 }
 
 func addUpstreamHTTPFilter(cl *clusterv3.Cluster, filter *hcmv3.HttpFilter) (bool, error) {
-	if cl.GetHttpProtocolOptions() != nil || cl.GetHttp2ProtocolOptions() != nil ||
-		cl.GetCommonHttpProtocolOptions() != nil || cl.GetUpstreamHttpProtocolOptions() != nil ||
-		cl.GetProtocolSelection() != clusterv3.Cluster_USE_CONFIGURED_PROTOCOL {
-		return false, fmt.Errorf("cluster sets deprecated HTTP protocol fields")
-	}
-
 	opts := &httpv3.HttpProtocolOptions{}
 	if existing, ok := cl.GetTypedExtensionProtocolOptions()[httpProtocolOptionsKey]; ok {
 		if err := existing.UnmarshalTo(opts); err != nil {

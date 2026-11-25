@@ -541,3 +541,23 @@ func TestParseWAFMode(t *testing.T) {
 	_, err = ParseWAFMode("block")
 	require.Error(t, err)
 }
+
+func TestHostnameAddWildcard(t *testing.T) {
+	t.Parallel()
+
+	proxy, err := BuildHTTPProxy(CreateInput{
+		Name:      "my-app",
+		Backends:  []BackendInput{urlBackend("https://origin.example.com")},
+		Hostnames: []string{"*.s3.example.com"},
+	})
+	require.NoError(t, err)
+
+	proxy, err = AddHostname(proxy, "*.a.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"*.s3.example.com", "*.a.example.com"}, Hostnames(proxy))
+
+	for _, bad := range []string{"a.*.example.com", "*", "*.com", "*.*.example.com"} {
+		_, err = AddHostname(proxy, bad)
+		require.Error(t, err, bad)
+	}
+}

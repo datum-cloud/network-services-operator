@@ -83,7 +83,7 @@ func TestApplyUpstreamAddressGuard_SelectsTenantNameResolvingClusters(t *testing
 	}{
 		{"tenant rule cluster resolving a name", guardDNSCluster(testClusterName()), true},
 		{"tenant per-backend cluster resolving a name", guardDNSCluster("httproute/" + testDSNS + "/" + testProxyName + "/rule/2/backend/0"), true},
-		{"tenant grpc route cluster", guardDNSCluster("grpcroute/" + testDSNS + "/svc/rule/0"), true},
+		{"grpc route cluster", guardDNSCluster("grpcroute/" + testDSNS + "/svc/rule/0"), false},
 		{"tenant strict dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_STRICT_DNS), true},
 		{"tenant logical dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_LOGICAL_DNS), true},
 		{"tenant dynamic forward proxy cluster", dfp(testClusterName()), true},

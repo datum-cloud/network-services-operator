@@ -2816,6 +2816,16 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				}
 
 				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
+					if !validTenantIdentifier(tenantID) {
+						refusal := fmt.Sprintf("label %s=%q is not a tenant identifier", VPCPodTenantIDLabel, tenantID)
+						logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
+						unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
+						downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
+							{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
+						}))
+						backendRefs = append(backendRefs, serviceBackendRef(downstreamGateway.Namespace, resourceName, backendRef))
+						continue
+					}
 					backendRefs = append(backendRefs, passThroughVPCPodBackendRef(downstreamGateway.Namespace, backendRef))
 				} else {
 					if !controllerutil.ContainsFinalizer(&upstreamEndpointSlice, gatewayControllerGCFinalizer) {
@@ -3020,6 +3030,11 @@ func (r *GatewayReconciler) refuseInternalEndpoints(
 		return ""
 	}
 	return errs.ToAggregate().Error()
+}
+
+func validTenantIdentifier(tenantID string) bool {
+	vpc, vpcAttachment, found := strings.Cut(tenantID, "-")
+	return found && vpc != "" && vpcAttachment != ""
 }
 
 func headlessService(namespace, name string, ports []corev1.ServicePort) *corev1.Service {

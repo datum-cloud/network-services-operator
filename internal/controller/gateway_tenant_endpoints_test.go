@@ -55,15 +55,15 @@ func TestTenantEndpointSliceAddressesAreChecked(t *testing.T) {
 		{name: "IPv4-mapped loopback", slice: tenantSlice(ipv6, nil, "::ffff:127.0.0.1"), refused: "::ffff:127.0.0.1"},
 		{name: "cluster name", slice: tenantSlice(fqdn, nil, "kubernetes.default.svc.cluster.local"), refused: "kubernetes.default.svc.cluster.local"},
 		{name: "short name", slice: tenantSlice(fqdn, nil, "kubernetes.default"), refused: "kubernetes.default"},
-		{name: "one internal address among public ones", slice: tenantSlice(ipv4, nil, "203.0.113.5", "10.0.0.1"), refused: "10.0.0.1"},
+		{name: "one internal address among public ones", slice: tenantSlice(ipv4, nil, "8.8.8.8", "10.0.0.1"), refused: "10.0.0.1"},
 		{
 			name:       "an address held by an interface in another project",
 			slice:      tenantSlice(ipv6, nil, "fd20:0:2::7"),
 			interfaces: []client.Object{networkInterfaceHolding("other", "vm-1", "fd20:0:2::7")},
 			refused:    "fd20:0:2::7",
 		},
-		{name: "public address", slice: tenantSlice(ipv4, nil, "203.0.113.5")},
-		{name: "public IPv6 address", slice: tenantSlice(ipv6, nil, "2001:db8::5")},
+		{name: "public address", slice: tenantSlice(ipv4, nil, "8.8.8.8")},
+		{name: "public IPv6 address", slice: tenantSlice(ipv6, nil, "2001:4860:4860::8888")},
 		{name: "public name", slice: tenantSlice(fqdn, nil, "origin.example.com")},
 		{name: "connector placeholder", slice: tenantSlice(fqdn, nil, connectorPlaceholderHost)},
 		{
@@ -122,7 +122,7 @@ func TestATenantIDLabelCarriesNoAddressesToTheEdge(t *testing.T) {
 
 func TestARefusedSliceRecoversOnceItsAddressesAreFixed(t *testing.T) {
 	rig := newMissingBackendRig(t, routeToEndpointSlice("route", "tenant"))
-	slice := tenantSlice(discoveryv1.AddressTypeIPv4, nil, "203.0.113.5")
+	slice := tenantSlice(discoveryv1.AddressTypeIPv4, nil, "8.8.8.8")
 	require.NoError(t, rig.upstream.Create(rig.ctx, slice))
 	rig.reconcileRoutes()
 	ref := rig.hubRoute("route").Spec.Rules[0].BackendRefs[0]
@@ -138,7 +138,7 @@ func TestARefusedSliceRecoversOnceItsAddressesAreFixed(t *testing.T) {
 	require.NotNil(t, rig.resolvedRefs("route"))
 
 	require.NoError(t, rig.upstream.Get(rig.ctx, client.ObjectKeyFromObject(slice), slice))
-	slice.Endpoints = []discoveryv1.Endpoint{{Addresses: []string{"203.0.113.6"}}}
+	slice.Endpoints = []discoveryv1.Endpoint{{Addresses: []string{"8.8.4.4"}}}
 	require.NoError(t, rig.upstream.Update(rig.ctx, slice))
 	rig.reconcileRoutes()
 

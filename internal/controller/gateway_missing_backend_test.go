@@ -159,7 +159,7 @@ func backendSlice(name string) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta:  metav1.ObjectMeta{Namespace: "test", Name: name},
 		AddressType: discoveryv1.AddressTypeIPv4,
-		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"192.0.2.10"}}},
+		Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"8.8.8.8"}}},
 		Ports: []discoveryv1.EndpointPort{
 			{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(8080))},
 		},

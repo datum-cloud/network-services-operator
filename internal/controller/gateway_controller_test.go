@@ -3367,7 +3367,7 @@ func TestProcessDownstreamHTTPRouteRulesNetworkServicePanicThreshold(t *testing.
 			},
 			AddressType: discoveryv1.AddressTypeIPv4,
 			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{"192.0.2.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+				{Addresses: []string{"8.8.8.8"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},
@@ -3505,7 +3505,7 @@ func TestProcessDownstreamHTTPRouteRulesLoadBalancer(t *testing.T) {
 			},
 			AddressType: discoveryv1.AddressTypeIPv4,
 			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{"192.0.2.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+				{Addresses: []string{"8.8.8.8"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},
@@ -3650,7 +3650,7 @@ func TestProcessDownstreamHTTPRouteRulesHealthCheck(t *testing.T) {
 			},
 			AddressType: discoveryv1.AddressTypeIPv4,
 			Endpoints: []discoveryv1.Endpoint{
-				{Addresses: []string{"192.0.2.1"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
+				{Addresses: []string{"8.8.8.8"}, Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(false)}},
 			},
 			Ports: []discoveryv1.EndpointPort{
 				{Name: ptr.To("http"), Protocol: ptr.To(corev1.ProtocolTCP), AppProtocol: ptr.To(SchemeHTTP), Port: ptr.To(int32(80))},

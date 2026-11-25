@@ -11,7 +11,6 @@ import (
 
 var tenantClusterKinds = map[string]struct{}{
 	"httproute":      {},
-	"grpcroute":      {},
 	"securitypolicy": {},
 }
 

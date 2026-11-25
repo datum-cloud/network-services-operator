@@ -146,7 +146,7 @@ func guardResolvesNames(cl *clusterv3.Cluster) bool {
 
 func parseTenantRouteClusterName(name string) (ns, route string, rule, backend int, ok bool) {
 	kind, rest, found := strings.Cut(name, "/")
-	if !found || (kind != "httproute" && kind != "grpcroute") {
+	if !found || kind != "httproute" {
 		return "", "", 0, 0, false
 	}
 	parts := strings.Split(rest, "/")

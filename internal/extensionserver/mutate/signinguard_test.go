@@ -91,9 +91,6 @@ func signInFixture(t *testing.T) ([]*listenerv3.Listener, []*routev3.RouteConfig
 }
 
 func signInClusters() []*clusterv3.Cluster {
-	strict := func(name string) *clusterv3.Cluster {
-		return &clusterv3.Cluster{Name: name, ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STRICT_DNS}}
-	}
 	return []*clusterv3.Cluster{
 		guardDNSCluster(tenantJWKSCluster),
 		guardDNSCluster(tenantTokenCluster),
@@ -101,10 +98,10 @@ func signInClusters() []*clusterv3.Cluster {
 		guardDNSCluster(platformJWKSCluster),
 		guardDNSCluster("unused_by_route_443"),
 		guardDNSCluster("securitypolicy/datum-downstream-gateway/sp/extauth/0"),
-		strict("xds_cluster"),
+		guardDNSCluster("xds_cluster"),
 		guardDNSCluster("ratelimit_cluster"),
 		guardDNSCluster("otel_metric_sink_0"),
-		strict("accesslog_als_0"),
+		guardDNSCluster("accesslog_als_0"),
 	}
 }
 

@@ -19,12 +19,7 @@ import (
 )
 
 func guardDNSCluster(name string) *clusterv3.Cluster {
-	return &clusterv3.Cluster{
-		Name: name,
-		ClusterDiscoveryType: &clusterv3.Cluster_ClusterType{
-			ClusterType: &clusterv3.Cluster_CustomClusterType{Name: "envoy.cluster.dns"},
-		},
-	}
+	return customDNSCluster(name, "envoy.cluster.dns")
 }
 
 func guardTestIndex() *extcache.PolicyIndex {
@@ -84,8 +79,10 @@ func TestApplyUpstreamAddressGuard_SelectsTenantNameResolvingClusters(t *testing
 		{"tenant rule cluster resolving a name", guardDNSCluster(testClusterName()), true},
 		{"tenant per-backend cluster resolving a name", guardDNSCluster("httproute/" + testDSNS + "/" + testProxyName + "/rule/2/backend/0"), true},
 		{"grpc route cluster", guardDNSCluster("grpcroute/" + testDSNS + "/svc/rule/0"), false},
-		{"tenant strict dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_STRICT_DNS), true},
-		{"tenant logical dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_LOGICAL_DNS), true},
+		{"tenant strict dns extension cluster", customDNSCluster(testClusterName(), "envoy.cluster.strict_dns"), true},
+		{"tenant logical dns extension cluster", customDNSCluster(testClusterName(), "envoy.cluster.logical_dns"), true},
+		{"tenant legacy strict dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_STRICT_DNS), true},
+		{"tenant legacy logical dns cluster", legacyDNS(testClusterName(), clusterv3.Cluster_LOGICAL_DNS), true},
 		{"tenant dynamic forward proxy cluster", dfp(testClusterName()), true},
 		{"tenant cluster with literal endpoints", edsCluster(testClusterName()), false},
 		{"tenant static cluster", staticCluster(testClusterName()), false},
@@ -100,7 +97,8 @@ func TestApplyUpstreamAddressGuard_SelectsTenantNameResolvingClusters(t *testing
 		{"unknown namespace route", guardDNSCluster("httproute/ns-other/proxy/rule/0"), false},
 		{"tls route cluster", guardDNSCluster("tlsroute/" + testDSNS + "/relay/rule/-1"), false},
 		{"oidc token endpoint cluster", guardDNSCluster("accounts_google_com_443"), false},
-		{"xds cluster", legacyDNS("xds_cluster", clusterv3.Cluster_STRICT_DNS), false},
+		{"xds cluster", guardDNSCluster("xds_cluster"), false},
+		{"legacy xds cluster", legacyDNS("xds_cluster", clusterv3.Cluster_STRICT_DNS), false},
 		{"malformed rule index", guardDNSCluster("httproute/" + testDSNS + "/p/rule/x"), false},
 		{"malformed backend segment", guardDNSCluster("httproute/" + testDSNS + "/p/rule/0/other/1"), false},
 	}

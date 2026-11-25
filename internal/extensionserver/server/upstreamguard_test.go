@@ -6,6 +6,7 @@ import (
 
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	dnsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/dns/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -39,7 +40,10 @@ func TestPostTranslateModify_UpstreamAddressGuard(t *testing.T) {
 			req := &pb.PostTranslateModifyRequest{Clusters: []*clusterv3.Cluster{{
 				Name: clusterName,
 				ClusterDiscoveryType: &clusterv3.Cluster_ClusterType{
-					ClusterType: &clusterv3.Cluster_CustomClusterType{Name: "envoy.cluster.dns"},
+					ClusterType: &clusterv3.Cluster_CustomClusterType{
+						Name:        "envoy.cluster.dns",
+						TypedConfig: mustAny(&dnsv3.DnsCluster{}),
+					},
 				},
 			}}}
 			resp, err := srv.PostTranslateModify(context.Background(), req)

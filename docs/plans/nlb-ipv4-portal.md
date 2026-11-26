@@ -98,7 +98,9 @@ up through the refusal path below.
 
 - Add mode only. The new listener gets its own address, so the patch's
   `value.families` follows the same field.
-- Edit mode keeps the existing address and shows no family field.
+- Edit mode shows the field too: checking IPv4 adds it to the listener's
+  existing address; unchecking it asks for confirmation before releasing the
+  IPv4 addresses, which can't be kept or guaranteed back.
 
 ### No allocation or used up (Task A)
 
@@ -265,31 +267,37 @@ family regardless of order.
   refusal detection.
 - Unit (2A/2B): as listed per task.
 - `npm run typecheck`, `npm test`, `npm run build` in `ui/consumer`.
-- Manual in a portal running cloud-portal ≥ v0.26.0, against a project with a
-  `public-ipv4claims` grant: create with IPv4, see both addresses on the
-  overview; add a listener with IPv4; in a project without a grant, see the
-  disabled option and open the prefilled request; exhaust the grant (backends
-  in two locations with limit 1) and see the refusal callout.
+- Manual in a local portal running cloud-portal ≥ v0.26.0 against staging,
+  in `personal-project-44245c5a` (limit 2): create with IPv4, see both
+  addresses on the overview; add a listener with IPv4; in a staging project
+  without a grant, see the disabled option and open the prefilled request;
+  exhaust the grant (backends in 3+ locations) and see the refusal callout.
 
 ## Real data
 
-Read-only `datumctl` against production:
+Read-only `datumctl` reads. Test in **staging**
+(`api.staging.env.datum.net`), never production.
 
-- `personal-project-44245c5a` was not visible to the authenticated session
-  (`projects.resourcemanager.miloapis.com "personal-project-44245c5a" not found`).
-- `personal-project-efb26a2b` (the user's personal project) has a granted
-  bucket: `resourceType: ipam.miloapis.com/public-ipv4claims`, `limit: 1`,
-  `allocated: 0`, `available: 1`, two contributing grants (1 and 0). It has no
-  NLBs, so the IPv4 status shape above comes from the API types and
-  controller, not a live object.
+- Staging `public-ipv4claims` buckets (2026-11-26): `personal-project-44245c5a`
+  (org `personal-org-44245c5a`), `project-clzxq`, `project-lrgbh` and
+  `project-zdhcz` each have limit 2 / available 2; `datum-cloud` (org
+  `datum-technology`) has limit 4 / allocated 1 / available 3.
+- Bucket shape (from a read in production): `AllowanceBucket` in
+  `milo-system`, `spec.resourceType: ipam.miloapis.com/public-ipv4claims`,
+  `status.{limit,allocated,available,claimCount}`, `contributingGrantRefs`
+  listing each `ResourceGrant` amount.
+- No NLB with IPv4 was read, so the IPv4 status shape above comes from the API
+  types and controller, not a live object.
 - No `ResourceRegistration` is listable from the project, which is why the
   SDK's `deniedReason` would show the raw resource type.
 
+## Decisions
+
+1. Edit mode can add or remove IPv4 on a listener's address, with a release
+   confirmation on removal.
+2. When the backend serves more locations than the project has IPv4 left, the
+   form warns but still allows IPv4.
+
 ## Open questions
 
-1. Should edit mode let a user add IPv4 to an existing listener's address
-   (patch `families`)? This plan keeps it out.
-2. Should the create form warn that each location takes one IPv4 address?
-3. Pricing copy and link (follow-up above).
-4. Which project did the brief mean by `personal-project-44245c5a`? It may be
-   in another environment.
+1. Pricing copy and link (follow-up above).

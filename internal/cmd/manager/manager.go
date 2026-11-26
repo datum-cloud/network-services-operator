@@ -681,7 +681,9 @@ func newClusterShardingCoordinator(
 }
 
 func newClusterShardingCoordinatorClient(cfg *rest.Config) (client.Client, error) {
-	uncachedClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	unlimited := rest.CopyConfig(cfg)
+	unlimited.QPS = -1
+	uncachedClient, err := client.New(unlimited, client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create the coordinator's client: %w", err)
 	}

@@ -375,6 +375,23 @@ export const networkLoadBalancerListenerSchema = z.object({
 
 export type NetworkLoadBalancerListener = z.infer<typeof networkLoadBalancerListenerSchema>;
 
+export const networkLoadBalancerAddressStatusSchema = z.object({
+  family: z.string(),
+  value: z.string().optional(),
+  conditions: z
+    .array(
+      z.object({
+        type: z.string(),
+        status: z.enum(['True', 'False', 'Unknown']),
+        reason: z.string().optional(),
+        message: z.string().optional(),
+      })
+    )
+    .default([]),
+});
+
+export type NetworkLoadBalancerAddressStatus = z.infer<typeof networkLoadBalancerAddressStatusSchema>;
+
 export const networkLoadBalancerEndpointSchema = z.object({
   requestName: z.string(),
   location: z.string(),
@@ -382,6 +399,8 @@ export const networkLoadBalancerEndpointSchema = z.object({
   hostname: z.string().optional(),
   /** Allocated addresses only; a family still pending has no value and is left out. */
   addresses: z.array(z.object({ family: z.string(), value: z.string() })).default([]),
+  /** Every requested family, allocated or not, with its Allocated condition. */
+  addressStatuses: z.array(networkLoadBalancerAddressStatusSchema).optional(),
 });
 
 export type NetworkLoadBalancerEndpoint = z.infer<typeof networkLoadBalancerEndpointSchema>;
@@ -395,6 +414,8 @@ export const networkLoadBalancerResourceSchema = z.object({
   listeners: z.array(networkLoadBalancerListenerSchema).default([]),
   /** spec.exposure.addresses names, in order, for JSON Patch paths. */
   addressNames: z.array(z.string()).optional(),
+  /** spec.exposure.addresses[].families, keyed by address name. */
+  addressFamilies: z.record(z.string(), z.array(z.enum(['IPv4', 'IPv6']))).optional(),
   endpoints: z.array(networkLoadBalancerEndpointSchema).default([]),
   readyStatus: z.enum(['True', 'False', 'Unknown']),
   readyReason: z.string().optional(),

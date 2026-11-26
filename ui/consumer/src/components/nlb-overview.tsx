@@ -7,6 +7,7 @@ import {
   type ListenerRow,
 } from './nlb-overview-model';
 import { StatusBadge } from './status-badge';
+import { IPV4_COPY } from '../lib/ipv4-quota';
 import type { BadgeType, NetworkLoadBalancer } from '../schema';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@datum-cloud/datum-ui/card';
@@ -25,7 +26,6 @@ import {
   ChevronRightIcon,
   CopyIcon,
   GlobeIcon,
-  InfoIcon,
   PlusIcon,
   ServerIcon,
   SplitIcon,
@@ -93,13 +93,19 @@ const NLB_CSS = `
   .nlb-backends { padding-left: 17.5rem; }
 }`;
 
-function Pending({ width = '10rem' }: { width?: string }) {
+function Pending({
+  width = '10rem',
+  label = 'Allocating an address',
+}: {
+  width?: string;
+  label?: string;
+}) {
   return (
     <Skeleton
       className="h-4 rounded"
       style={{ width, maxWidth: '100%' }}
-      title="Allocating an address"
-      aria-label="Allocating an address"
+      title={label}
+      aria-label={label}
     />
   );
 }
@@ -129,7 +135,16 @@ function cities(n: number) {
   return `${n} ${n === 1 ? 'city' : 'cities'}`;
 }
 
-function AddressesCard({ nlb, networkHref }: { nlb: NetworkLoadBalancer; networkHref?: string }) {
+function AddressesCard({
+  nlb,
+  rows,
+  networkHref,
+}: {
+  nlb: NetworkLoadBalancer;
+  rows: ListenerRow[];
+  networkHref?: string;
+}) {
+  const withIpv4 = rows.some((r) => r.ipv4Requested);
   const locations = new Set(
     nlb.endpoints.filter((e) => e.addresses.length > 0).map((e) => e.location)
   ).size;
@@ -150,7 +165,7 @@ function AddressesCard({ nlb, networkHref }: { nlb: NetworkLoadBalancer; network
               <span className="font-mono">{nlb.networkName ?? '—'}</span>
             )}
           </Fact>
-          <Fact label="Family">IPv6</Fact>
+          <Fact label="Family">{withIpv4 ? 'IPv6 + IPv4' : 'IPv6'}</Fact>
           <Fact label="Locations">
             {locations > 0 ? (
               `Follows backends · ${cities(locations)}`
@@ -159,10 +174,6 @@ function AddressesCard({ nlb, networkHref }: { nlb: NetworkLoadBalancer; network
             )}
           </Fact>
         </dl>
-        <span className="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
-          <Icon icon={InfoIcon} size={12} />
-          IPv4 coming soon
-        </span>
       </CardContent>
     </Card>
   );
@@ -177,8 +188,51 @@ function FlowArrow() {
   );
 }
 
+function Ipv4Problem({ state }: { state: ListenerRow['ipv4'] }) {
+  if (state === 'refused') {
+    return (
+      <span title={IPV4_COPY.quotaRefused} data-testid="networking-plugin-nlb-ipv4-refused">
+        <StatusBadge type="warning">IPv4 refused</StatusBadge>
+      </span>
+    );
+  }
+  if (state === 'failed') {
+    return (
+      <span title="Couldn’t assign a public IPv4 address">
+        <StatusBadge type="danger">IPv4 failed</StatusBadge>
+      </span>
+    );
+  }
+  return null;
+}
+
+function Ipv4Line({ row }: { row: ListenerRow }) {
+  if (!row.ipv4 || row.ipv4 === 'none') return null;
+  if (!row.ipv4Address) {
+    return row.ipv4 === 'pending' ? (
+      <Pending width="7rem" label="Allocating an IPv4 address" />
+    ) : (
+      <Ipv4Problem state={row.ipv4} />
+    );
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <CopyText value={row.ipv4Address} />
+      <Ipv4Problem state={row.ipv4} />
+    </span>
+  );
+}
+
 function AddressCell({ row }: { row: ListenerRow }) {
-  if (!row.address) return <Pending />;
+  const ipv4 = <Ipv4Line row={row} />;
+  if (!row.address) {
+    return (
+      <span className="flex min-w-0 flex-col gap-1">
+        <Pending />
+        {row.ipv4 !== 'pending' && ipv4}
+      </span>
+    );
+  }
   const others = row.locations - 1;
   return (
     <span className="flex min-w-0 flex-col gap-1" style={{ maxWidth: '18rem' }}>
@@ -191,6 +245,7 @@ function AddressCell({ row }: { row: ListenerRow }) {
           </span>
         )}
       </span>
+      {ipv4}
     </span>
   );
 }
@@ -455,6 +510,7 @@ export function NlbOverview({
   servicesHref,
   listenerActions,
   traffic,
+  notice,
 }: {
   nlb: NetworkLoadBalancer;
   rows: ListenerRow[];
@@ -466,10 +522,13 @@ export function NlbOverview({
   listenerActions?: ListenerActions;
   /** The traffic card under the traffic path. */
   traffic?: React.ReactNode;
+  /** Shown above the traffic path, e.g. an IPv4 allocation problem. */
+  notice?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-6">
       <style>{NLB_CSS}</style>
+      {notice}
       <section
         className="nlb-band flex flex-col gap-4 rounded-xl px-5 pt-5 pb-6 md:px-7"
         data-testid="networking-plugin-nlb-overview">
@@ -479,7 +538,7 @@ export function NlbOverview({
           <NlbStatusPill rows={rows} />
         </div>
         <div className="nlb-flow">
-          <AddressesCard nlb={nlb} networkHref={networkHref} />
+          <AddressesCard nlb={nlb} rows={rows} networkHref={networkHref} />
           <FlowArrow />
           <ListenersCard rows={rows} backendHref={servicesHref} actions={listenerActions} />
         </div>

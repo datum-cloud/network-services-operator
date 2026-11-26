@@ -176,6 +176,50 @@ describe('NlbTable', () => {
   });
 });
 
+describe('NlbTable IPv4', () => {
+  const refusal = {
+    family: 'IPv4',
+    conditions: [
+      {
+        type: 'Allocated',
+        status: 'False' as const,
+        reason: 'AllocationFailed',
+        message: "You've reached your quota for this resource type.",
+      },
+    ],
+  };
+
+  function endpoint(statuses: NonNullable<NetworkLoadBalancer['endpoints'][number]['addressStatuses']>) {
+    return {
+      requestName: 'udp-7777',
+      location: 'iad',
+      addresses: statuses.flatMap((a) => (a.value ? [{ family: a.family, value: a.value }] : [])),
+      addressStatuses: statuses,
+    };
+  }
+
+  it('flags an NLB whose IPv4 address was refused on quota, and one still allocating', () => {
+    renderTable(
+      [
+        makeNlb({ name: 'refused', endpoints: [endpoint([refusal])] }),
+        makeNlb({ name: 'waiting', addressFamilies: { 'udp-7777': ['IPv6', 'IPv4'] } }),
+        makeNlb({
+          name: 'served',
+          endpoints: [endpoint([{ family: 'IPv4', value: '203.0.113.7', conditions: [] }])],
+        }),
+        makeNlb({ name: 'v6-only' }),
+      ],
+      []
+    );
+    const rowOf = (name: string) =>
+      within(screen.getByRole('link', { name }).closest('tr') as HTMLElement);
+    expect(rowOf('refused').getByText('IPv4 refused')).toBeInTheDocument();
+    expect(rowOf('waiting').getByText('IPv4 pending')).toBeInTheDocument();
+    expect(rowOf('served').queryByTestId('networking-plugin-nlb-row-ipv4')).not.toBeInTheDocument();
+    expect(rowOf('v6-only').queryByTestId('networking-plugin-nlb-row-ipv4')).not.toBeInTheDocument();
+  });
+});
+
 describe('useDeleteNetworkLoadBalancer requests', () => {
   it('detaches shared routes, deletes its own, then deletes the NLB', async () => {
     const actual = await vi.importActual<typeof api>('../lib/api');

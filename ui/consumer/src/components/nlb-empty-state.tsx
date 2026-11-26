@@ -1,4 +1,5 @@
 import { albHref, computeWorkloadsHref, useNetworkServices } from '../lib/api';
+import { IPV4_COPY, useIpv4Availability, useRequestIpv4 } from '../lib/ipv4-quota';
 import type { NetworkService, NlbProtocol } from '../schema';
 import { CommandBlock } from './cli-section';
 import { Badge } from '@datum-cloud/datum-ui/badge';
@@ -260,9 +261,32 @@ function BackendLine({ projectId }: { projectId: string | undefined }) {
 
   return (
     <p data-testid="networking-plugin-nlb-backends" className="text-muted-foreground text-sm">
-      <BackendSummary projectId={projectId} services={services} /> <span className="mx-1">·</span>{' '}
-      IPv4 coming soon
+      <BackendSummary projectId={projectId} services={services} />
+      <Ipv4Note />
     </p>
+  );
+}
+
+function Ipv4Note() {
+  const availability = useIpv4Availability();
+  const requestIpv4 = useRequestIpv4();
+  if (availability.state === 'loading') return null;
+  return (
+    <>
+      {' '}
+      <span className="mx-1">·</span>{' '}
+      {availability.canChoose ? (
+        'IPv4 available as a paid add-on'
+      ) : (
+        <button
+          type="button"
+          title={IPV4_COPY.paidAddOn}
+          className="text-primary font-medium hover:underline"
+          onClick={() => requestIpv4()}>
+          {IPV4_COPY.requestAction}
+        </button>
+      )}
+    </>
   );
 }
 

@@ -11,7 +11,7 @@ helmCharts:
         kind: ControllerConfiguration
         enableGatewayAPI: true
     releaseName: cert-manager
-    version: 1.17.1
+    version: v1.17.4
     repo: https://charts.jetstack.io
   - name: cert-manager-csi-driver
     namespace: cert-manager

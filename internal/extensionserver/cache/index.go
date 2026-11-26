@@ -381,7 +381,7 @@ func canonicalAddress(address string) string {
 //
 // A VRF binding is a property of the whole Envoy cluster rather than of an
 // individual endpoint, so a backend whose members span more than one VPC has
-// no correct answer and is given none — binding to either VPC's device would
+// no correct answer and is given none: binding to either VPC's device would
 // black-hole the other's members. Members that resolve to no tenant are
 // skipped rather than treated as a conflict: a slice that has not federated
 // in yet must not unbind the members that have.

@@ -11,8 +11,6 @@ tracked here so no pin lingers unexamined. See #278.
 
 | Pin | Version | Where | Why | Unpin when |
 | --- | --- | --- | --- | --- |
-| helm | `v3.12.3` | `.github/workflows/test-e2e.yml:38` (setup-helm) | kustomize v5.5.0 probes helm with `helm version -c`; helm 3.13 dropped the `-c` shorthand, so latest helm breaks every `kustomize build --enable-helm` in `test-infra:up`. | kustomize bumps to a release that no longer issues the `-c` probe (or otherwise works with helm ≥3.13). Then drop `version:` and take latest helm. |
-| kustomize | `v5.5.0` | `Makefile:191` (`KUSTOMIZE_VERSION`) | Pre-existing; the root cause of the helm pin above. | Bump to a release that fixes the helm probe, then re-run `task validate-kustomizations` and the e2e env. Unblocks removing the helm pin. |
 | kind | `v0.32.0` | `Makefile:204` (`KIND_VERSION`) | `Taskfile.test-infra.yml:25` hardcodes `bin/kind-v0.32.0` to ship the prod node image; the Makefile pin was bumped from v0.27.0 so `make kind` builds that exact binary. The hardcoded path and the Makefile var can silently drift. | The Taskfile references the Makefile `KIND` var instead of the hardcoded `bin/kind-v0.32.0` path, so one pin governs both. Then this is just the normal kind pin. |
 
 ## Deliberate prod-fidelity pins — remove only on prod upgrade

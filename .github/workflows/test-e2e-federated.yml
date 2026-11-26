@@ -74,8 +74,6 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v5
         with:
-          # kustomize v5.5.0 probes helm with `helm version -c`; the -c shorthand
-          # was removed in helm 3.13, so pin to the last release that accepts it.
           version: v4.3.2
 
       - name: Install pinned tools (kind, karmadactl, kustomize, cmctl, chainsaw)

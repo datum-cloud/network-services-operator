@@ -142,7 +142,7 @@ control plane where users declare intent and reconciles into one or more
 
 ### Tooling
 Tool binaries are pinned in the `Makefile` and installed on demand into `bin/`:
-`controller-gen` v0.16.4, `kustomize` v5.5.0, `golangci-lint` v2.12.2,
+`controller-gen` v0.16.4, `kustomize` v5.8.3, `golangci-lint` v2.12.2,
 `chainsaw` v0.2.15, `kind` v0.27.0, `cmctl`, `crdoc`, `setup-envtest`. The
 project follows the Kubebuilder v4 layout (`PROJECT`, domain `datumapis.com`).
 

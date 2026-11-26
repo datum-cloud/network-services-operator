@@ -127,51 +127,40 @@ func isGuardedTenantCluster(cl *clusterv3.Cluster, idx *extcache.PolicyIndex) bo
 	if !guardResolvesNames(cl) || !isTenantCluster(cl.GetName(), idx) {
 		return false
 	}
-	ns, proxy, rule, backend, ok := parseTenantRouteClusterName(cl.GetName())
+	ns, proxy, rule, ok := parseTenantRouteClusterName(cl.GetName())
 	if !ok {
 		return false
 	}
-	if _, connector := idx.Connectors[extcache.ConnectorKey{Namespace: ns, HTTPProxyName: proxy, RuleIndex: rule}]; connector {
-		return false
-	}
-	if backend == ruleCluster {
-		_, vpc := idx.VPCPods[extcache.VPCPodKey{Namespace: ns, HTTPProxyName: proxy, RuleIndex: rule}]
-		return !vpc
-	}
-	_, vpc := idx.VPCPodBackends[extcache.VPCPodBackendKey{
-		Namespace: ns, HTTPProxyName: proxy, RuleIndex: rule, BackendIndex: backend,
-	}]
-	return !vpc
+	_, connector := idx.Connectors[extcache.ConnectorKey{Namespace: ns, HTTPProxyName: proxy, RuleIndex: rule}]
+	return !connector
 }
 
 func guardResolvesNames(cl *clusterv3.Cluster) bool {
 	return resolvesNames(cl) || cl.GetClusterType().GetName() == dynamicForwardProxyClusterType
 }
 
-func parseTenantRouteClusterName(name string) (ns, route string, rule, backend int, ok bool) {
+func parseTenantRouteClusterName(name string) (ns, route string, rule int, ok bool) {
 	kind, rest, found := strings.Cut(name, "/")
 	if !found || kind != "httproute" {
-		return "", "", 0, 0, false
+		return "", "", 0, false
 	}
 	parts := strings.Split(rest, "/")
 	if (len(parts) != 4 && len(parts) != 6) || parts[2] != "rule" {
-		return "", "", 0, 0, false
+		return "", "", 0, false
 	}
 	rule, err := strconv.Atoi(parts[3])
 	if err != nil || rule < 0 {
-		return "", "", 0, 0, false
+		return "", "", 0, false
 	}
-	backend = ruleCluster
 	if len(parts) == 6 {
 		if parts[4] != "backend" {
-			return "", "", 0, 0, false
+			return "", "", 0, false
 		}
-		backend, err = strconv.Atoi(parts[5])
-		if err != nil || backend < 0 {
-			return "", "", 0, 0, false
+		if backend, err := strconv.Atoi(parts[5]); err != nil || backend < 0 {
+			return "", "", 0, false
 		}
 	}
-	return parts[0], parts[1], rule, backend, true
+	return parts[0], parts[1], rule, true
 }
 
 func upstreamAddressGuardFilter() (*hcmv3.HttpFilter, error) {

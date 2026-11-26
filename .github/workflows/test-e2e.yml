@@ -63,10 +63,9 @@ jobs:
 
       - name: Run e2e suite
         run: >-
-          task test-infra:test-e2e --
-          ./test/e2e
-          --shard-count ${{ strategy.job-total }}
-          --shard-index ${{ strategy.job-index }}
+          task test-infra:test-e2e
+          SHARD_COUNT=${{ strategy.job-total }}
+          SHARD_INDEX=${{ strategy.job-index }}
 
       - name: Dump the downstream data plane on failure
         if: failure()

@@ -692,18 +692,20 @@ around it must hold for a relayed boot to work:
 
 - **The site router is the boot network's gateway.** The router relays DHCP
   from the gateway address of the boot network's subnet at that site, and the
-  central server picks the site's subnet by that relay address. The gateway NSO
-  reports on a boot claim must therefore be the router's address on the
-  provisioning VLAN.
+  central server picks the site's subnet by that relay address. NSO reports as
+  the gateway the address after the start address of the location's subnet, so
+  the router must hold that address on the provisioning VLAN and relay from it.
 - **Each site's boot subnet is distinct.** One central server serves every
   site, so two sites whose boot subnets overlap would look the same to it. The
   provider must give the boot network a subnet in each location that overlaps
   no other location's.
-- **The boot network routes to the central cluster.** Firmware sends every
-  request beyond its own subnet through the gateway. The site router must route
-  the boot network to the central DHCP and boot file servers and to nothing
-  else, as Fleet's proposal already asks network operations to do for the
-  site's DHCP service.
+- **The boot network and the central cluster route to each other.** Firmware
+  sends every request beyond its own subnet through the gateway, so the site
+  router must route the boot network to the central DHCP and boot file servers
+  and to nothing else. Replies travel the other way: a relayed DHCP reply goes
+  back to the router's relay address, and boot file traffic back to the
+  server's own address. The central cluster therefore needs a route back to
+  every site's boot subnet.
 
 A private segment still works. A server on a private segment reaches the
 network's gateway, which is the router, and every relayed request and boot file
@@ -853,7 +855,7 @@ Where the design differs, NSO's model points somewhere better:
 | The realizer restarts while changing a port | It recomputes what each port carries from the holds and claims, and changes the port again if a claim has a deletion timestamp. |
 | The realizer is down when a claim is deleted | The claim stays with its addresses held and the detach finalizer present, until the realizer returns or a break-glass operator removes it. |
 | NSO is down | No new claim binds and no claim releases. Ports keep what they carry. Fleet's proposal holds installs, wipes and releases until NSO returns. |
-| The central DHCP or boot file servers are unreachable from a site | NSO is unaffected. A boot claim stays `Programmed`, since the port carries the boot network, and the install waits on Fleet's own DHCP evidence. Releasing the boot claim works as usual. |
+| The central DHCP or boot file servers are unreachable from a site | NSO is unaffected. A boot claim stays `Programmed`, since the port carries the boot network. In Fleet's proposal the server is powered on only after DHCP reports its reservation served, so the install waits. Releasing the boot claim works as usual. |
 | IPAM is unreachable during release | The claim stays, reporting the failed release, and NSO retries. |
 | IPAM keeps an allocation after its IPAM claim is gone | The claim stays, reporting the allocation that remains. |
 | A claim is recreated under a name whose claim is still releasing | The create is refused as already existing. The writer retries after the old claim is gone. |
@@ -895,9 +897,11 @@ tests for concurrency, authorization, lifecycle and recovery.
   tells sites apart by subnet. Someone must decide whether NSO's boot network
   is the source the router and the central server are configured from, or the
   other way round, and who keeps them in step.
-- **Routing from the boot network to the central cluster.** Each site router
-  must route the boot network to the central DHCP and boot file servers and to
-  nothing else. Network operations must agree to own that route.
+- **Routing between the boot network and the central cluster.** Each site
+  router must route the boot network to the central DHCP and boot file servers
+  and to nothing else, and the central cluster must route back to every site's
+  boot subnet. Network operations, and whoever runs the central cluster, must
+  agree to own each direction.
 - **Fleet sets `purpose: Boot`.** NSO knows a boot claim from that field, not
   from the network it names. Fleet must agree to set it on each boot claim.
 - **A port NSO cannot release.** This design proposes a break-glass group that

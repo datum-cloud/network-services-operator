@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# config/e2e without its Deployments: the manager and the cell. The bring-up
+# applies this first, because its CRDs, certificate and webhook configurations
+# have to exist early. It applies config/e2e itself once the secrets that the
+# Deployments mount exist.
+resources:
+  - ../e2e
+
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: any

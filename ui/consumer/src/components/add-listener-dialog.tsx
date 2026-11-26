@@ -19,6 +19,8 @@ import {
 } from './nlb-create-form';
 import {
   ipv4Locations,
+  isConflict,
+  LISTENER_CHANGED_COPY,
   listenerHasIpv4,
   routeOnlyServes,
   toAddressFamiliesPatch,
@@ -36,7 +38,7 @@ import {
 import { releaseIpv4Message, useIpv4Availability, useRequestIpv4 } from '../lib/ipv4-quota';
 import type { NetworkLoadBalancer, NetworkService } from '../schema';
 import { Button } from '@datum-cloud/datum-ui/button';
-import { Form, useField, useWatch } from '@datum-cloud/datum-ui/form';
+import { Form, useWatch } from '@datum-cloud/datum-ui/form';
 import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { useQueryClient } from '@tanstack/react-query';
@@ -186,11 +188,14 @@ export function AddListenerDialog({
         added ?? (patch.length > 0 ? { protocol: values.protocol, port: values.port } : undefined);
       try {
         if (row.route) {
-          await mergePatchNetworkLoadBalancerRoute(
-            projectId as string,
-            row.route.name,
-            toRouteBackendPatch(row.route, nlb.name, row.listener, values)
-          );
+          const routeName = row.route.name;
+          const body = toRouteBackendPatch(nlb.name, row.listener, values);
+          const write = () =>
+            mergePatchNetworkLoadBalancerRoute(projectId as string, routeName, body);
+          await write().catch((err: unknown) => {
+            if (isConflict(asApiError(err))) return write();
+            throw err;
+          });
         } else {
           // A listener with no route gets the one it would have had from the start.
           const route = toAddListenerRequests(nlb, values).route;
@@ -202,7 +207,12 @@ export function AddListenerDialog({
         }
       } catch (err) {
         setAdded(saved);
-        return fail(toNlbCreateErrors(asApiError(err), 'route'));
+        const error = asApiError(err);
+        if (isConflict(error)) {
+          refresh();
+          return fail({ fields: {}, general: LISTENER_CHANGED_COPY });
+        }
+        return fail(toNlbCreateErrors(error, 'route'));
       }
       toast.success(`Saved ${values.protocol} ${values.port} on ${nlb.name}`);
       setAdded(undefined);
@@ -415,7 +425,6 @@ function ReleaseIpv4Confirm({
   onConfirm: () => void;
   onKeep: () => void;
 }) {
-  const { control } = useField('ipv4');
   const checked = isChecked(useWatch('ipv4'));
   if (checked) return null;
   return (
@@ -433,10 +442,7 @@ function ReleaseIpv4Confirm({
           theme="borderless"
           size="small"
           htmlType="button"
-          onClick={() => {
-            control.change(true);
-            onKeep();
-          }}>
+          onClick={onKeep}>
           Keep IPv4
         </Button>
       </div>

@@ -1,5 +1,6 @@
 import { AddListenerDialog, checkListener } from './add-listener-dialog';
 import { toAddListenerRequests, toNlbCreateErrors } from './nlb-create-form';
+import { LISTENER_CHANGED_COPY } from './nlb-listener-changes';
 import type { ListenerRow } from './nlb-overview-model';
 import * as api from '../lib/api';
 import { IPV4_COPY } from '../lib/ipv4-quota';
@@ -481,6 +482,71 @@ describe('AddListenerDialog editing', () => {
     },
     SELECT_TEST_TIMEOUT
   );
+
+  const ROUTE_CONFLICT =
+    'Operation cannot be fulfilled on networkloadbalancerroutes.networking.datumapis.com "edge-nlb-udp-7777": the object has been modified; please apply your changes to the latest version and try again';
+
+  function conflict() {
+    return { ok: false, status: 409, json: async () => ({ message: ROUTE_CONFLICT }) };
+  }
+
+  it('saves without the route’s resourceVersion, so status churn can’t make it stale', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(ok());
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderEdit(row(), withUdpIpv4);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/networkloadbalancerroutes\/edge-nlb-udp-7777$/);
+    expect(JSON.parse(init.body as string).metadata).toBeUndefined();
+  });
+
+  it('retries the route once on a conflict', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(conflict()).mockResolvedValue(ok());
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const onOpenChange = vi.fn();
+    vi.mocked(api.useNetworkServices).mockReturnValue({
+      data: [game, dns],
+      isLoading: false,
+      error: null,
+    } as never);
+    const host = fakePortalHost();
+    render(
+      <host.Wrapper>
+        <QueryClientProvider client={new QueryClient()}>
+          <AddListenerDialog
+            projectId="demo-project"
+            nlb={withUdpIpv4}
+            open
+            onOpenChange={onOpenChange}
+            editing={row()}
+          />
+        </QueryClientProvider>
+      </host.Wrapper>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1]).toEqual(fetchMock.mock.calls[0][1]);
+    expect(screen.queryByText(ROUTE_CONFLICT)).not.toBeInTheDocument();
+  });
+
+  it('explains a conflict that outlasts the retry, without the raw API text', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(conflict());
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    renderEdit(row(), withUdpIpv4);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText(LISTENER_CHANGED_COPY)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(ROUTE_CONFLICT)).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
 
   it('won’t add IPv4 to an existing listener when the project has none left', () => {
     const { host } = renderEdit(row(), withUdp, IPV4_VERDICTS.usedUp);

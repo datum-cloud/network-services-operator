@@ -1,6 +1,6 @@
 import type { QuotaIncreaseRequest, ResourceQuotaVerdict } from '@datum-cloud/portal-plugin-sdk';
 import { type PortalPluginHostBindings, PortalPluginHostProvider } from '@datum-cloud/portal-plugin-sdk/host';
-import type { ReactNode } from 'react';
+import { type ReactNode, StrictMode } from 'react';
 import { vi } from 'vitest';
 
 export const IPV4_VERDICTS = {
@@ -38,7 +38,11 @@ export function fakePortalHost(verdict: ResourceQuotaVerdict = IPV4_VERDICTS.ava
     useRequestQuotaIncrease: () => requestQuotaIncrease,
   };
   function Wrapper({ children }: { children: ReactNode }) {
-    return <PortalPluginHostProvider bindings={bindings}>{children}</PortalPluginHostProvider>;
+    return (
+      <StrictMode>
+        <PortalPluginHostProvider bindings={bindings}>{children}</PortalPluginHostProvider>
+      </StrictMode>
+    );
   }
   return { Wrapper, bindings, useResourceQuota, requestQuotaIncrease };
 }

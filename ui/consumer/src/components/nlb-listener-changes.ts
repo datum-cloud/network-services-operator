@@ -90,6 +90,13 @@ export function planDeleteListener(
  * Changes the listener's protocol and port in place, so it keeps its address.
  * Its name stays as it was: routes refer to it by name.
  */
+export const LISTENER_CHANGED_COPY =
+  'This listener changed while you were editing. Reload and try again.';
+
+export function isConflict(error: { status: number }): boolean {
+  return error.status === 409;
+}
+
 export function toEditListenerPatch(
   nlb: NetworkLoadBalancer,
   listener: NetworkLoadBalancerListener,
@@ -110,7 +117,6 @@ export function toEditListenerPatch(
  * the listener, since one that picked it by port would lose it to a port change.
  */
 export function toRouteBackendPatch(
-  route: NetworkLoadBalancerRoute,
   nlbName: string,
   listener: NetworkLoadBalancerListener,
   values: NlbListenerValues
@@ -120,7 +126,6 @@ export function toRouteBackendPatch(
       ? { protocol: 'TCP', port: values.healthPort }
       : { protocol: 'TCP' };
   return {
-    metadata: { resourceVersion: route.resourceVersion },
     spec: {
       parentRefs: [{ name: nlbName, listener: listener.name }],
       backends: [

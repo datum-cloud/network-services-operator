@@ -119,7 +119,7 @@ describe('toRouteBackendPatch', () => {
     const route = makeRoute('by-port', [{ name: 'edge-nlb', port: 7777 }]);
     expect(routeOnlyServes(route, 'edge-nlb', udp)).toBe(true);
     expect(
-      toRouteBackendPatch(route, 'edge-nlb', udp, {
+      toRouteBackendPatch('edge-nlb', udp, {
         protocol: 'UDP',
         port: 7777,
         backend: 'dns',
@@ -127,7 +127,6 @@ describe('toRouteBackendPatch', () => {
         healthPort: 'dns-tcp',
       })
     ).toEqual({
-      metadata: { resourceVersion: '7' },
       spec: {
         parentRefs: [{ name: 'edge-nlb', listener: 'udp-7777' }],
         backends: [

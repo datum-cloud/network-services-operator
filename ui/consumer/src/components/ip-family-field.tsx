@@ -1,9 +1,9 @@
 import { IPV4_COPY, type Ipv4Availability, ipv4LocationsWarning } from '../lib/ipv4-quota';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Checkbox } from '@datum-cloud/datum-ui/checkbox';
-import { Form, useField, useWatch } from '@datum-cloud/datum-ui/form';
+import { useField } from '@datum-cloud/datum-ui/form';
 import { Label } from '@datum-cloud/datum-ui/label';
-import { useEffect, useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
 export const IP_FAMILY_COPY = {
   label: 'Address families',
@@ -30,13 +30,21 @@ export function IpFamilyField({
   resetKey?: number;
 }) {
   const ipv6Id = useId();
+  const ipv4Id = useId();
   const { control } = useField('ipv4');
-  const checked = isChecked(useWatch('ipv4'));
+  const checked = isChecked(control.value);
   const enabled = hasIpv4 || availability.canChoose;
 
   useEffect(() => {
     if (!enabled && checked) control.change(false);
   }, [enabled, checked, control]);
+
+  const appliedReset = useRef(resetKey);
+  useEffect(() => {
+    if (appliedReset.current === resetKey) return;
+    appliedReset.current = resetKey;
+    control.change(hasIpv4);
+  }, [resetKey, hasIpv4, control]);
 
   const explainDisabled = !enabled && availability.state !== 'loading';
   const adding = checked && !hasIpv4;
@@ -57,9 +65,19 @@ export function IpFamilyField({
           <span className="text-muted-foreground ml-2 text-xs">{IP_FAMILY_COPY.ipv6Hint}</span>
         </Label>
       </div>
-      <Form.Field key={`${enabled}-${resetKey}`} name="ipv4">
-        <Form.Checkbox label={IPV4_COPY.optionLabel} disabled={!enabled} />
-      </Form.Field>
+      <div className="flex items-center space-x-2">
+        <Checkbox
+          id={ipv4Id}
+          checked={checked}
+          disabled={!enabled}
+          onCheckedChange={(value) => control.change(value === true)}
+        />
+        <Label
+          htmlFor={ipv4Id}
+          className={`text-sm font-normal ${enabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'}`}>
+          {IPV4_COPY.optionLabel}
+        </Label>
+      </div>
       {availability.state === 'loading' && !hasIpv4 && (
         <p className="text-muted-foreground text-xs">{IPV4_COPY.checking}</p>
       )}

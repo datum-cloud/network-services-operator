@@ -449,3 +449,71 @@ describe('NlbDetail IPv4', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe('NlbDetail edit listener with IPv4', () => {
+  const redis: NetworkLoadBalancer = {
+    uid: 'redis-uid',
+    name: 'redisnlb',
+    resourceVersion: '900',
+    createdAt: new Date('2026-11-26T00:00:00Z'),
+    networkName: 'kevnett',
+    listeners: [{ name: 'tcp-6565', protocol: 'TCP', port: 6565, addressRef: 'tcp-6565', index: 0 }],
+    addressNames: ['tcp-6565'],
+    addressFamilies: { 'tcp-6565': ['IPv6', 'IPv4'] },
+    endpoints: [
+      {
+        requestName: 'tcp-6565',
+        location: 'us-central-1',
+        addresses: [
+          { family: 'IPv6', value: '2607:ed40:1fe:1000::4' },
+          { family: 'IPv4', value: '67.14.170.2' },
+        ],
+      },
+    ],
+    readyStatus: 'True',
+  };
+  const redisRoute: NetworkLoadBalancerRoute = {
+    uid: 'rr',
+    name: 'redisnlb-tcp-6565',
+    resourceVersion: '1',
+    parents: [{ name: 'redisnlb', listener: 'tcp-6565' }],
+    backendNames: ['redis'],
+    backends: [{ name: 'redis', port: 'redis', healthCheck: { protocol: 'TCP' } }],
+    parentStatuses: [{ name: 'redisnlb', listener: 'tcp-6565', effective: true, status: 'True' }],
+  };
+  const redisService: NetworkService = {
+    ...service,
+    uid: 'redis',
+    name: 'redis',
+    ports: [{ name: 'redis', port: 6379, protocol: 'TCP' }],
+    summary: { locations: 1, members: 1, healthy: 1 },
+  };
+
+  function openEdit() {
+    mockQuery(useNlbMock, { data: redis });
+    mockQuery(useRoutesMock, { data: [redisRoute] });
+    mockQuery(useServicesMock, { data: [redisService] });
+    renderPage('/project/demo-project/services/networking/nlb/redisnlb');
+    fireEvent.click(within(listenerRow('tcp-6565')).getByRole('button', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  }
+
+  it('opens with IPv4 checked when the listener’s address has IPv4', async () => {
+    openEdit();
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Edit TCP 6565');
+    expect(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel })).toBeChecked();
+  });
+
+  it('asks before releasing IPv4, before any write', async () => {
+    openEdit();
+    const dialog = await screen.findByRole('dialog');
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockClear();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('button', { name: 'Release IPv4 and save' })).toBeInTheDocument();
+    const writes = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method);
+    expect(writes).toEqual([]);
+  });
+});

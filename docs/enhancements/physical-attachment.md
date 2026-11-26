@@ -332,7 +332,10 @@ identities may set it, like everything else on a physical claim.
 
 A boot claim is accepted only in a provider project's namespace. Each cell's
 configuration lists the provider projects, and admission refuses `purpose:
-Boot` in a namespace whose project is not on the list. A customer's network can
+Boot` in a namespace whose project is not on the list. Admission reads the
+project from the namespace's `meta.datumapis.com/upstream-cluster-name` label,
+the label NSO already reads to find a namespace's project before it allocates
+addresses. A customer's network can
 therefore never outrank another claim on a port, whoever writes the claim.
 
 NSO does not mark which networks are boot networks. A boot claim may name any
@@ -436,6 +439,11 @@ claim compute writes in any other mode is admitted exactly as it is today.
 
 The rule checks the authenticated requester, which is the only identity it can
 trust. It does not record that identity on the claim.
+
+A provider identity is still refused a claim with `purpose: Boot` in a
+namespace whose project is not on the cell's list of provider projects, as
+[Boot claims and network claims](#boot-claims-and-network-claims) describes.
+Both lists are parameters of the admission rule, set per cell.
 
 NSO's own identity is exempt, because NSO writes finalizers and status on every
 claim. The realizer's identity may write status on a physical claim.
@@ -660,8 +668,9 @@ there.
 - **Lifetime.** The provider names a boot claim from the operation it serves,
   creates it before the operation starts and deletes it when the operation ends.
   NSO adds no lifetime of its own.
-- **Isolation.** The provider sets `isolation: Private` on a boot claim to keep
-  the server away from the others on the boot network.
+- **Isolation.** A boot claim that leaves `isolation` unset keeps the server
+  away from the others on the boot network. A provider that wants a shared boot
+  segment writes `isolation: Shared`.
 - **Serving firmware.** NSO hands out the address and the gateway. Whatever
   answers firmware's DHCP request with that address is the provider's, and its
   configuration must use the boot network's subnet at that site.
@@ -697,9 +706,10 @@ The realizer:
 Three rules keep it safe:
 
 - **Withdraw before changing a port.** Before it changes a port, the realizer
-  writes `Programmed=False` on every claim whose network the change adds or
-  removes. A claim never reports `Programmed=True` for a port that is between
-  states.
+  writes `Programmed=False`, with reason `PortChanging`, on every claim whose
+  network the change adds or removes. If that write fails, the realizer leaves
+  the port alone and tries again. A claim never reports `Programmed=True` for a
+  port that is between states.
 - **Read the port back.** A change counts only once the realizer has read the
   port back from the switch and found what it asked for. A change that fails,
   or only partly applies, leaves the port's state unknown. The realizer keeps

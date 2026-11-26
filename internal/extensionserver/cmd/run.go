@@ -70,14 +70,16 @@ func envBool(key string, def bool) bool {
 //	--tls-client-ca=/tls/ca.crt
 //	--server-config=/config/config.yaml  (optional; provides Coraza WAF config)
 //	--enable-programmed-set=false         (default off; test environments set true)
+//	--upstream-address-guard=false
 type options struct {
-	grpcAddr            string
-	healthAddr          string
-	tlsCert             string
-	tlsKey              string
-	tlsClientCA         string
-	serverCfgFile       string
-	enableProgrammedSet bool
+	grpcAddr             string
+	healthAddr           string
+	tlsCert              string
+	tlsKey               string
+	tlsClientCA          string
+	serverCfgFile        string
+	enableProgrammedSet  bool
+	upstreamAddressGuard bool
 }
 
 // NewCommand returns the "extension-server" subcommand.
@@ -104,6 +106,8 @@ func NewCommand() *cobra.Command {
 	fs.StringVar(&o.serverCfgFile, "server-config", "", "Path to operator config file (optional; provides Coraza WAF settings)")
 	fs.BoolVar(&o.enableProgrammedSet, "enable-programmed-set", false,
 		"Serve the read-only /debug/programmed-set endpoint used by the parity test (test environments only)")
+	fs.BoolVar(&o.upstreamAddressGuard, "upstream-address-guard", false,
+		"Refuse requests from tenant clusters that resolve names when the selected address is not public unicast")
 
 	cmd := &cobra.Command{
 		Use:   "envoy-gateway-extension-server",
@@ -311,7 +315,8 @@ func run(o options) {
 		LocalReply:                buildLocalReplyConfig(serverConfig.Gateway.ErrorPage, log),
 		// The programmed-set debug endpoint is for the test environment only; it
 		// stays off in production unless --enable-programmed-set is passed.
-		EnableProgrammedSet: o.enableProgrammedSet,
+		EnableProgrammedSet:  o.enableProgrammedSet,
+		UpstreamAddressGuard: o.upstreamAddressGuard,
 	}
 
 	// --- gRPC panic recovery interceptor ---

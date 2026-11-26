@@ -49,6 +49,10 @@ linters:
           - staticcheck
         path: _test\.go
         text: 'SA1019: \(github\.com/envoyproxy/gateway/api/v1alpha1\.'
+      - linters:
+          - staticcheck
+        path: internal/extensionserver/mutate/upstreamguard(_hosts_test)?\.go
+        text: 'SA1019: \(\*?github\.com/envoyproxy/go-control-plane/envoy/config/cluster/v3\.Cluster\)\.(Get)?(DnsRefreshRate|RespectDnsTtl|DnsJitter|DnsFailureRefreshRate) is deprecated'
     paths:
       - third_party$
       - builtin$

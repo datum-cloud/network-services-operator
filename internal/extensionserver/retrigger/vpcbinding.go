@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -86,6 +87,11 @@ func (r *VPCBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.proxiesForEndpointSlice),
 			builder.WithPredicates(endpointSlicePredicate()),
 		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.proxiesInNamespace),
+			builder.WithPredicates(namespacePredicate()),
+		).
 		Named("extension-server-vpc-binding-retrigger").
 		Complete(r)
 }
@@ -140,6 +146,21 @@ func (r *VPCBindingReconciler) proxiesForEndpointSlice(ctx context.Context, obj 
 	return requests
 }
 
+func (r *VPCBindingReconciler) proxiesInNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	var proxies networkingv1alpha.HTTPProxyList
+	if err := r.Client.List(ctx, &proxies, client.InNamespace(obj.GetName())); err != nil {
+		log.FromContext(ctx).Error(err, "list HTTPProxies for vpc binding", "namespace", obj.GetName())
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range proxies.Items {
+		if extcache.HasVPCBackend(&proxies.Items[i]) {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&proxies.Items[i])})
+		}
+	}
+	return requests
+}
+
 func proxyUsesSlice(proxy *networkingv1alpha.HTTPProxy, slice *discoveryv1.EndpointSlice, owners map[client.ObjectKey]struct{}) bool {
 	for ruleIndex, rule := range proxy.Spec.Rules {
 		for backendIndex, backend := range rule.Backends {
@@ -181,6 +202,9 @@ func isVPCBindingInput(obj client.Object) bool {
 func vpcBindingInputChanged(oldSlice, newSlice *discoveryv1.EndpointSlice) bool {
 	return oldSlice.Labels[extcache.VPCPodTenantIDLabel] != newSlice.Labels[extcache.VPCPodTenantIDLabel] ||
 		oldSlice.Labels[downstreamclient.UpstreamOwnerNameLabel] != newSlice.Labels[downstreamclient.UpstreamOwnerNameLabel] ||
+		oldSlice.Labels[extcache.VPCEndpointSliceProjectionLabel] != newSlice.Labels[extcache.VPCEndpointSliceProjectionLabel] ||
+		oldSlice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] != newSlice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] ||
+		!equality.Semantic.DeepEqual(oldSlice.OwnerReferences, newSlice.OwnerReferences) ||
 		!equality.Semantic.DeepEqual(sliceAddresses(oldSlice), sliceAddresses(newSlice))
 }
 
@@ -199,6 +223,18 @@ func endpointSlicePredicate() predicate.Predicate {
 				return false
 			}
 			return vpcBindingInputChanged(oldSlice, newSlice)
+		},
+	}
+}
+
+func namespacePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetLabels()[downstreamclient.UpstreamOwnerClusterNameLabel] !=
+				e.ObjectNew.GetLabels()[downstreamclient.UpstreamOwnerClusterNameLabel]
 		},
 	}
 }

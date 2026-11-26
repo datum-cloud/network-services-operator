@@ -5,9 +5,8 @@
 package cache
 
 import (
-	"strings"
-
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/galactic/identifier"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
@@ -138,6 +137,15 @@ type ConnectorKey struct {
 // controller packages are kept decoupled.
 const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
 
+const VPCEndpointSliceProjectionLabel = "networking.datumapis.com/vpc-endpointslice-projection"
+
+const (
+	VPCBindingRefusalUnresolved    = "unresolved"
+	VPCBindingRefusalUntrusted     = "untrusted_slice"
+	VPCBindingRefusalConflict      = "conflict"
+	VPCBindingRefusalInvalidTenant = "invalid_tenant"
+)
+
 // TenantVPC returns the VPC half of a "<vpc>-<vpcAttachment>" tenant
 // identifier. galactic names a VRF device by the VPC alone, so every
 // attachment landing on one VPC shares a single device and the attachment
@@ -146,11 +154,8 @@ const VPCPodTenantIDLabel = "galactic.datum.net/tenant-id"
 //
 // Mirrors crdnames.ParseTenantIdentifier in datum-cloud/galactic.
 func TenantVPC(tenantID string) (string, bool) {
-	vpc, vpcAttachment, found := strings.Cut(tenantID, "-")
-	if !found || vpc == "" || vpcAttachment == "" {
-		return "", false
-	}
-	return vpc, true
+	vpc, _, ok := identifier.ParseTenantIdentifier(tenantID)
+	return vpc, ok
 }
 
 // VPCPodInfo holds the fields the mutation layer needs to bind an Envoy
@@ -162,6 +167,8 @@ type VPCPodInfo struct {
 	// when no tenant could be resolved; callers must treat that as "skip
 	// mutation," never bind to a zero-value device name.
 	TenantID string
+
+	Refusal string
 }
 
 // VPCPodKey uniquely identifies an HTTPProxy rule that has a vpcPod backend.

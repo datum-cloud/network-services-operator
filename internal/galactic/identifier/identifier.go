@@ -26,6 +26,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -93,4 +94,14 @@ func VPCAttachmentBase62For(seed string, attempt int) (string, error) {
 		return "", err
 	}
 	return HexToBase62(hex)
+}
+
+var tenantIdentifierPattern = regexp.MustCompile(`^([A-Za-z0-9]{1,9})-([A-Za-z0-9]+)$`)
+
+func ParseTenantIdentifier(id string) (vpc, vpcAttachment string, ok bool) {
+	match := tenantIdentifierPattern.FindStringSubmatch(id)
+	if match == nil {
+		return "", "", false
+	}
+	return match[1], match[2], true
 }

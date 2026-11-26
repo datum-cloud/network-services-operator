@@ -310,7 +310,7 @@ func (s *Server) PostTranslateModify(
 	// right tenant's address space for that backend. Independent of the TPP
 	// and Connector families above — a cluster is at most one of the three.
 	_, vpcPodSpan := tr.Start(mctx, "vpcpod.clusters")
-	vpcPodCount, err := mutate.ApplyVPCPodSocketBind(clusters, idx)
+	vpcPodCount, vpcRefused, err := mutate.ApplyVPCPodSocketBind(clusters, idx)
 	vpcPodSpan.SetAttributes(attribute.Int("clusters.vpcpod_bound", vpcPodCount))
 	vpcPodSpan.End()
 	if err != nil {
@@ -323,6 +323,14 @@ func (s *Server) PostTranslateModify(
 		return nil, err
 	}
 	extmetrics.VPCPodSocketBindTotal.Add(float64(vpcPodCount))
+	for _, refusal := range vpcRefused {
+		extmetrics.VPCBindingRefusedTotal.WithLabelValues(refusal.Reason).Inc()
+		if refusal.Reason == extcache.VPCBindingRefusalUnresolved {
+			s.log.Info("left VPC backend cluster unbound", "cluster", refusal.Cluster, "reason", refusal.Reason)
+			continue
+		}
+		s.log.Warn("left VPC backend cluster unbound", "cluster", refusal.Cluster, "reason", refusal.Reason)
+	}
 
 	var guardedCount, signInGuardedCount int
 	if s.cfg.UpstreamAddressGuard {

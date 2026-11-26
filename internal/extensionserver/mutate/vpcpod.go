@@ -39,7 +39,7 @@ const (
 // "httproute/<dsNS>/<proxyName>/rule/<idx>/backend/<i>".
 //
 // Returns the number of clusters mutated.
-func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIndex) (mutated int, err error) {
+func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIndex) (mutated int, refused []VPCBindingRefusal, err error) {
 	for _, cl := range clusters {
 		dsNS, proxyName, ruleIndex, backendIndex, ok := parseRouteClusterName(cl.GetName())
 		if !ok {
@@ -61,9 +61,15 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 				BackendIndex:  backendIndex,
 			}]
 		}
-		if !ok || info.TenantID == "" {
-			// No vpcPod backend on this rule, or the referenced EndpointSlice
-			// was missing/unlabeled — never bind to a zero-value device name.
+		if !ok {
+			continue
+		}
+		if info.TenantID == "" {
+			reason := info.Refusal
+			if reason == "" {
+				reason = extcache.VPCBindingRefusalUnresolved
+			}
+			refused = append(refused, VPCBindingRefusal{Cluster: cl.GetName(), Reason: reason})
 			continue
 		}
 
@@ -73,15 +79,21 @@ func ApplyVPCPodSocketBind(clusters []*clusterv3.Cluster, idx *extcache.PolicyIn
 			// device answers to the name it implies. Binding to a name the
 			// kernel cannot resolve fails every connection on this cluster,
 			// which is strictly worse than leaving it unbound.
+			refused = append(refused, VPCBindingRefusal{Cluster: cl.GetName(), Reason: extcache.VPCBindingRefusalInvalidTenant})
 			continue
 		}
 
 		if bindErr := applyVPCPodBindConfig(cl, device); bindErr != nil {
-			return mutated, fmt.Errorf("apply vpcPod socket-bind for cluster %q: %w", cl.GetName(), bindErr)
+			return mutated, refused, fmt.Errorf("apply vpcPod socket-bind for cluster %q: %w", cl.GetName(), bindErr)
 		}
 		mutated++
 	}
-	return mutated, nil
+	return mutated, refused, nil
+}
+
+type VPCBindingRefusal struct {
+	Cluster string
+	Reason  string
 }
 
 // applyVPCPodBindConfig sets upstream_bind_config on an existing cluster,
@@ -136,7 +148,7 @@ const maxInterfaceNameLen = 15
 // never bind to a guessed device name.
 func vrfDeviceName(tenantID string) (device string, ok bool) {
 	vpc, ok := extcache.TenantVPC(tenantID)
-	if !ok || len(vpc) > 9 {
+	if !ok {
 		return "", false
 	}
 	return fmt.Sprintf("G%09sV", vpc), true

@@ -206,3 +206,22 @@ func TestAFailedInterfaceLookupRefusesOnlyThatBackend(t *testing.T) {
 	servedRef := rig.hubRoute("served").Spec.Rules[0].BackendRefs[0]
 	assert.NoError(t, rig.hubSlice(servedRef.Name), "the other route is still programmed")
 }
+
+func TestAMalformedTenantIDLabelIsRefused(t *testing.T) {
+	for _, tenantID := range []string{"nodash", "-attachment", "vpc-", "abcdefghij-x1", "vpc_a-x1", "vpc-a-x1", "vpc.a-x1"} {
+		t.Run(tenantID, func(t *testing.T) {
+			rig := newMissingBackendRig(t, routeToEndpointSlice("route", "tenant"))
+			require.NoError(t, rig.upstream.Create(rig.ctx, tenantSlice(discoveryv1.AddressTypeIPv4, map[string]string{VPCPodTenantIDLabel: tenantID}, "8.8.8.8")))
+
+			rig.reconcileRoutes()
+
+			ref := rig.hubRoute("route").Spec.Rules[0].BackendRefs[0]
+			assert.Equal(t, KindService, string(ptr.Deref(ref.Kind, "")), "a refused slice is not passed through")
+			condition := rig.resolvedRefs("route")
+			require.NotNil(t, condition)
+			assert.Equal(t, metav1.ConditionFalse, condition.Status)
+			assert.Equal(t, string(gatewayv1.RouteReasonRefNotPermitted), condition.Reason)
+			assert.Contains(t, condition.Message, "test/tenant")
+		})
+	}
+}

@@ -172,6 +172,14 @@ var (
 		},
 	)
 
+	VPCBindingRefusedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nso_extension_vpc_binding_refused_total",
+			Help: "VPC backends left without a network device binding, by reason",
+		},
+		[]string{"reason"},
+	)
+
 	// TLSPrunedChainsTotal tracks how often a broken certificate had to be
 	// dropped from a listener to keep the rest of it serving (issue #212).
 	TLSPrunedChainsTotal = promauto.NewCounter(

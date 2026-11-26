@@ -9,9 +9,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -65,8 +67,11 @@ func tenantSlice(name string, addresses ...string) *discoveryv1.EndpointSlice {
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "galactic-system",
+			Namespace: testNS,
 			Labels:    map[string]string{extcache.VPCPodTenantIDLabel: testTenant},
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: "v1", Kind: "Pod", Name: name, UID: types.UID(name)},
+			},
 		},
 		AddressType: discoveryv1.AddressTypeIPv6,
 		Endpoints:   []discoveryv1.Endpoint{{Addresses: addresses}},
@@ -105,6 +110,34 @@ func TestVPCBinding_LateTenantSliceChangesGatewayAnnotation(t *testing.T) {
 
 	reconcileBinding(t, cl)
 	assert.Equal(t, bound, gatewayBinding(t, cl))
+}
+
+func TestVPCBinding_LateFederatedCopyChangesGatewayAnnotation(t *testing.T) {
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   testNS,
+		Labels: map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-single"},
+	}}
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
+		WithObjects(namespace, networkServiceProxy(testProxy), gateway(), backendCopy(testProxy, testMember)).
+		Build()
+
+	reconcileBinding(t, cl)
+	unbound := gatewayBinding(t, cl)
+	require.NotEmpty(t, unbound)
+
+	unowned := tenantSlice("vpc-us-central-1-unowned", testMember)
+	unowned.OwnerReferences = nil
+	require.NoError(t, cl.Create(context.Background(), unowned))
+	reconcileBinding(t, cl)
+	assert.Equal(t, unbound, gatewayBinding(t, cl), "an unowned, unprojected slice must not bind")
+
+	federated := tenantSlice("vpc-us-central-1-pod", testMember)
+	federated.OwnerReferences = nil
+	federated.Labels[extcache.VPCEndpointSliceProjectionLabel] = "true"
+	federated.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = "cluster-single"
+	require.NoError(t, cl.Create(context.Background(), federated))
+	reconcileBinding(t, cl)
+	assert.NotEqual(t, unbound, gatewayBinding(t, cl), "a federated copy matching its namespace must bind")
 }
 
 func TestVPCBinding_InstanceBackendResolvesFromNamedSlice(t *testing.T) {
@@ -196,7 +229,56 @@ func TestVPCBinding_EndpointSlicePredicate(t *testing.T) {
 	relabelled.Labels[extcache.VPCPodTenantIDLabel] = "vpc2-attach1"
 	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: relabelled}))
 
+	disowned := tenant.DeepCopy()
+	disowned.OwnerReferences = nil
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: disowned}))
+
+	projected := tenant.DeepCopy()
+	projected.Labels[extcache.VPCEndpointSliceProjectionLabel] = "true"
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: tenant, ObjectNew: projected}))
+
+	reclustered := projected.DeepCopy()
+	reclustered.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = "cluster-other"
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: projected, ObjectNew: reclustered}))
+
 	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: plain, ObjectNew: plain.DeepCopy()}))
+}
+
+func TestVPCBinding_NamespacePredicate(t *testing.T) {
+	p := namespacePredicate()
+	unlabelled := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS}}
+	labelled := unlabelled.DeepCopy()
+	labelled.Labels = map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-my-project"}
+
+	assert.True(t, p.Create(event.CreateEvent{Object: unlabelled}))
+	assert.False(t, p.Delete(event.DeleteEvent{Object: labelled}))
+	assert.False(t, p.Generic(event.GenericEvent{Object: labelled}))
+
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: unlabelled, ObjectNew: labelled}))
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: labelled, ObjectNew: unlabelled}))
+
+	renamed := labelled.DeepCopy()
+	renamed.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = "cluster-other"
+	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: labelled, ObjectNew: renamed}))
+
+	otherLabel := labelled.DeepCopy()
+	otherLabel.Labels["team"] = "edge"
+	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: labelled, ObjectNew: otherLabel}))
+	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: unlabelled, ObjectNew: unlabelled.DeepCopy()}))
+}
+
+func TestVPCBinding_NamespaceMapsToItsVPCProxies(t *testing.T) {
+	otherNS := networkServiceProxy(testOtherProxy)
+	otherNS.Namespace = "other-project"
+	connectorOnly := proxyRefersConnector()
+	connectorOnly.Name = "connector-only"
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
+		WithObjects(networkServiceProxy(testProxy), connectorOnly, otherNS).
+		Build()
+
+	r := &VPCBindingReconciler{Client: cl}
+	requests := r.proxiesInNamespace(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testNS}})
+	assert.Equal(t, []ctrl.Request{{NamespacedName: client.ObjectKey{Namespace: testNS, Name: testProxy}}}, requests)
 }
 
 func TestVPCBindingAnnotationReachesEnvoyGatewayIR(t *testing.T) {

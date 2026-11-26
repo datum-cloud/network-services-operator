@@ -20,13 +20,13 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-func startClaimSchemaEnv(t *testing.T) client.Client {
+func startSchemaEnv(t *testing.T, crdName string) client.Client {
 	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("envtest assets are required")
 	}
 
-	data, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "networking.datumapis.com_networkinterfaceclaims.yaml"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "networking.datumapis.com_"+crdName+".yaml"))
 	require.NoError(t, err)
 	var crd apiextensionsv1.CustomResourceDefinition
 	require.NoError(t, yaml.Unmarshal(data, &crd))
@@ -56,7 +56,7 @@ func physicalClaimSpec() networkingv1alpha.NetworkInterfaceClaimSpec {
 }
 
 func TestPhysicalClaimAdmission(t *testing.T) {
-	k8sClient := startClaimSchemaEnv(t)
+	k8sClient := startSchemaEnv(t, "networkinterfaceclaims")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -134,7 +134,7 @@ func TestPhysicalClaimAdmission(t *testing.T) {
 }
 
 func TestPhysicalClaimFieldsAreImmutable(t *testing.T) {
-	k8sClient := startClaimSchemaEnv(t)
+	k8sClient := startSchemaEnv(t, "networkinterfaceclaims")
 	ctx := context.Background()
 
 	tests := []struct {
@@ -191,7 +191,7 @@ func TestPhysicalClaimFieldsAreImmutable(t *testing.T) {
 // A provider compares the claim it reads back with the claim it wrote, so a
 // default written by the server would read as a conflict.
 func TestPhysicalClaimFieldsHaveNoServerDefaults(t *testing.T) {
-	k8sClient := startClaimSchemaEnv(t)
+	k8sClient := startSchemaEnv(t, "networkinterfaceclaims")
 	ctx := context.Background()
 
 	for name, spec := range map[string]networkingv1alpha.NetworkInterfaceClaimSpec{
@@ -212,4 +212,23 @@ func TestPhysicalClaimFieldsHaveNoServerDefaults(t *testing.T) {
 			require.Equal(t, spec.AttachmentPoint, stored.Spec.AttachmentPoint)
 		})
 	}
+}
+
+// Claims stored before the physical fields existed carry none of them, and
+// must still accept the updates the operator and compute make.
+func TestExistingClaimsStillUpdate(t *testing.T) {
+	k8sClient := startSchemaEnv(t, "networkinterfaceclaims")
+	ctx := context.Background()
+
+	claim := &networkingv1alpha.NetworkInterfaceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: "default"},
+		Spec:       networkingv1alpha.NetworkInterfaceClaimSpec{Network: networkingv1alpha.LocalNetworkRef{Name: "app"}},
+	}
+	require.NoError(t, k8sClient.Create(ctx, claim))
+
+	claim.Labels = map[string]string{"example.com/touched": "true"}
+	claim.Spec.Egress = &networkingv1alpha.NetworkInterfaceClaimEgress{
+		Internet: &networkingv1alpha.NetworkInterfaceClaimInternetEgress{Mode: networkingv1alpha.NetworkInterfaceClaimInternetEgressInherit},
+	}
+	require.NoError(t, k8sClient.Update(ctx, claim))
 }

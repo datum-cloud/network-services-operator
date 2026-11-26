@@ -2697,3 +2697,30 @@ func TestAdoptionRefusesADifferentAttachment(t *testing.T) {
 		})
 	}
 }
+
+func TestInterfaceSpecCarriesThePhysicalAttachment(t *testing.T) {
+	claim := &networkingv1alpha.NetworkInterfaceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "server-boot"},
+		Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
+			Network:         networkingv1alpha.LocalNetworkRef{Name: "boot"},
+			InterfaceName:   "boot",
+			AttachmentMode:  networkingv1alpha.NetworkInterfaceAttachmentModePhysical,
+			AttachmentPoint: physicalAttachmentPoint("Ethernet1/11"),
+			Purpose:         networkingv1alpha.NetworkInterfacePurposeBoot,
+			Isolation:       networkingv1alpha.NetworkInterfaceIsolationPrivate,
+			ReclaimPolicy:   networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+		},
+	}
+	networkContext := &networkingv1alpha.NetworkContext{}
+	networkContext.Spec.Network.Name = "boot"
+
+	spec := interfaceSpecForClaim(claim, networkContext)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceAttachmentModePhysical, spec.AttachmentMode)
+	require.Equal(t, claim.Spec.AttachmentPoint, spec.AttachmentPoint)
+	require.Equal(t, networkingv1alpha.NetworkInterfacePurposeBoot, spec.Purpose)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceIsolationPrivate, spec.Isolation)
+
+	spec.AttachmentPoint.Port = "Ethernet1/99"
+	require.Equal(t, "Ethernet1/11", claim.Spec.AttachmentPoint.Port,
+		"the interface must hold its own copy of the attachment point")
+}

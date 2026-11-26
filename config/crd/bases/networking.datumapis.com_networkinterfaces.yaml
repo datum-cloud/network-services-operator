@@ -345,6 +345,29 @@ spec:
             required:
             - network
             type: object
+            x-kubernetes-validations:
+            - message: attachmentPoint is immutable and cannot be set, changed, or
+                cleared after creation
+              rule: has(self.attachmentPoint) == has(oldSelf.attachmentPoint) && (!has(self.attachmentPoint)
+                || self.attachmentPoint == oldSelf.attachmentPoint)
+            - message: purpose is immutable and cannot be set, changed, or cleared
+                after creation
+              rule: has(self.purpose) == has(oldSelf.purpose) && (!has(self.purpose)
+                || self.purpose == oldSelf.purpose)
+            - message: isolation is immutable and cannot be set, changed, or cleared
+                after creation
+              rule: has(self.isolation) == has(oldSelf.isolation) && (!has(self.isolation)
+                || self.isolation == oldSelf.isolation)
+            - message: attachmentPoint is required for attachmentMode Physical and
+                not allowed for any other mode
+              rule: has(self.attachmentPoint) == (has(self.attachmentMode) && self.attachmentMode
+                == 'Physical')
+            - message: purpose is only allowed for attachmentMode Physical
+              rule: '!has(self.purpose) || (has(self.attachmentMode) && self.attachmentMode
+                == ''Physical'')'
+            - message: isolation is only allowed for attachmentMode Physical
+              rule: '!has(self.isolation) || (has(self.attachmentMode) && self.attachmentMode
+                == ''Physical'')'
           status:
             default:
               conditions:

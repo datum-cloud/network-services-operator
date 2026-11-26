@@ -615,18 +615,7 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	iface.Annotations = map[string]string{allocationClaimAnnotation: claim.Name}
 	iface.Labels = propagatedInterfaceLabels(claim, location)
 	iface.Finalizers = []string{networkInterfaceFinalizer}
-	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
-		Network:         networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
-		ClaimRef:        &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
-		InterfaceName:   claim.Spec.InterfaceName,
-		AttachmentMode:  claim.Spec.AttachmentMode,
-		AttachmentPoint: claim.Spec.AttachmentPoint.DeepCopy(),
-		Purpose:         claim.Spec.Purpose,
-		Isolation:       claim.Spec.Isolation,
-		MTU:             networkContext.Spec.MTU,
-		ReclaimPolicy:   claim.Spec.ReclaimPolicy,
-		Egress:          interfaceEgressFromClaim(claim),
-	}
+	iface.Spec = interfaceSpecForClaim(claim, networkContext)
 
 	for _, entry := range allocated {
 		if entry.request.external {
@@ -651,6 +640,24 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	}
 
 	return iface, nil
+}
+
+func interfaceSpecForClaim(
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	networkContext *networkingv1alpha.NetworkContext,
+) networkingv1alpha.NetworkInterfaceSpec {
+	return networkingv1alpha.NetworkInterfaceSpec{
+		Network:         networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
+		ClaimRef:        &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
+		InterfaceName:   claim.Spec.InterfaceName,
+		AttachmentMode:  claim.Spec.AttachmentMode,
+		AttachmentPoint: claim.Spec.AttachmentPoint.DeepCopy(),
+		Purpose:         claim.Spec.Purpose,
+		Isolation:       claim.Spec.Isolation,
+		MTU:             networkContext.Spec.MTU,
+		ReclaimPolicy:   claim.Spec.ReclaimPolicy,
+		Egress:          interfaceEgressFromClaim(claim),
+	}
 }
 
 type allocationRequest struct {

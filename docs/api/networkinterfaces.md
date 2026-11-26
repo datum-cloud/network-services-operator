@@ -66,6 +66,8 @@ that asked for it depends on spec.reclaimPolicy.
           NetworkInterfaceSpec defines the desired state of NetworkInterface. It is
 written by the operator when a claim is fulfilled, and it carries everything
 a provider needs to configure a NIC without reading any other resource.<br/>
+          <br/>
+            <i>Validations</i>:<li>has(self.attachmentPoint) == has(oldSelf.attachmentPoint) && (!has(self.attachmentPoint) || self.attachmentPoint == oldSelf.attachmentPoint): attachmentPoint is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.purpose) == has(oldSelf.purpose) && (!has(self.purpose) || self.purpose == oldSelf.purpose): purpose is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.isolation) == has(oldSelf.isolation) && (!has(self.isolation) || self.isolation == oldSelf.isolation): isolation is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.attachmentPoint) == (has(self.attachmentMode) && self.attachmentMode == 'Physical'): attachmentPoint is required for attachmentMode Physical and not allowed for any other mode</li><li>!has(self.purpose) || (has(self.attachmentMode) && self.attachmentMode == 'Physical'): purpose is only allowed for attachmentMode Physical</li><li>!has(self.isolation) || (has(self.attachmentMode) && self.attachmentMode == 'Physical'): isolation is only allowed for attachmentMode Physical</li>
         </td>
         <td>true</td>
       </tr><tr>

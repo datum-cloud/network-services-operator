@@ -31,9 +31,13 @@ concurrency:
 
 jobs:
   federated-e2e:
-    name: Two-cluster federated edge (Karmada)
+    name: Two-cluster federated edge (Karmada, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       TMPDIR: /tmp
       # The pinned Go tools come from their release binaries, each checked
@@ -48,15 +52,6 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version: '1.27'
-
-      # Two kind clusters plus a full Karmada control plane and the edge data
-      # plane need more room than the runner ships with. Reclaim disk from
-      # toolchains this job never uses.
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
-          docker system prune -af || true
-          df -h /
 
       # Karmada plus two clusters open a large number of file watches; the
       # default runner limits crashloop a component with "too many open files".
@@ -87,7 +82,10 @@ jobs:
         run: task test-infra:up
 
       - name: Run edge e2e scenarios
-        run: task test-infra:e2e
+        run: >-
+          task test-infra:e2e
+          SHARD_COUNT=${{ strategy.job-total }}
+          SHARD_INDEX=${{ strategy.job-index }}
 
       # When something fails, capture enough cross-cluster state to diagnose it
       # from the logs alone — the runner is torn down immediately after.

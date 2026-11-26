@@ -2215,3 +2215,35 @@ func TestTrustedTenantSlice(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPolicyIndexFromClient_TenantNamespaces(t *testing.T) {
+	scheme := indexTestScheme(t)
+	tests := []struct {
+		name   string
+		ns     *corev1.Namespace
+		tenant bool
+	}{
+		{
+			name: "replica namespace",
+			ns: &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name:   "ns-replica",
+				Labels: map[string]string{downstreamclient.UpstreamOwnerNamespaceLabel: "default"},
+			}},
+			tenant: true,
+		},
+		{
+			name:   "platform namespace",
+			ns:     &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "datum-downstream-gateway"}},
+			tenant: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.ns).Build()
+			idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil)
+			require.NoError(t, err)
+			_, got := idx.TenantNamespaces[tc.ns.Name]
+			assert.Equal(t, tc.tenant, got)
+		})
+	}
+}

@@ -15,11 +15,15 @@ concurrency:
 
 jobs:
   test-e2e:
-    name: Run on Ubuntu
+    name: Run on Ubuntu (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     # A green run takes under half an hour. Without this the job inherits the
     # six hour default, so anything that blocks holds a runner all afternoon.
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       TMPDIR: /tmp
       # The pinned Go tools come from their release binaries, each checked
@@ -58,7 +62,10 @@ jobs:
         run: task test-infra:up
 
       - name: Run e2e suite
-        run: task test-infra:test-e2e
+        run: >-
+          task test-infra:test-e2e
+          SHARD_COUNT=${{ strategy.job-total }}
+          SHARD_INDEX=${{ strategy.job-index }}
 
       - name: Dump the downstream data plane on failure
         if: failure()

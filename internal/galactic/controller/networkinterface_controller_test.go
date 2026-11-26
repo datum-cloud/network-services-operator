@@ -592,3 +592,53 @@ func TestReconcileAttachmentLeavesDNSLabelForTheDNSControllerWhenOff(t *testing.
 		t.Fatalf("labels = %v, want the consumer label left in place", got.Labels)
 	}
 }
+
+func TestReconcileLeavesPhysicalInterfacesAlone(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := cloudv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	iface := &networkingv1alpha.NetworkInterface{
+		ObjectMeta: metav1.ObjectMeta{Name: "nic", Namespace: "tenant", UID: types.UID("iface")},
+		Spec: networkingv1alpha.NetworkInterfaceSpec{
+			AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModePhysical,
+			AttachmentPoint: &networkingv1alpha.NetworkInterfaceAttachmentPoint{
+				MACAddress: "00:00:5e:00:53:01", Switch: "rack-a1-tor-1", Port: "Ethernet1/12",
+			},
+		},
+		Status: networkingv1alpha.NetworkInterfaceStatus{
+			Phase:             networkingv1alpha.NetworkInterfacePhaseBound,
+			NetworkContextRef: &networkingv1alpha.LocalNetworkContextRef{Name: "app-loc"},
+			Conditions: []metav1.Condition{{
+				Type: networkingv1alpha.NetworkInterfaceAllocated, Status: metav1.ConditionTrue,
+				Reason: "Allocated", LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	vpc := &cloudv1alpha1.VPC{ObjectMeta: metav1.ObjectMeta{Name: "app-loc", Namespace: "tenant"}}
+	vpc.Status.VPC = "3kF9qP2x"
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(iface, vpc).WithStatusSubresource(iface).Build()
+	r := &NetworkInterfaceReconciler{Client: cl, APIReader: cl, Scheme: scheme}
+
+	if _, err := r.reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "tenant", Name: "nic"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var attachments cloudv1alpha1.VPCAttachmentList
+	if err := cl.List(context.Background(), &attachments); err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments.Items) != 0 {
+		t.Fatalf("a physical interface got %d VPC attachments", len(attachments.Items))
+	}
+	var after networkingv1alpha.NetworkInterface
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "tenant", Name: "nic"}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if apimeta.FindStatusCondition(after.Status.Conditions, networkingv1alpha.NetworkInterfacePrepared) != nil {
+		t.Fatalf("galactic wrote Prepared on a physical interface: %v", after.Status.Conditions)
+	}
+}

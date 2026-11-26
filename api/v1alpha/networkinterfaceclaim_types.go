@@ -77,6 +77,11 @@ const (
 	// The platform provisions it with the project, so its absence says the
 	// control plane is not bootstrapped rather than that it is slow to appear.
 	NetworkInterfaceClaimReasonProjectNamespaceNotFound = "ProjectNamespaceNotFound"
+
+	// NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported means the claim
+	// asks for a physical attachment, which this operator does not bind yet.
+	// Nothing is allocated for it.
+	NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported = "PhysicalAttachmentUnsupported"
 )
 
 // NetworkInterfaceAddressRequest asks for one address beyond the ones the
@@ -106,6 +111,12 @@ type NetworkInterfaceAddressRequest struct {
 //
 // +kubebuilder:validation:XValidation:message="networkInterfaceName is immutable and cannot be set, changed, or cleared after creation",rule="has(self.networkInterfaceName) == has(oldSelf.networkInterfaceName) && (!has(self.networkInterfaceName) || self.networkInterfaceName == oldSelf.networkInterfaceName)"
 // +kubebuilder:validation:XValidation:message="addresses is immutable and cannot be set, changed, or cleared after creation",rule="has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses)"
+// +kubebuilder:validation:XValidation:message="attachmentPoint is immutable and cannot be set, changed, or cleared after creation",rule="has(self.attachmentPoint) == has(oldSelf.attachmentPoint) && (!has(self.attachmentPoint) || self.attachmentPoint == oldSelf.attachmentPoint)"
+// +kubebuilder:validation:XValidation:message="purpose is immutable and cannot be set, changed, or cleared after creation",rule="has(self.purpose) == has(oldSelf.purpose) && (!has(self.purpose) || self.purpose == oldSelf.purpose)"
+// +kubebuilder:validation:XValidation:message="isolation is immutable and cannot be set, changed, or cleared after creation",rule="has(self.isolation) == has(oldSelf.isolation) && (!has(self.isolation) || self.isolation == oldSelf.isolation)"
+// +kubebuilder:validation:XValidation:message="attachmentPoint is required for attachmentMode Physical and not allowed for any other mode",rule="has(self.attachmentPoint) == (has(self.attachmentMode) && self.attachmentMode == 'Physical')"
+// +kubebuilder:validation:XValidation:message="purpose is only allowed for attachmentMode Physical",rule="!has(self.purpose) || (has(self.attachmentMode) && self.attachmentMode == 'Physical')"
+// +kubebuilder:validation:XValidation:message="isolation is only allowed for attachmentMode Physical",rule="!has(self.isolation) || (has(self.attachmentMode) && self.attachmentMode == 'Physical')"
 type NetworkInterfaceClaimSpec struct {
 	// network is the network the interface attaches to. The network must already
 	// exist in the same namespace as the claim.
@@ -137,6 +148,8 @@ type NetworkInterfaceClaimSpec struct {
 	// virtual machine or microVM guest needs. HypervisorDeclared also hands it
 	// to a hypervisor, and additionally has the realizer state the device to
 	// that hypervisor instead of letting it discover the device from the node.
+	// Physical is a physical NIC that reaches its network through the switch
+	// port named in attachmentPoint.
 	//
 	// It is copied to the bound interface and never interpreted here. Whoever
 	// realizes the interface decides what each mode means on its data plane.
@@ -147,6 +160,37 @@ type NetworkInterfaceClaimSpec struct {
 	// +kubebuilder:default="Netns"
 	// +kubebuilder:validation:XValidation:message="attachmentMode is immutable and cannot be changed after creation",rule="self == oldSelf"
 	AttachmentMode NetworkInterfaceAttachmentMode `json:"attachmentMode,omitempty"`
+
+	// attachmentPoint is the physical NIC and the switch port it is cabled to.
+	// It is required for attachmentMode Physical and not allowed for any other
+	// mode. It is copied to the bound interface and never checked against any
+	// inventory, so only a provider writes it.
+	//
+	// Immutable. A server recabled to another port needs a new claim.
+	//
+	// +kubebuilder:validation:Optional
+	AttachmentPoint *NetworkInterfaceAttachmentPoint `json:"attachmentPoint,omitempty"`
+
+	// purpose is what a Physical claim is for. Boot attaches the port to a
+	// boot network for as long as the claim exists, ahead of any other claim on
+	// the port. Left unset, the claim attaches the port to its network whenever
+	// no boot claim names the port.
+	//
+	// Only allowed for attachmentMode Physical. Immutable.
+	//
+	// +kubebuilder:validation:Optional
+	Purpose NetworkInterfacePurpose `json:"purpose,omitempty"`
+
+	// isolation is whether a Physical claim's port shares its network's segment
+	// with the network's other members. Private gives the port a segment of its
+	// own that reaches only the network's gateway. Shared joins the network's
+	// shared segment. Left unset, a boot claim is private and any other claim is
+	// shared; nothing is written back to the claim.
+	//
+	// Only allowed for attachmentMode Physical. Immutable.
+	//
+	// +kubebuilder:validation:Optional
+	Isolation NetworkInterfaceIsolation `json:"isolation,omitempty"`
 
 	// ipFamilies are the address families the interface must carry, in priority
 	// order. List [IPv6, IPv4] for a dual-stack interface. The first family

@@ -37,7 +37,7 @@ const (
 // by the consumer, carried by the operator, and acted on by whoever realizes
 // the interface.
 //
-// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared
+// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared;Physical
 type NetworkInterfaceAttachmentMode string
 
 const (
@@ -58,6 +58,69 @@ const (
 	// hypervisor directly. A guest whose hypervisor reads no node state needs
 	// this mode.
 	NetworkInterfaceAttachmentModeHypervisorDeclared NetworkInterfaceAttachmentMode = "HypervisorDeclared"
+
+	// NetworkInterfaceAttachmentModePhysical means the interface is a physical
+	// NIC that reaches its network through the switch port it is cabled to.
+	// There is no node, container or hypervisor, and the claim names the port
+	// in its attachment point.
+	NetworkInterfaceAttachmentModePhysical NetworkInterfaceAttachmentMode = "Physical"
+)
+
+// NetworkInterfaceAttachmentPoint names the physical NIC and the switch port it
+// is cabled to. The provider that writes the claim reads it from its own
+// inventory, and the operator copies it without checking it.
+type NetworkInterfaceAttachmentPoint struct {
+	// macAddress is the NIC's MAC address, as six colon-separated hexadecimal
+	// pairs.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$`
+	MACAddress string `json:"macAddress"`
+
+	// switch is the switch the NIC is cabled to, in the name network operations
+	// uses for it.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Switch string `json:"switch"`
+
+	// port is the switch port the NIC is cabled to, in the name network
+	// operations uses for it. It may hold characters a Kubernetes name cannot,
+	// such as the slash in Ethernet1/12.
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Port string `json:"port"`
+}
+
+// NetworkInterfacePurpose sets what a physical claim is for.
+//
+// +kubebuilder:validation:Enum=Boot
+type NetworkInterfacePurpose string
+
+const (
+	// NetworkInterfacePurposeBoot marks a claim that attaches its port to a
+	// boot network for as long as the claim exists, ahead of any other claim on
+	// the port.
+	NetworkInterfacePurposeBoot NetworkInterfacePurpose = "Boot"
+)
+
+// NetworkInterfaceIsolation sets whether a physical port shares its network's
+// segment with the network's other members.
+//
+// +kubebuilder:validation:Enum=Private;Shared
+type NetworkInterfaceIsolation string
+
+const (
+	// NetworkInterfaceIsolationPrivate puts the port in a segment of its own on
+	// the network, reaching the network's gateway and no other member.
+	NetworkInterfaceIsolationPrivate NetworkInterfaceIsolation = "Private"
+
+	// NetworkInterfaceIsolationShared puts the port in the network's shared
+	// segment, reaching every other member.
+	NetworkInterfaceIsolationShared NetworkInterfaceIsolation = "Shared"
 )
 
 // NetworkInterfacePhase reports whether an interface is held by a claim.
@@ -303,6 +366,13 @@ type NetworkInterfaceAttachmentRef struct {
 // NetworkInterfaceSpec defines the desired state of NetworkInterface. It is
 // written by the operator when a claim is fulfilled, and it carries everything
 // a provider needs to configure a NIC without reading any other resource.
+//
+// +kubebuilder:validation:XValidation:message="attachmentPoint is immutable and cannot be set, changed, or cleared after creation",rule="has(self.attachmentPoint) == has(oldSelf.attachmentPoint) && (!has(self.attachmentPoint) || self.attachmentPoint == oldSelf.attachmentPoint)"
+// +kubebuilder:validation:XValidation:message="purpose is immutable and cannot be set, changed, or cleared after creation",rule="has(self.purpose) == has(oldSelf.purpose) && (!has(self.purpose) || self.purpose == oldSelf.purpose)"
+// +kubebuilder:validation:XValidation:message="isolation is immutable and cannot be set, changed, or cleared after creation",rule="has(self.isolation) == has(oldSelf.isolation) && (!has(self.isolation) || self.isolation == oldSelf.isolation)"
+// +kubebuilder:validation:XValidation:message="attachmentPoint is required for attachmentMode Physical and not allowed for any other mode",rule="has(self.attachmentPoint) == (has(self.attachmentMode) && self.attachmentMode == 'Physical')"
+// +kubebuilder:validation:XValidation:message="purpose is only allowed for attachmentMode Physical",rule="!has(self.purpose) || (has(self.attachmentMode) && self.attachmentMode == 'Physical')"
+// +kubebuilder:validation:XValidation:message="isolation is only allowed for attachmentMode Physical",rule="!has(self.isolation) || (has(self.attachmentMode) && self.attachmentMode == 'Physical')"
 type NetworkInterfaceSpec struct {
 	// network is the network this interface belongs to, in the same namespace as
 	// the interface. It comes from the claim and does not change.
@@ -338,6 +408,25 @@ type NetworkInterfaceSpec struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default="Netns"
 	AttachmentMode NetworkInterfaceAttachmentMode `json:"attachmentMode,omitempty"`
+
+	// attachmentPoint is the physical NIC and switch port a Physical interface
+	// reaches its network through. It comes from the claim and is absent for
+	// every other mode.
+	//
+	// +kubebuilder:validation:Optional
+	AttachmentPoint *NetworkInterfaceAttachmentPoint `json:"attachmentPoint,omitempty"`
+
+	// purpose is what a Physical interface is for. It comes from the claim.
+	//
+	// +kubebuilder:validation:Optional
+	Purpose NetworkInterfacePurpose `json:"purpose,omitempty"`
+
+	// isolation is whether a Physical interface's port shares its network's
+	// segment. It comes from the claim. Left unset, a boot interface is private
+	// and any other is shared.
+	//
+	// +kubebuilder:validation:Optional
+	Isolation NetworkInterfaceIsolation `json:"isolation,omitempty"`
 
 	// mtu is the MTU, in bytes, the interface must be configured with. It is
 	// resolved from the network, so a provider never has to read the network to

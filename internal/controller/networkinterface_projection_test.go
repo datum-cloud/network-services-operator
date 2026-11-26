@@ -814,3 +814,23 @@ func TestAPublishedInterfaceIsHeldUntilItsCopyIsCollected(t *testing.T) {
 	_, found = v.hubCopy(boundInterfaceName)
 	require.False(t, found, "the hold is released once nothing is left behind")
 }
+
+// The switch and port name the provider's hardware, which a consumer has no
+// business seeing.
+func TestProjectedInterfaceOmitsThePhysicalAttachment(t *testing.T) {
+	source := &networkingv1alpha.NetworkInterface{Spec: networkingv1alpha.NetworkInterfaceSpec{
+		AttachmentMode: networkingv1alpha.NetworkInterfaceAttachmentModePhysical,
+		AttachmentPoint: &networkingv1alpha.NetworkInterfaceAttachmentPoint{
+			MACAddress: "00:00:5e:00:53:01",
+			Switch:     "rack-a1-tor-1",
+			Port:       "Ethernet1/12",
+		},
+		Purpose:   networkingv1alpha.NetworkInterfacePurposeBoot,
+		Isolation: networkingv1alpha.NetworkInterfaceIsolationPrivate,
+	}}
+
+	projection := projectedInterface(source, "ord-1")
+	require.Nil(t, projection.Spec.AttachmentPoint)
+	require.Empty(t, projection.Spec.Purpose)
+	require.Empty(t, projection.Spec.Isolation)
+}

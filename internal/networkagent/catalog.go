@@ -105,6 +105,7 @@ const (
 	reasonAddressClassMissing       = "AddressClassMissing"
 	reasonReclaimPolicyMismatch     = "ReclaimPolicyMismatch"
 	reasonInterfaceHeldByAnother    = "InterfaceHeldByAnotherClaim"
+	reasonAttachmentPointMismatch   = "AttachmentPointMismatch"
 	reasonInvalidSelector           = "InvalidSelector"
 	reasonResolved                  = "Resolved"
 	conditionSubnetClaimReady       = "Ready"
@@ -474,6 +475,13 @@ func claimRefusals() []ReasonInfo {
 		{reasonAddressFamilyMissing, retained("it holds no address of a kind the workload now asks for")},
 		{reasonAddressClassMissing, retained("it holds no address of a class the workload now asks for, such as a public address")},
 		{reasonReclaimPolicyMismatch, retained("its addresses were kept under a different rule for what happens when the instance goes away")},
+		{reasonAttachmentPointMismatch, retained("it is wired to a different switch port, or for a different purpose, from the one the server's claim now names")},
+		{networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported, ReasonInfo{
+			Actionability: ActionabilityPlatform, Scope: ScopeInstance,
+			Explanation: "This server's network interface asks to reach its network through a switch port, " +
+				"which the platform cannot attach yet, so no address was given to it.",
+			Remediation: remediationEscalate, Skill: SkillInterfaceTriage,
+		}},
 		{reasonInterfaceHeldByAnother, ReasonInfo{
 			Actionability: ActionabilityPlatform, Scope: ScopeInstance,
 			Explanation: "The network interface this instance should use is already held by another instance.",

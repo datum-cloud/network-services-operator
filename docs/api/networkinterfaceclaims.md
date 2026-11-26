@@ -74,7 +74,7 @@ it. To change one of those fields, delete the claim and create a new one,
 accepting that the workload gets new addresses unless the interface is
 retained.<br/>
           <br/>
-            <i>Validations</i>:<li>has(self.networkInterfaceName) == has(oldSelf.networkInterfaceName) && (!has(self.networkInterfaceName) || self.networkInterfaceName == oldSelf.networkInterfaceName): networkInterfaceName is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses): addresses is immutable and cannot be set, changed, or cleared after creation</li>
+            <i>Validations</i>:<li>has(self.networkInterfaceName) == has(oldSelf.networkInterfaceName) && (!has(self.networkInterfaceName) || self.networkInterfaceName == oldSelf.networkInterfaceName): networkInterfaceName is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.addresses) == has(oldSelf.addresses) && (!has(self.addresses) || self.addresses == oldSelf.addresses): addresses is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.attachmentPoint) == has(oldSelf.attachmentPoint) && (!has(self.attachmentPoint) || self.attachmentPoint == oldSelf.attachmentPoint): attachmentPoint is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.purpose) == has(oldSelf.purpose) && (!has(self.purpose) || self.purpose == oldSelf.purpose): purpose is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.isolation) == has(oldSelf.isolation) && (!has(self.isolation) || self.isolation == oldSelf.isolation): isolation is immutable and cannot be set, changed, or cleared after creation</li><li>has(self.attachmentPoint) == (has(self.attachmentMode) && self.attachmentMode == 'Physical'): attachmentPoint is required for attachmentMode Physical and not allowed for any other mode</li><li>!has(self.purpose) || (has(self.attachmentMode) && self.attachmentMode == 'Physical'): purpose is only allowed for attachmentMode Physical</li><li>!has(self.isolation) || (has(self.attachmentMode) && self.attachmentMode == 'Physical'): isolation is only allowed for attachmentMode Physical</li>
         </td>
         <td>true</td>
       </tr><tr>
@@ -152,6 +152,8 @@ expects. Hypervisor hands it to a hypervisor as a device, which is what a
 virtual machine or microVM guest needs. HypervisorDeclared also hands it
 to a hypervisor, and additionally has the realizer state the device to
 that hypervisor instead of letting it discover the device from the node.
+Physical is a physical NIC that reaches its network through the switch
+port named in attachmentPoint.
 
 It is copied to the bound interface and never interpreted here. Whoever
 realizes the interface decides what each mode means on its data plane.
@@ -159,8 +161,20 @@ realizes the interface decides what each mode means on its data plane.
 Immutable, because the guest and the attachment are both built against it.<br/>
           <br/>
             <i>Validations</i>:<li>self == oldSelf: attachmentMode is immutable and cannot be changed after creation</li>
-            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared, Physical<br/>
             <i>Default</i>: Netns<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfaceclaimspecattachmentpoint">attachmentPoint</a></b></td>
+        <td>object</td>
+        <td>
+          attachmentPoint is the physical NIC and the switch port it is cabled to.
+It is required for attachmentMode Physical and not allowed for any other
+mode. It is copied to the bound interface and never checked against any
+inventory, so only a provider writes it.
+
+Immutable. A server recabled to another port needs a new claim.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -215,6 +229,21 @@ published.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>isolation</b></td>
+        <td>enum</td>
+        <td>
+          isolation is whether a Physical claim's port shares its network's segment
+with the network's other members. Private gives the port a segment of its
+own that reaches only the network's gateway. Shared joins the network's
+shared segment. Left unset, a boot claim is private and any other claim is
+shared; nothing is written back to the claim.
+
+Only allowed for attachmentMode Physical. Immutable.<br/>
+          <br/>
+            <i>Enum</i>: Private, Shared<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>networkInterfaceName</b></td>
         <td>string</td>
         <td>
@@ -228,6 +257,20 @@ interface of its own name, retained by an earlier claim, or creates one.
 
 Immutable, including from empty to set. Rebinding a workload to a different
 interface means a new claim.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>purpose</b></td>
+        <td>enum</td>
+        <td>
+          purpose is what a Physical claim is for. Boot attaches the port to a
+boot network for as long as the claim exists, ahead of any other claim on
+the port. Left unset, the claim attaches the port to its network whenever
+no boot claim names the port.
+
+Only allowed for attachmentMode Physical. Immutable.<br/>
+          <br/>
+            <i>Enum</i>: Boot<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -323,6 +366,56 @@ a private one.
 A class names a kind of address, and the platform decides which pool and
 prefix length serve it. A class never names a pool, a prefix length, or a
 CIDR, so a class cannot be used to ask for a particular address.<br/>
+        </td>
+        <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterfaceClaim.spec.attachmentPoint
+<sup><sup>[↩ Parent](#networkinterfaceclaimspec)</sup></sup>
+
+
+
+attachmentPoint is the physical NIC and the switch port it is cabled to.
+It is required for attachmentMode Physical and not allowed for any other
+mode. It is copied to the bound interface and never checked against any
+inventory, so only a provider writes it.
+
+Immutable. A server recabled to another port needs a new claim.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>macAddress</b></td>
+        <td>string</td>
+        <td>
+          macAddress is the NIC's MAC address, as six colon-separated hexadecimal
+pairs.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>string</td>
+        <td>
+          port is the switch port the NIC is cabled to, in the name network
+operations uses for it. It may hold characters a Kubernetes name cannot,
+such as the slash in Ethernet1/12.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>switch</b></td>
+        <td>string</td>
+        <td>
+          switch is the switch the NIC is cabled to, in the name network operations
+uses for it.<br/>
         </td>
         <td>true</td>
       </tr></tbody>

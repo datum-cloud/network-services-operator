@@ -608,11 +608,10 @@ When a physical claim is deleted:
 6. NSO removes its own finalizer, and the claim is gone.
 
 Until each step completes, the claim stays and its conditions say which step it
-is waiting on. A release waiting on IPAM says so in its own reason,
-`ReleaseUnverified`, apart from one waiting on the port, `AwaitingDetach`, and
-its message names the address still held. It does not name NSO's IPAM claims. A hold entry whose claim no longer exists, read from the API
-server rather than a cache, is removed the next time NSO writes that hold, so
-an entry cannot outlive its claim.
+is waiting on. While a claim releases, `Ready` is false and its reason names the
+step: `AwaitingDetach` while the detach finalizer is present, and
+`ReleaseUnverified` while IPAM still holds an address. The `ReleaseUnverified`
+message names the address still held. It does not name NSO's IPAM claims.
 
 NSO never releases an address while the detach finalizer is present. A claim
 whose realizer never answers therefore stays, with its addresses held, and that
@@ -804,7 +803,7 @@ writer:
 | `Allocated` | NSO | Every requested family holds an address. |
 | `Prepared` | Realizer, on the interface and the claim | The realizer accepted the attachment point and can build its segment. |
 | `Programmed` | Realizer, on the interface and the claim | The port carries the claim's network. |
-| `Ready` | NSO | All four are true. NSO derives it each time the claim changes. |
+| `Ready` | NSO | All four are true. NSO derives it each time the claim changes. While the claim releases, its reason names the step it waits on. |
 
 The existing realizer for virtual interfaces writes `Ready` on a claim only to
 set it `Unknown` while it migrates an attachment. The physical realizer never
@@ -922,8 +921,8 @@ The reasons for each change and rejection:
 | The realizer is down when a claim is deleted | The claim stays with its addresses held and the detach finalizer present, until the realizer returns or a break-glass operator removes it. |
 | NSO is down | No new claim binds and no claim releases. Ports keep what they carry. Fleet's proposal holds installs, wipes and releases until NSO returns. |
 | The central DHCP or boot file servers are unreachable from a site | NSO is unaffected. A boot claim stays `Programmed`, since the port carries the boot network. In Fleet's proposal the server is powered on only after DHCP reports its reservation served, so the install waits. Releasing the boot claim works as usual. |
-| IPAM is unreachable during release | The claim stays, reporting the failed release, and NSO retries. |
-| IPAM keeps an allocation after its IPAM claim is gone | The claim stays, reporting the allocation that remains. |
+| IPAM is unreachable during release | The claim stays with `Ready=False` and reason `ReleaseUnverified`, and NSO retries. |
+| IPAM keeps an allocation after its IPAM claim is gone | The claim stays with `Ready=False` and reason `ReleaseUnverified`, naming the address still held. |
 | A claim is recreated under a name whose claim is still releasing | The create is refused as already existing. The writer retries after the old claim is gone. |
 
 ## Delivery

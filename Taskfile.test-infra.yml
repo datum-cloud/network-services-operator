@@ -143,6 +143,43 @@ tasks:
     desc: "Bring the canonical two-cluster prod-fidelity test env ONLINE (clusters + Milo + IPAM + Envoy Gateway + ext-server + Coraza data plane + NSO manager). IPAM is aggregated into Milo and addressed by project control-plane path; read test/e2e/README-milo.md before treating this env as evidence about per-project AUTHORIZATION, which it does not test."
     cmds:
       - echo "🚀 test-infra:up — building nso-upstream + nso-downstream"
+      - task: up-lanes
+      # The manager mounts both of these secrets, and the cell mounts the
+      # first. Neither can federate without it. manager-deploy creates their
+      # pods only after the secrets exist, so no pod waits in ContainerCreating
+      # on a volume mount that the kubelet retries with a backoff of up to two
+      # minutes.
+      - task: karmada-hub-secret
+      - task: link-clusters
+      - task: manager-deploy
+      - task: wait-ready
+      - echo "🎉 test-infra:up complete. Run 'task test-infra:smoke' to confirm M2."
+
+  up-lanes:
+    desc: "The three lanes of up, side by side. up-main: the clusters, Milo, IPAM and the downstream data plane. up-image: the NSO image, built while the clusters come up. up-karmada: Karmada, while Milo and IPAM come up. A lane that fails stops the others."
+    failfast: true
+    deps:
+      - up-main
+      - up-image
+      - up-karmada
+
+  up-image:
+    desc: "Build the NSO image from the start, then load it into both clusters as soon as they exist. Nothing in a cluster needs the image before the ext-server and the manager are created, which is why the build need not wait for the clusters."
+    cmds:
+      - task: nso-image-build
+      - task: clusters
+      - task: nso-image-load
+
+  up-karmada:
+    desc: "Stand up Karmada once the clusters exist. It reads nothing that Milo or IPAM provides. It needs the two clusters, and the Gateway-API CRD files that eg-crds vendors into config/tools."
+    cmds:
+      - task: clusters
+      - task: eg-crds
+      - task: karmada-up
+
+  up-main:
+    desc: "The chain of up that holds the order rules of the comments below: the clusters, the CRDs, cert-manager, Milo, IPAM and the downstream data plane."
+    cmds:
       - task: clusters
       # The Gateway-API and gateway CRDs must land on the downstream cluster
       # before cert-manager (it probes the Gateway-API CRDs at startup) and before
@@ -154,10 +191,11 @@ tasks:
       - task: cert-manager-upstream
       - task: cert-manager-downstream
       # Fetched early: they depend on nothing in the cluster, and pulling them
-      # here surfaces a registry problem before the long build below.
+      # here surfaces a registry problem early.
       - task: ipam-bundle
       - task: milo-bundle
-      - task: nso-image
+      # Every build of config/e2e reads the tag that this sets.
+      - task: nso-image-tag
       - task: dns-crds
       # The cell set has to be served on this cluster before the cell controller
       # manager starts; it watches kinds that only this set installs.
@@ -176,10 +214,9 @@ tasks:
       - task: milo-deploy
       - task: milo-wait
       - task: milo-kubeconfigs
-      # The manager mounts this secret. It is created a moment after the pod
-      # rather than before it now, because its contents — Milo's address and CA
-      # — do not exist until Milo does. The pod waits in ContainerCreating and
-      # starts as soon as this lands; wait-ready is what gates on the result.
+      # The manager mounts this secret. Its contents — Milo's address and CA —
+      # do not exist until Milo does, so manager-deploy creates the manager
+      # after this lands.
       - task: ipam-kubeconfig
       - task: cnpg-operator
       - task: ipam-deploy
@@ -193,17 +230,12 @@ tasks:
       - task: ipam-fixtures
       - task: ipam-namespaces
       - task: eg-downstream
+      # The ext-server runs the image that up-image builds. Its pods start at
+      # once, so the image has to be on the downstream node first.
+      - task: nso-image-load
       - task: extension-server
       - task: billing-usage-collector
       - task: external-dns
-      - task: karmada-up
-      # Same shape as ipam-kubeconfig above: the manager and the cell both mount
-      # this and neither can federate without it, so both wait in
-      # ContainerCreating until it lands here.
-      - task: karmada-hub-secret
-      - task: link-clusters
-      - task: wait-ready
-      - echo "🎉 test-infra:up complete. Run 'task test-infra:smoke' to confirm M2."
 
   down:
     desc: "Tear down the test-infra clusters (and any Karmada host)."
@@ -224,6 +256,7 @@ tasks:
 
   clusters:
     desc: "Create the upstream + downstream kind clusters pinned to the prod edge node image."
+    run: once
     cmds:
       - echo "🏗️ creating clusters (node {{.K8S_NODE_IMAGE}})"
       - '{{.KIND}} delete cluster --name {{.UPSTREAM_CLUSTER}} 2>/dev/null || true'
@@ -250,14 +283,33 @@ tasks:
       - '{{.CMCTL}} check api --context {{.DOWNSTREAM_CTX}} --wait=5m'
 
   nso-image:
-    desc: "Build the NSO operator image (git-SHA tag) and load it into both clusters."
+    desc: "Build the NSO operator image (git-SHA tag), pin the manifests to it and load it into both clusters."
+    cmds:
+      - task: nso-image-build
+      - task: nso-image-tag
+      - task: nso-image-load
+
+  nso-image-build:
+    desc: "Build the NSO operator image (git-SHA tag). Needs no cluster."
+    run: once
     cmds:
       - echo "🔨 building {{.IMG}}"
       - docker build -t {{.IMG}} .
+
+  nso-image-tag:
+    desc: "Pin the manager and cell manifests (config/manager, config/components/cell-controllers) to the git-SHA tag of the image."
+    cmds:
       - cd config/manager && {{.KUSTOMIZE}} edit set image ghcr.io/datum-cloud/network-services-operator={{.IMG}}
       # The cell Deployment carries its own image name so the component's
       # transformer cannot rewrite the control-plane Deployment.
       - cd config/components/cell-controllers && {{.KUSTOMIZE}} edit set image network-services-operator-cell={{.IMG}}
+
+  nso-image-load:
+    desc: "Load the built NSO operator image into both clusters, which have to exist. Builds the image first when it is not built yet."
+    run: once
+    deps:
+      - nso-image-build
+    cmds:
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.UPSTREAM_CLUSTER}}'
       - '{{.KIND}} load docker-image {{.IMG}} --name {{.DOWNSTREAM_CLUSTER}}'
 
@@ -283,18 +335,25 @@ tasks:
       - kubectl --context {{.UPSTREAM_CTX}} apply -f {{.DNS_STAGE}}/bundle/crd/bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 
   prepare-upstream:
-    desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile."
+    desc: "Install everything of the NSO manager + webhook (config/e2e) on the upstream cluster except its two Deployments (config/e2e-prerequisites): the CRDs, the RBAC, the webhook configurations and the certificate. The Gateway-API CRDs in it are what unblocks upstream cert-manager. manager-deploy creates the Deployments."
     cmds:
-      - echo "🔧 deploying NSO manager (upstream)"
-      - '{{.KUSTOMIZE}} build config/e2e | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+      - echo "🔧 preparing the upstream cluster for the NSO manager"
+      - '{{.KUSTOMIZE}} build config/e2e-prerequisites | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
       # The HTTPProxy controller builds every proxy's gateway with the
       # operator-configured class, so that class must outlive any single
       # scenario. A test that provisions it owns it, and chainsaw deletes it on
       # cleanup while gateways are still terminating, wedging their namespaces.
       - kubectl --context {{.UPSTREAM_CTX}} apply -f config/upstream_resources/gatewayclass.yaml
 
+  manager-deploy:
+    desc: "Deploy the NSO manager + webhook (config/e2e) on the upstream cluster, with the prod-base memory profile. Run it when the three secrets that the manager mounts exist (ipam-kubeconfig, karmada-hub-secret, link-clusters) and the image is loaded: a pod that starts before a secret waits on a volume mount that the kubelet retries with a backoff of up to two minutes, and wait-ready then waits with it."
+    cmds:
+      - echo "🔧 deploying NSO manager (upstream)"
+      - '{{.KUSTOMIZE}} build config/e2e | kubectl --context {{.UPSTREAM_CTX}} apply --server-side=true --force-conflicts -f -'
+
   eg-crds:
     desc: "Install the full Gateway-API + Envoy Gateway CRD set (incl ReferenceGrant + EnvoyProxy) on the downstream cluster. The downstream EG chart sets includeCRDs:false, so CRDs are applied separately (matches prod, where CRDs are managed out-of-band)."
+    run: once
     vars:
       # From v1.9 the chart carries its CRDs in a crds subchart.
       EG_CRD_DIR: config/tools/envoy-gateway-downstream/charts/gateway-helm-{{.ENVOY_GATEWAY_VERSION}}/gateway-helm/charts/crds/crds
@@ -758,7 +817,18 @@ tasks:
           write "{{.TMP_DIR}}/.milo-${proj}.yaml" e2e-tenant-tester-token \
             "/apis/resourcemanager.miloapis.com/v1alpha1/projects/${proj}/control-plane"
         done
-      - kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null
+      - |
+        for i in $(seq 1 60); do
+          if kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null 2>&1; then
+            break
+          fi
+          if [ "$i" -eq 60 ]; then
+            echo "❌ Milo never answered on 127.0.0.1:{{.MILO_NODE_PORT}}"
+            kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null
+            exit 1
+          fi
+          sleep 1
+        done
       - echo "✅ Milo reachable from the host on 127.0.0.1:{{.MILO_NODE_PORT}}"
 
   milo-bootstrap:

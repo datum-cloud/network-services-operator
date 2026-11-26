@@ -13,3 +13,4 @@ resources:
 components:
   - ../rbac_deployment
   - ../components/cell-controllers
+  - ../components/physical-attachment-admission

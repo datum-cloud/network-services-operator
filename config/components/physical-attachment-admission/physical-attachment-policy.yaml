@@ -1,0 +1,120 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: physical-attachment-writers
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - networking.datumapis.com
+        apiVersions:
+          - "*"
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - networkinterfaceclaims
+          - networkinterfaces
+  matchConditions:
+    - name: physical-or-detach
+      expression: >-
+        (has(object.spec) && has(object.spec.attachmentMode) && object.spec.attachmentMode == 'Physical') ||
+        (has(object.metadata.finalizers) &&
+          'networking.datumapis.com/physical-detach' in object.metadata.finalizers) ||
+        (request.operation == 'UPDATE' && has(oldObject.metadata.finalizers) &&
+          'networking.datumapis.com/physical-detach' in oldObject.metadata.finalizers)
+  # The first five variables are the lists a deployment sets, in this order.
+  # Each is a CEL list of strings. Leaving a list empty refuses whatever it
+  # would allow.
+  variables:
+    - name: operators
+      expression: >-
+        ['system:serviceaccount:network-services-operator-system:controller-manager']
+    - name: providers
+      expression: "[]"
+    - name: realizers
+      expression: "[]"
+    - name: breakGlassGroups
+      expression: "[]"
+    - name: providerProjects
+      expression: "[]"
+    - name: isClaim
+      expression: request.resource.resource == 'networkinterfaceclaims'
+    - name: isOperator
+      expression: request.userInfo.username in variables.operators
+    - name: isProvider
+      expression: request.userInfo.username in variables.providers
+    - name: isRealizer
+      expression: request.userInfo.username in variables.realizers
+    - name: isBreakGlass
+      expression: >-
+        has(request.userInfo.groups) &&
+        request.userInfo.groups.exists(g, g in variables.breakGlassGroups)
+    - name: physical
+      expression: >-
+        has(object.spec) && has(object.spec.attachmentMode) && object.spec.attachmentMode == 'Physical'
+    - name: detachFinalizer
+      expression: "'networking.datumapis.com/physical-detach'"
+    - name: hasDetach
+      expression: >-
+        has(object.metadata.finalizers) && variables.detachFinalizer in object.metadata.finalizers
+    - name: hadDetach
+      expression: >-
+        request.operation == 'UPDATE' && has(oldObject.metadata.finalizers) &&
+        variables.detachFinalizer in oldObject.metadata.finalizers
+    - name: projectLabel
+      expression: >-
+        has(namespaceObject.metadata.labels) &&
+        'meta.datumapis.com/upstream-cluster-name' in namespaceObject.metadata.labels
+          ? namespaceObject.metadata.labels['meta.datumapis.com/upstream-cluster-name'].replace('_', '/')
+          : ''
+    - name: projectTrimmed
+      expression: >-
+        variables.projectLabel.startsWith('cluster-')
+          ? variables.projectLabel.substring(8)
+          : variables.projectLabel
+    - name: project
+      expression: >-
+        variables.projectTrimmed.startsWith('/')
+          ? variables.projectTrimmed.substring(1)
+          : variables.projectTrimmed
+  validations:
+    - expression: >-
+        variables.isOperator || !variables.physical ||
+        (variables.isClaim && variables.isProvider) ||
+        (variables.isClaim && request.operation == 'UPDATE' && (variables.isRealizer || variables.isBreakGlass))
+      messageExpression: >-
+        variables.isClaim
+          ? 'physical network interface claims may only be written by a configured provider, and ' +
+            request.userInfo.username + ' is not one'
+          : 'physical network interfaces may only be written by the network services operator'
+      reason: Forbidden
+    - expression: >-
+        variables.isOperator || !variables.hadDetach || variables.hasDetach ||
+        variables.isRealizer || variables.isBreakGlass
+      messageExpression: >-
+        'only the physical realizer may remove the ' + variables.detachFinalizer +
+        ' finalizer, and ' + request.userInfo.username + ' is not it'
+      reason: Forbidden
+    - expression: >-
+        variables.isOperator || !variables.hasDetach || variables.hadDetach
+      messageExpression: >-
+        'only the network services operator may add the ' + variables.detachFinalizer + ' finalizer'
+      reason: Forbidden
+    - expression: >-
+        variables.isOperator || !(has(object.spec.purpose) && object.spec.purpose == 'Boot') ||
+        (variables.project != '' && variables.project in variables.providerProjects)
+      messageExpression: >-
+        'a boot claim is only accepted in a provider project namespace, and namespace ' +
+        object.metadata.namespace + ' does not belong to one'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: physical-attachment-writers
+spec:
+  policyName: physical-attachment-writers
+  validationActions:
+    - Deny

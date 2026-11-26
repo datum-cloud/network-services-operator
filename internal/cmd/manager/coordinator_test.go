@@ -37,6 +37,7 @@ func TestCoordinatorReadsLeasesFromTheAPIServer(t *testing.T) {
 
 	var coordinators []*ast.CallExpr
 	var coordinatorClients, uncached map[string]bool
+	var returned []string
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -44,6 +45,7 @@ func TestCoordinatorReadsLeasesFromTheAPIServer(t *testing.T) {
 		}
 		if fn.Name.Name == "newClusterShardingCoordinatorClient" {
 			uncached = namesAssignedFrom(fn.Body, "client.New")
+			returned = returnedClients(fn.Body)
 		}
 		calls := callsTo(fn.Body, "sharded.New")
 		if len(calls) > 0 {
@@ -58,6 +60,11 @@ func TestCoordinatorReadsLeasesFromTheAPIServer(t *testing.T) {
 	require.True(t, coordinatorClients[arg],
 		"the coordinator's client must come from newClusterShardingCoordinatorClient in the same function, not from a cluster's cached client")
 	require.NotEmpty(t, uncached, "newClusterShardingCoordinatorClient must build its client with client.New")
+	require.NotEmpty(t, returned, "newClusterShardingCoordinatorClient must return its client")
+	for _, name := range returned {
+		require.True(t, uncached[name],
+			"newClusterShardingCoordinatorClient must return the client that client.New built, not %q", name)
+	}
 }
 
 // TestCoordinatorClientHasNoClientSideLimit fails when the coordinator's
@@ -121,6 +128,20 @@ func namesAssignedFrom(node ast.Node, call string) map[string]bool {
 		assign, ok := n.(*ast.AssignStmt)
 		if ok && len(assign.Rhs) == 1 && callName(assign.Rhs[0]) == call {
 			names[identName(assign.Lhs[0])] = true
+		}
+		return true
+	})
+	return names
+}
+
+// returnedClients returns the first result of each return under node, except
+// nil.
+func returnedClients(node ast.Node) []string {
+	var names []string
+	ast.Inspect(node, func(n ast.Node) bool {
+		ret, ok := n.(*ast.ReturnStmt)
+		if ok && len(ret.Results) > 0 && identName(ret.Results[0]) != "nil" {
+			names = append(names, identName(ret.Results[0]))
 		}
 		return true
 	})

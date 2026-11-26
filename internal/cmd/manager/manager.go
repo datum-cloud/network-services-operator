@@ -682,6 +682,7 @@ func newClusterShardingCoordinator(
 
 func newClusterShardingCoordinatorClient(cfg *rest.Config) (client.Client, error) {
 	unlimited := rest.CopyConfig(cfg)
+	// client-go reads a QPS of 0 as "use the default of 5", and a QPS below 0 as "no limit".
 	unlimited.QPS = -1
 	uncachedClient, err := client.New(unlimited, client.Options{Scheme: scheme})
 	if err != nil {

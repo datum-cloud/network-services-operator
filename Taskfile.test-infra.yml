@@ -1182,13 +1182,15 @@ tasks:
       - '{{.CHAINSAW}} test ./test/e2e-edge/extension-server-smoke --cluster {{.UPSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml --cluster {{.DOWNSTREAM_CLUSTER}}={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml'
 
   e2e:
-    desc: "Run chainsaw e2e scenarios against the live two-cluster env. Pass a scenario name or path after -- (e.g. `task test-infra:e2e -- waf-enforcement`); with no arg, runs every ext-server-path scenario that targets nso-upstream/nso-downstream. Use SCENARIOS=... to override the default set. NOT safe to run while anything else is touching the env. The interface suites use fixed object names in the shared ipam-e2e-* namespaces (the project routing lives on those namespace labels), and this task clears and re-seeds the cluster-scoped fixtures at its head — which also republishes the tenant RBAC. So a second invocation, or a bare ipam-fixtures / ipam-fixtures-clear / ipam-tenant-rbac run, will pull the fixtures and the tenant's access out from under a suite already in flight. Run one at a time."
+    desc: "Run chainsaw e2e scenarios against the live two-cluster env. Pass a scenario name or path after -- (e.g. `task test-infra:e2e -- waf-enforcement`); with no arg, runs every ext-server-path scenario that targets nso-upstream/nso-downstream. Use SCENARIOS=... to override the default set. SHARD_COUNT=n SHARD_INDEX=i runs every n-th selected scenario from the i-th (0-based), so n runs with i=0..n-1 cover the set once. NOT safe to run while anything else is touching the env. The interface suites use fixed object names in the shared ipam-e2e-* namespaces (the project routing lives on those namespace labels), and this task clears and re-seeds the cluster-scoped fixtures at its head — which also republishes the tenant RBAC. So a second invocation, or a bare ipam-fixtures / ipam-fixtures-clear / ipam-tenant-rbac run, will pull the fixtures and the tenant's access out from under a suite already in flight. Run one at a time."
     vars:
       # Scenarios authored against this env's cluster names and downstream path.
       # Older fixtures targeting the previous cluster names are excluded here.
       DEFAULT_SCENARIOS: extension-server-smoke waf-enforcement waf-section-scoping branded-error-page connector-offline-503 atomic-reject-isolation oidc-missing-secret-isolation networkservice-endpoints networkservice-late-vpc-record misdirected-request federated-status-pending
       # CLI_ARGS (after --) wins; else SCENARIOS env; else the default set.
       SELECTED: '{{.CLI_ARGS | default .SCENARIOS | default .DEFAULT_SCENARIOS}}'
+      SHARD_COUNT: '{{.SHARD_COUNT | default 1}}'
+      SHARD_INDEX: '{{.SHARD_INDEX | default 0}}'
     deps:
       - kubeconfigs
     cmds:
@@ -1199,7 +1201,10 @@ tasks:
       - task: ipam-fixtures
       - |
         set -e
+        n=0
         for s in {{.SELECTED}}; do
+          n=$((n + 1))
+          [ $(((n - 1) % {{.SHARD_COUNT}})) -eq {{.SHARD_INDEX}} ] || continue
           # Accept either a bare scenario name or a full/relative path.
           case "$s" in
             test/e2e-edge/*|./test/e2e-edge/*) dir="$s" ;;

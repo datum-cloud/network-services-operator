@@ -31,9 +31,13 @@ concurrency:
 
 jobs:
   federated-e2e:
-    name: Two-cluster federated edge (Karmada)
+    name: Two-cluster federated edge (Karmada, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       TMPDIR: /tmp
       # The pinned Go tools come from their release binaries, each checked
@@ -87,7 +91,10 @@ jobs:
         run: task test-infra:up
 
       - name: Run edge e2e scenarios
-        run: task test-infra:e2e
+        run: >-
+          task test-infra:e2e
+          SHARD_COUNT=${{ strategy.job-total }}
+          SHARD_INDEX=${{ strategy.job-index }}
 
       # When something fails, capture enough cross-cluster state to diagnose it
       # from the logs alone — the runner is torn down immediately after.

@@ -331,12 +331,19 @@ A physical claim is one of two kinds:
 identities may set it, like everything else on a physical claim.
 
 A boot claim is accepted only in a provider project's namespace. Each cell's
-configuration lists the provider projects, and admission refuses `purpose:
-Boot` in a namespace whose project is not on the list. Admission reads the
-project from the namespace's `meta.datumapis.com/upstream-cluster-name` label,
-the label NSO already reads to find a namespace's project before it allocates
-addresses. A customer's network can
-therefore never outrank another claim on a port, whoever writes the claim.
+configuration lists the provider projects by project name, and admission
+refuses `purpose: Boot` in a namespace whose project is not on the list.
+
+Admission reads the project from the namespace's
+`meta.datumapis.com/upstream-cluster-name` label, the label NSO already reads
+to find a namespace's project before it allocates addresses. The label holds an
+encoded value, not a bare project name, so admission decodes it the way NSO
+does: it turns each underscore into a slash, then drops the `cluster-` prefix
+and any leading slash. It compares the decoded name with the list, never the
+raw label. A namespace without the label names no project and is refused.
+
+A customer's network can therefore never outrank another claim on a port,
+whoever writes the claim.
 
 NSO does not mark which networks are boot networks. A boot claim may name any
 network in its own namespace, and the provider's boot network is the one it

@@ -1222,6 +1222,7 @@ tasks:
     vars:
       # CLI_ARGS (after --) wins so a single test can be selected; else the whole
       # suite directory.
+      # here be dragons
       TARGET: '{{.CLI_ARGS | default "./test/e2e"}}'
       # Persist a machine-readable run report so a hang or kill still leaves a
       # forensic trail on disk (chainsaw writes nothing by default).

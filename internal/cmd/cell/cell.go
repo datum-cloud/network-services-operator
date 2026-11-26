@@ -35,6 +35,7 @@ import (
 	"go.datum.net/network-services-operator/internal/configwatch"
 	"go.datum.net/network-services-operator/internal/controller"
 	galacticcontroller "go.datum.net/network-services-operator/internal/galactic/controller"
+	"go.datum.net/network-services-operator/internal/physicalrealizer"
 )
 
 const leaderElectionID = "6a7d51cc.datumapis.com-cell"
@@ -363,6 +364,15 @@ func controllerRegistrations(
 				}).SetupWithManager(mgr.GetLocalManager())
 			}},
 		)
+	}
+	if serverConfig.PhysicalRealizer.Enabled {
+		registrations = append(registrations, namedSetup{physicalrealizer.ControllerName, func() (bool, error) {
+			return true, (&physicalrealizer.Reconciler{
+				Client:    mgr.GetLocalManager().GetClient(),
+				APIReader: mgr.GetLocalManager().GetAPIReader(),
+				Driver:    physicalrealizer.NewSimulatedSwitch(),
+			}).SetupWithManager(mgr.GetLocalManager())
+		}})
 	}
 	registrations = append(registrations,
 		namedSetup{"networkinterfaceclaim", func() (bool, error) {

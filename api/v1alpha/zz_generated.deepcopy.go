@@ -1791,6 +1791,11 @@ func (in *NetworkInterfaceClaimStatus) DeepCopyInto(out *NetworkInterfaceClaimSt
 		*out = make([]NetworkInterfaceExternalAddress, len(*in))
 		copy(*out, *in)
 	}
+	if in.VLANID != nil {
+		in, out := &in.VLANID, &out.VLANID
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))
@@ -1966,6 +1971,11 @@ func (in *NetworkInterfaceStatus) DeepCopyInto(out *NetworkInterfaceStatus) {
 	if in.AttachmentRef != nil {
 		in, out := &in.AttachmentRef, &out.AttachmentRef
 		*out = new(NetworkInterfaceAttachmentRef)
+		**out = **in
+	}
+	if in.VLANID != nil {
+		in, out := &in.VLANID, &out.VLANID
+		*out = new(int32)
 		**out = **in
 	}
 	if in.Conditions != nil {

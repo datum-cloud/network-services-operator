@@ -572,6 +572,16 @@ spec:
                 required:
                 - name
                 type: object
+              vlanID:
+                description: |-
+                  vlanID is the VLAN a Physical claim's network arrives on at its switch
+                  port, copied from the bound interface's status by the physical realizer.
+                  Once Prepared is true an absent vlanID means the network arrives
+                  untagged.
+                format: int32
+                maximum: 4094
+                minimum: 1
+                type: integer
             type: object
         required:
         - spec

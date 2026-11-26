@@ -95,6 +95,31 @@ const (
 	// port's SwitchPortHold to see what holds it.
 	NetworkInterfaceClaimReasonAttachmentPointHeld = "AttachmentPointHeld"
 
+	// NetworkInterfaceClaimReasonPortChanging means the physical realizer is
+	// changing what the claim's switch port carries, so the port is between
+	// states until the realizer reads it back.
+	NetworkInterfaceClaimReasonPortChanging = "PortChanging"
+
+	// NetworkInterfaceClaimReasonBootAttachmentActive means a boot claim holds
+	// the claim's switch port, so the port carries the boot network and not
+	// this claim's network until the boot claim is deleted. The claim keeps
+	// its addresses meanwhile.
+	NetworkInterfaceClaimReasonBootAttachmentActive = "BootAttachmentActive"
+
+	// NetworkInterfaceClaimReasonPortUnverified means the physical realizer
+	// could not confirm what the claim's switch port carries, because the
+	// switch failed, only partly applied a change, or could not be read. It
+	// keeps retrying.
+	NetworkInterfaceClaimReasonPortUnverified = "PortUnverified"
+
+	// NetworkInterfaceClaimReasonPortCarriesNetwork means the switch port
+	// carries the claim's network, as read back from the switch.
+	NetworkInterfaceClaimReasonPortCarriesNetwork = "PortCarriesNetwork"
+
+	// NetworkInterfaceClaimReasonAttachmentPointAccepted means the physical
+	// realizer accepted the claim's switch port and can build its segment.
+	NetworkInterfaceClaimReasonAttachmentPointAccepted = "AttachmentPointAccepted"
+
 	// NetworkInterfaceClaimReasonAwaitingDetach means a physical claim is being
 	// deleted and the realizer has not yet taken its network off the switch
 	// port, so its addresses stay held.
@@ -355,6 +380,16 @@ type NetworkInterfaceClaimStatus struct {
 	//
 	// +kubebuilder:validation:Optional
 	ExternalAddresses []NetworkInterfaceExternalAddress `json:"externalAddresses,omitempty"`
+
+	// vlanID is the VLAN a Physical claim's network arrives on at its switch
+	// port, copied from the bound interface's status by the physical realizer.
+	// Once Prepared is true an absent vlanID means the network arrives
+	// untagged.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4094
+	VLANID *int32 `json:"vlanID,omitempty"`
 
 	// conditions report the current state of the claim. Wait on Ready, which is
 	// true once the claim is bound, its addresses are allocated, the data plane

@@ -547,6 +547,16 @@ type NetworkInterfaceStatus struct {
 	// +kubebuilder:validation:Optional
 	VPC string `json:"vpc,omitempty"`
 
+	// vlanID is the VLAN a Physical interface's network arrives on at its
+	// switch port. The physical realizer reports it no later than Prepared, so
+	// once Prepared is true an absent vlanID means the network arrives
+	// untagged.
+	//
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4094
+	VLANID *int32 `json:"vlanID,omitempty"`
+
 	// conditions report the current state of the interface. Allocated means every
 	// address is held. Prepared means the data plane is ready for a workload to
 	// consume it. Programmed means the data plane carries the addresses.

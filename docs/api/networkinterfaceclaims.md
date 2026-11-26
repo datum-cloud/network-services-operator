@@ -548,6 +548,20 @@ namespace. Read it to reach fields the claim does not repeat, such as the
 MTU and the data-plane attachment.<br/>
         </td>
         <td>false</td>
+      </tr><tr>
+        <td><b>vlanID</b></td>
+        <td>integer</td>
+        <td>
+          vlanID is the VLAN a Physical claim's network arrives on at its switch
+port, copied from the bound interface's status by the physical realizer.
+Once Prepared is true an absent vlanID means the network arrives
+untagged.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 4094<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

@@ -50,3 +50,31 @@ func TestInternalDNSDisabledNeedsNoHubOrDNSAPIs(t *testing.T) {
 	}
 	t.Fatal("DNS registration not found")
 }
+
+func TestThePhysicalRealizerRunsOnlyWhenEnabled(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		enabled bool
+	}{
+		{name: "default"},
+		{name: "enabled", enabled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.CellControllerManager{}
+			if tt.enabled {
+				cfg.PhysicalRealizer = config.PhysicalRealizerConfig{
+					Enabled: true, Driver: config.PhysicalRealizerDriverSimulated,
+				}
+			}
+			registered := slices.ContainsFunc(controllerRegistrations(nil, cfg, nil, nil), func(r namedSetup) bool {
+				return r.name == "physical-realizer"
+			})
+			if registered != tt.enabled {
+				t.Errorf("physical realizer registered = %t, want %t", registered, tt.enabled)
+			}
+		})
+	}
+	if slices.Contains(ControllerNames(), "physical-realizer") {
+		t.Error("the default cell lists the physical realizer among its controllers")
+	}
+}

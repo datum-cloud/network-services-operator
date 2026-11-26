@@ -433,6 +433,11 @@ type scenario struct {
 	ipam       *fakeIPAM
 	reconciler *NetworkInterfaceClaimReconciler
 	namespace  string
+
+	// switchName is a switch of this scenario's own. Holds are cluster-scoped
+	// and the planes outlive a test, so a shared switch would carry one test's
+	// holds into the next.
+	switchName string
 }
 
 // newScenario builds one namespace of objects. Set labelled to false for a
@@ -479,6 +484,7 @@ func newScenario(t *testing.T, labelled bool, networkFamilies []networkingv1alph
 		ipam:       ipam,
 		reconciler: &NetworkInterfaceClaimReconciler{Location: location, IPAM: ipam, localReader: cl},
 		namespace:  namespaceName,
+		switchName: "rack-a1-tor-1-" + namespaceName,
 	}
 
 	// The claim reconciler runs in a cell and reads the propagated context, not
@@ -556,7 +562,7 @@ func (s *scenario) createClaim(name string, spec networkingv1alpha.NetworkInterf
 
 func (s *scenario) reconcile(claim *networkingv1alpha.NetworkInterfaceClaim) {
 	s.t.Helper()
-	_, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	_, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.client, s.events, client.ObjectKeyFromObject(claim))
 	require.NoError(s.t, err)
 }
 
@@ -732,7 +738,7 @@ func TestNetworkInterfaceClaimRejectsAMissingProjectNamespace(t *testing.T) {
 		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
 	})
 
-	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.client, s.events, client.ObjectKeyFromObject(claim))
 	require.NoError(t, err, "a control plane without its namespace is a rejection, not a reconcile failure")
 	require.NotZero(t, result.RequeueAfter,
 		"nothing watches the project, so the rejection carries its own way back")
@@ -1342,7 +1348,7 @@ func TestTransientProjectFailureDoesNotWedgeTheClaim(t *testing.T) {
 	s.reconcile(claim)
 
 	failing := &transientNamespaceClient{Client: s.client}
-	_, err := s.reconciler.reconcileClaim(s.ctx, failing, s.events,
+	_, err := s.reconciler.reconcileClaim(s.ctx, failing, s.client, s.events,
 		client.ObjectKey{Namespace: s.namespace, Name: "blip"})
 	require.Error(t, err, "a failed read must be retried, not turned into a rejection")
 
@@ -1367,7 +1373,7 @@ func TestRejectionRequeues(t *testing.T) {
 	}
 	require.NoError(t, s.client.Create(s.ctx, claim))
 
-	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events,
+	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.client, s.events,
 		client.ObjectKeyFromObject(claim))
 	require.NoError(t, err)
 	require.NotZero(t, result.RequeueAfter,
@@ -1786,7 +1792,7 @@ func TestNetworkInterfaceClaimRejectsAMissingNetworkContext(t *testing.T) {
 		ReclaimPolicy: networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
 	})
 
-	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	result, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.client, s.events, client.ObjectKeyFromObject(claim))
 	require.NoError(t, err)
 	require.NotZero(t, result.RequeueAfter)
 
@@ -2582,45 +2588,6 @@ func physicalAttachmentPoint(port string) *networkingv1alpha.NetworkInterfaceAtt
 		Switch:     "rack-a1-tor-1",
 		Port:       port,
 	}
-}
-
-// Nothing yet decides which project holds a switch port or detaches it before
-// release, so a physical claim must not reach IPAM or produce an interface a
-// realizer could act on.
-func TestPhysicalClaimIsRefusedWithoutAllocating(t *testing.T) {
-	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
-
-	claim := s.createClaim("server-data", networkingv1alpha.NetworkInterfaceClaimSpec{
-		InterfaceName:   "data",
-		AttachmentMode:  networkingv1alpha.NetworkInterfaceAttachmentModePhysical,
-		AttachmentPoint: physicalAttachmentPoint("Ethernet1/12"),
-		IPFamilies:      []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
-		ReclaimPolicy:   networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
-	})
-	s.reconcile(claim)
-	s.reconcile(claim)
-
-	require.Zero(t, s.ipam.createdAnywhere())
-	_, err := s.getInterface("server-data")
-	require.True(t, apierrors.IsNotFound(err), "no interface may exist for a refused physical claim")
-
-	refused := s.getClaim("server-data")
-	for _, conditionType := range []string{
-		networkingv1alpha.NetworkInterfaceClaimBound,
-		networkingv1alpha.NetworkInterfaceClaimAllocated,
-		networkingv1alpha.NetworkInterfaceClaimReady,
-	} {
-		condition := conditionOf(refused, conditionType)
-		require.NotNil(t, condition, conditionType)
-		require.Equal(t, metav1.ConditionFalse, condition.Status, conditionType)
-		require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported, condition.Reason, conditionType)
-	}
-
-	s.deleteClaim(refused)
-	require.Zero(t, s.ipam.createdAnywhere())
-	var gone networkingv1alpha.NetworkInterfaceClaim
-	require.True(t, apierrors.IsNotFound(s.client.Get(s.ctx, client.ObjectKeyFromObject(claim), &gone)),
-		"a refused physical claim allocated nothing and must delete at once")
 }
 
 func TestAdoptionRefusesADifferentAttachment(t *testing.T) {

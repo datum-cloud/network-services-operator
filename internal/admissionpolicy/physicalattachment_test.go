@@ -325,6 +325,32 @@ func TestOnlyTheOperatorAddsTheDetachFinalizer(t *testing.T) {
 	requireRefused(t, e.as(realizer).Update(e.ctx, &claim))
 }
 
+// The operator adds both finalizers in one write when it first sees a physical
+// claim, and removes the detach finalizer itself from a deleted claim no port
+// ever carried. Both must stay admitted under a configured policy.
+func TestTheOperatorsOwnFinalizerWritesAreAdmitted(t *testing.T) {
+	e := startEnv(t)
+	e.configure()
+
+	require.NoError(t, e.as(provider).Create(e.ctx, physicalClaim(customerNamespace, "operator-finalizers")))
+	key := client.ObjectKey{Namespace: customerNamespace, Name: "operator-finalizers"}
+	var claim networkingv1alpha.NetworkInterfaceClaim
+	require.NoError(t, e.admin.Get(e.ctx, key, &claim))
+	claim.Finalizers = []string{
+		"networking.datumapis.com/networkinterfaceclaim-release",
+		networkingv1alpha.NetworkInterfaceClaimDetachFinalizer,
+	}
+	require.NoError(t, e.as(operator).Update(e.ctx, &claim))
+
+	require.NoError(t, e.as(provider).Delete(e.ctx, &claim))
+	require.NoError(t, e.admin.Get(e.ctx, key, &claim))
+	require.False(t, claim.DeletionTimestamp.IsZero())
+	claim.Finalizers = []string{"networking.datumapis.com/networkinterfaceclaim-release"}
+	require.NoError(t, e.as(operator).Update(e.ctx, &claim))
+	claim.Finalizers = nil
+	require.NoError(t, e.as(operator).Update(e.ctx, &claim))
+}
+
 func TestBootClaimsOnlyInProviderProjects(t *testing.T) {
 	e := startEnv(t)
 	e.configure()

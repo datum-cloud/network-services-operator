@@ -10,7 +10,9 @@ isolation on any other mode, and keep the mode from changing.
   such as to remove its finalizers, but not create one. The claim's schema
   already keeps its spec from changing.
 - Only the realizer, or a break-glass operator, may remove the
-  `networking.datumapis.com/physical-detach` finalizer.
+  `networking.datumapis.com/physical-detach` finalizer. The operator is
+  exempt, and removes it only from a deleted claim that no `SwitchPortHold`
+  records, which no realizer ever acted on.
 - Only the operator may add that finalizer, or write a physical interface.
 - A claim with `purpose: Boot` is created only in a namespace whose project,
   decoded from its `meta.datumapis.com/upstream-cluster-name` label, is a

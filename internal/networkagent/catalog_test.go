@@ -42,6 +42,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"networkloadbalancercellintent_types.go":    "hub-side NLB serving intent, not a network-agent customer API",
 	"networkloadbalancerroute_types.go":         "Network Load Balancer route status belongs to the load balancer product",
 	"networkpolicy_types.go":                    "declares no status reasons",
+	"switchporthold_types.go":                   "cell-local record of what a switch port carries, with no status reasons",
 	"trafficprotectionpolicy_types.go":          "load balancer protection; the ALB agent's",
 	"zz_generated.deepcopy.go":                  "generated",
 }

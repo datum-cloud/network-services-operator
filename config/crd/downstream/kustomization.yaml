@@ -29,7 +29,9 @@
 # The cell set is derived from what the cell controller manager watches
 # (internal/cmd/cell/cell.go): NetworkInterfaceClaim, NetworkInterface,
 # NetworkContext and Subnet on the local cluster. It also watches
-# ServingLocation, which the locations service installs.
+# ServingLocation, which the locations service installs. It writes
+# SwitchPortHold, the cell-local record of which physical claims hold each
+# switch port.
 resources:
   # Gateway data plane
   - ../bases/networking.datumapis.com_edgereachabilities.yaml
@@ -46,6 +48,7 @@ resources:
   # Network interface claim path, served on cells
   - ../bases/networking.datumapis.com_networkinterfaceclaims.yaml
   - ../bases/networking.datumapis.com_networkinterfaces.yaml
+  - ../bases/networking.datumapis.com_switchportholds.yaml
   - ../bases/networking.datumapis.com_networkloadbalancerbackendhealths.yaml
   - ../bases/networking.datumapis.com_networkloadbalancercellintents.yaml
   - ../bases/networking.datumapis.com_subnets.yaml

@@ -19,56 +19,17 @@ import (
 
 const physicalClaimName = "server-data"
 
-// boundPhysicalClaim stands up what a bound physical claim leaves behind: the
-// claim, its interface, and an IPClaim under each of the given names. NSO
-// refuses to bind physical claims until switch ports can be held, so the state
-// is written directly, the way the bind path writes it.
-func boundPhysicalClaim(s *scenario, ipClaimNames ...string) (*networkingv1alpha.NetworkInterfaceClaim, string) {
+// boundPhysicalClaim binds a physical claim on the scenario's own port the way
+// a provider's claim is bound, and returns it with the address it holds.
+func boundPhysicalClaim(s *scenario) (*networkingv1alpha.NetworkInterfaceClaim, string) {
 	s.t.Helper()
-	name := physicalClaimName
-
-	claim := s.createClaim(name, networkingv1alpha.NetworkInterfaceClaimSpec{
-		InterfaceName:   "data",
-		AttachmentMode:  networkingv1alpha.NetworkInterfaceAttachmentModePhysical,
-		AttachmentPoint: physicalAttachmentPoint("Ethernet1/12"),
-		IPFamilies:      []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
-		ReclaimPolicy:   networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
-	})
+	claim := s.createClaim(physicalClaimName, s.physicalSpec("Ethernet1/12", ""))
 	s.reconcile(claim)
 
-	ipamClient, err := s.ipam.ClientForProject(testProject)
-	require.NoError(s.t, err)
-	var address string
-	for _, ipClaimName := range ipClaimNames {
-		ipClaim := physicalIPClaim(ipClaimName, testLocationName)
-		require.NoError(s.t, ipamClient.Create(s.ctx, ipClaim))
-		require.NoError(s.t, ipamClient.Get(s.ctx, client.ObjectKeyFromObject(ipClaim), ipClaim))
-		if address == "" {
-			address = ipClaim.Status.AllocatedCIDR
-		}
-	}
-	require.NotEmpty(s.t, address)
-
-	claim = s.getClaim(name)
-	networkContext := &networkingv1alpha.NetworkContext{}
-	networkContext.Spec.Network.Name = "default"
-	iface := &networkingv1alpha.NetworkInterface{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace:   s.namespace,
-			Name:        name,
-			Annotations: map[string]string{allocationClaimAnnotation: name},
-			Finalizers:  []string{networkInterfaceFinalizer},
-		},
-		Spec: interfaceSpecForClaim(claim, networkContext),
-	}
-	iface.Spec.Addresses = []networkingv1alpha.NetworkInterfaceAddress{{
-		Family: networkingv1alpha.IPv4Protocol, Address: address, Primary: true,
-	}}
-	require.NoError(s.t, s.client.Create(s.ctx, iface))
-
-	claim.Status.NetworkInterfaceRef = &networkingv1alpha.LocalNetworkInterfaceRef{Name: name}
-	require.NoError(s.t, s.client.Status().Update(s.ctx, claim))
-	return s.getClaim(name), address
+	claim = s.getClaim(physicalClaimName)
+	require.NotNil(s.t, claim.Status.NetworkInterfaceRef, "the physical claim must bind")
+	require.Len(s.t, claim.Status.Addresses, 1)
+	return claim, claim.Status.Addresses[0].Address
 }
 
 func physicalIPClaim(name, location string) *ipamv1alpha1.IPClaim {
@@ -102,8 +63,9 @@ func (s *scenario) claimGone(name string) bool {
 	return false
 }
 
-func (s *scenario) requireReleaseUnverified(name, address string) {
+func (s *scenario) requireReleaseUnverified(address string) {
 	s.t.Helper()
+	name := physicalClaimName
 	require.False(s.t, s.claimGone(name), "the claim must stay while IPAM holds its address")
 	ready := conditionOf(s.getClaim(name), networkingv1alpha.NetworkInterfaceClaimReady)
 	require.NotNil(s.t, ready)
@@ -120,9 +82,10 @@ func (s *scenario) requireReleaseUnverified(name, address string) {
 func TestPhysicalReleaseCompletesOnceIPAMLetsGo(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, _ := boundPhysicalClaim(s, names[0])
+	claim, _ := boundPhysicalClaim(s)
+	s.ipClaim(names[0])
 
-	s.deleteClaim(claim)
+	s.deletePhysicalClaim(claim)
 
 	require.True(t, s.claimGone(physicalClaimName))
 	_, err := s.getInterface(physicalClaimName)
@@ -133,11 +96,11 @@ func TestPhysicalReleaseCompletesOnceIPAMLetsGo(t *testing.T) {
 func TestPhysicalReleaseWaitsWhileIPAMRefusesTheDelete(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, _ := boundPhysicalClaim(s, names[0])
+	claim, _ := boundPhysicalClaim(s)
 	s.ipam.refuseRelease(names[0], errors.New("ipam is unavailable"))
 
-	require.NoError(t, s.client.Delete(s.ctx, claim))
-	_, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.events, client.ObjectKeyFromObject(claim))
+	s.deleteAndDetach(claim)
+	_, err := s.reconciler.reconcileClaim(s.ctx, s.client, s.client, s.events, client.ObjectKeyFromObject(claim))
 	require.Error(t, err)
 	require.False(t, s.claimGone(physicalClaimName))
 
@@ -149,7 +112,7 @@ func TestPhysicalReleaseWaitsWhileIPAMRefusesTheDelete(t *testing.T) {
 func TestPhysicalReleaseWaitsForALingeringAllocation(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, address := boundPhysicalClaim(s, names[0])
+	claim, address := boundPhysicalClaim(s)
 
 	ipamClient, err := s.ipam.ClientForProject(testProject)
 	require.NoError(t, err)
@@ -160,10 +123,10 @@ func TestPhysicalReleaseWaitsForALingeringAllocation(t *testing.T) {
 	lingering.Spec.Scope = map[string]ipamv1alpha1.ScopeRef{ipamScopeRoleLocation: {Name: testLocationName}}
 	require.NoError(t, ipamClient.Create(s.ctx, lingering))
 
-	s.deleteClaim(claim)
-	s.requireReleaseUnverified(physicalClaimName, address)
+	s.deletePhysicalClaim(claim)
+	s.requireReleaseUnverified(address)
 	s.reconcile(claim)
-	s.requireReleaseUnverified(physicalClaimName, address)
+	s.requireReleaseUnverified(address)
 
 	require.NoError(t, ipamClient.Get(s.ctx, client.ObjectKeyFromObject(lingering), lingering))
 	lingering.Spec.ClaimRef = nil
@@ -175,9 +138,12 @@ func TestPhysicalReleaseWaitsForALingeringAllocation(t *testing.T) {
 func TestPhysicalReleaseFreesEveryNameAnAddressIsHeldUnder(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, _ := boundPhysicalClaim(s, names...)
+	claim, _ := boundPhysicalClaim(s)
+	ipamClient, err := s.ipam.ClientForProject(testProject)
+	require.NoError(t, err)
+	require.NoError(t, ipamClient.Create(s.ctx, physicalIPClaim(names[1], testLocationName)))
 
-	s.deleteClaim(claim)
+	s.deletePhysicalClaim(claim)
 	require.False(t, s.claimGone(physicalClaimName), "one pass frees one name, so the claim waits for the other")
 
 	s.reconcile(claim)
@@ -188,14 +154,16 @@ func TestPhysicalReleaseFreesEveryNameAnAddressIsHeldUnder(t *testing.T) {
 func TestPhysicalReleaseIgnoresAnotherLocationsAllocation(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, _ := boundPhysicalClaim(s, names[1])
-
 	ipamClient, err := s.ipam.ClientForProject(testProject)
 	require.NoError(t, err)
 	foreign := physicalIPClaim(names[0], "location-elsewhere")
 	require.NoError(t, ipamClient.Create(s.ctx, foreign))
 
-	s.deleteClaim(claim)
+	claim, _ := boundPhysicalClaim(s)
+	require.NoError(t, ipamClient.Get(s.ctx, client.ObjectKey{Namespace: testProjectNS, Name: names[1]}, &ipamv1alpha1.IPClaim{}),
+		"the claim must be addressed under the name for this location")
+
+	s.deletePhysicalClaim(claim)
 	require.True(t, s.claimGone(physicalClaimName), "another location's same-named allocation is not this claim's")
 	require.NoError(t, ipamClient.Get(s.ctx, client.ObjectKeyFromObject(foreign), foreign),
 		"another location's allocation must be left alone")
@@ -204,7 +172,7 @@ func TestPhysicalReleaseIgnoresAnotherLocationsAllocation(t *testing.T) {
 func TestPhysicalReleaseKeepsItsReasonAcrossPasses(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, address := boundPhysicalClaim(s, names[0])
+	claim, address := boundPhysicalClaim(s)
 
 	ipamClient, err := s.ipam.ClientForProject(testProject)
 	require.NoError(t, err)
@@ -214,10 +182,10 @@ func TestPhysicalReleaseKeepsItsReasonAcrossPasses(t *testing.T) {
 	lingering.Spec.ClaimRef = &ipamv1alpha1.LocalRef{Name: names[0]}
 	require.NoError(t, ipamClient.Create(s.ctx, lingering))
 
-	s.deleteClaim(claim)
+	s.deletePhysicalClaim(claim)
 	first := s.getClaim(physicalClaimName).ResourceVersion
 	s.reconcile(claim)
-	s.requireReleaseUnverified(physicalClaimName, address)
+	s.requireReleaseUnverified(address)
 	require.Equal(t, first, s.getClaim(physicalClaimName).ResourceVersion,
 		"a pass that finds nothing new must not rewrite the claim")
 }
@@ -251,7 +219,7 @@ func TestVirtualReleaseIsUnchanged(t *testing.T) {
 func TestPhysicalReleaseWaitsWhenTheInterfaceIsAlreadyGone(t *testing.T) {
 	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
 	names := physicalIPClaimNames(physicalClaimName)
-	claim, _ := boundPhysicalClaim(s, names[0])
+	claim, _ := boundPhysicalClaim(s)
 
 	ipamClient, err := s.ipam.ClientForProject(testProject)
 	require.NoError(t, err)
@@ -267,7 +235,7 @@ func TestPhysicalReleaseWaitsWhenTheInterfaceIsAlreadyGone(t *testing.T) {
 	require.NoError(t, s.client.Update(s.ctx, iface))
 	require.NoError(t, s.client.Delete(s.ctx, iface))
 
-	s.deleteClaim(claim)
+	s.deletePhysicalClaim(claim)
 	require.False(t, s.claimGone(physicalClaimName))
 	ready := conditionOf(s.getClaim(physicalClaimName), networkingv1alpha.NetworkInterfaceClaimReady)
 	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonReleaseUnverified, ready.Reason)

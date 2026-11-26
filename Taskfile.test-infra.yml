@@ -269,6 +269,22 @@ tasks:
       # blocks the member join. Raise the limits on both nodes.
       - docker exec {{.UPSTREAM_CLUSTER}}-control-plane sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
       - docker exec {{.DOWNSTREAM_CLUSTER}}-control-plane sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+      # kind returns once the apiserver answers, before the node reports Ready.
+      # karmadactl init then picks an etcd node with one unretried check, so a
+      # lane that reaches it first fails on a node that is not Ready yet.
+      - |
+        for ctx in {{.UPSTREAM_CTX}} {{.DOWNSTREAM_CTX}}; do
+          echo "⏳ waiting for $ctx nodes to report Ready"
+          i=0
+          until kubectl --context "$ctx" wait --for=condition=Ready node --all --timeout=1s >/dev/null 2>&1; do
+            i=$((i+1))
+            if [ "$i" -ge 60 ]; then
+              echo "❌ no Ready node on $ctx after 180s" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+        done
 
   cert-manager-upstream:
     desc: "Install cert-manager (+ CSI driver) on the upstream cluster."

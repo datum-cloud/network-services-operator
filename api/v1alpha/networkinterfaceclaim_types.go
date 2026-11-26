@@ -38,6 +38,12 @@ const (
 	NetworkInterfaceClaimReady = "Ready"
 )
 
+// NetworkInterfaceClaimDetachFinalizer holds a physical claim until the
+// realizer has taken the claim's network off its switch port. Only the
+// operator adds it, and only the realizer, or the operator for a claim no
+// port ever carried, removes it.
+const NetworkInterfaceClaimDetachFinalizer = "networking.datumapis.com/physical-detach"
+
 const (
 	// NetworkInterfaceClaimReasonNetworkNotAvailableInLocation means the network
 	// exists and has not reached this location yet, which is a different answer

@@ -1223,12 +1223,14 @@ tasks:
         done
 
   test-e2e:
-    desc: "Run the full control-plane e2e suite (test/e2e) against the live two-cluster env. The suite's chainsaw aliases nso-standard/nso-infra are mapped to this env's upstream/downstream kubeconfigs at invocation. Pass a scenario path after -- to run a single test. NOT safe to run while anything else is touching the env. The interface suites use fixed object names in the shared ipam-e2e-* namespaces (the project routing lives on those namespace labels), and this task clears and re-seeds the cluster-scoped fixtures at its head — which also republishes the tenant RBAC. So a second invocation, or a bare ipam-fixtures / ipam-fixtures-clear / ipam-tenant-rbac run, will pull the fixtures and the tenant's access out from under a suite already in flight. Run one at a time."
+    desc: "Run the full control-plane e2e suite (test/e2e) against the live two-cluster env. The suite's chainsaw aliases nso-standard/nso-infra are mapped to this env's upstream/downstream kubeconfigs at invocation. Pass a scenario path after -- to run a single test. SHARD_COUNT=n SHARD_INDEX=i runs the i-th (0-based) of n shards balanced by test/e2e/shard-times.txt, each folder's seconds on CI: the folders under test/e2e, the slowest first, each go to the shard with the fewest seconds so far, and a folder with no line there counts as the mean, so n runs with i=0..n-1 run each folder once. NOT safe to run while anything else is touching the env. The interface suites use fixed object names in the shared ipam-e2e-* namespaces (the project routing lives on those namespace labels), and this task clears and re-seeds the cluster-scoped fixtures at its head — which also republishes the tenant RBAC. So a second invocation, or a bare ipam-fixtures / ipam-fixtures-clear / ipam-tenant-rbac run, will pull the fixtures and the tenant's access out from under a suite already in flight. Run one at a time."
     vars:
       # CLI_ARGS (after --) wins so a single test can be selected; else the whole
       # suite directory.
       # here be dragons
       TARGET: '{{.CLI_ARGS | default "./test/e2e"}}'
+      SHARD_COUNT: '{{.SHARD_COUNT | default 1}}'
+      SHARD_INDEX: '{{.SHARD_INDEX | default 0}}'
       # Persist a machine-readable run report so a hang or kill still leaves a
       # forensic trail on disk (chainsaw writes nothing by default).
       REPORT_PATH: '{{.REPORT_PATH | default .TMP_DIR}}'
@@ -1239,9 +1241,17 @@ tasks:
       # See the note in `e2e`: cluster-scoped fixtures outlive a failed run, so
       # the suite starts by putting them back to a known state.
       - task: ipam-fixtures
-      - echo "🧪 chainsaw suite {{.TARGET}} (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
       - |
-        {{.CHAINSAW}} test {{.TARGET}} \
+        set -e
+        set -- {{.TARGET}}
+        if [ {{.SHARD_COUNT}} -gt 1 ]; then
+          set -- $(find test/e2e -mindepth 1 -maxdepth 1 -type d | sed 's|^test/e2e/||' |
+            awk 'NR == FNR { t[$1] = $2; s += $2; n++; next } { w = s / n; if ($1 in t) w = t[$1]; print w, $1 }' test/e2e/shard-times.txt - |
+            LC_ALL=C sort -k1,1nr -k2,2 |
+            awk -v n={{.SHARD_COUNT}} -v i={{.SHARD_INDEX}} '{ b = 0; for (j = 1; j < n; j++) if (l[j] < l[b]) b = j; l[b] += $1; if (b == i) print "test/e2e/" $2 }')
+        fi
+        echo "🧪 chainsaw suite $* (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
+        {{.CHAINSAW}} test "$@" \
           --parallel 1 \
           --cluster nso-standard={{.TMP_DIR}}/.kind-{{.UPSTREAM_CLUSTER}}.yaml \
           --cluster nso-infra={{.TMP_DIR}}/.kind-{{.DOWNSTREAM_CLUSTER}}.yaml \

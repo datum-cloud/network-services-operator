@@ -53,15 +53,6 @@ jobs:
         with:
           go-version: '1.27'
 
-      # Two kind clusters plus a full Karmada control plane and the edge data
-      # plane need more room than the runner ships with. Reclaim disk from
-      # toolchains this job never uses.
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
-          docker system prune -af || true
-          df -h /
-
       # Karmada plus two clusters open a large number of file watches; the
       # default runner limits crashloop a component with "too many open files".
       - name: Raise inotify limits

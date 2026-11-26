@@ -332,7 +332,7 @@ describe('AddListenerDialog editing', () => {
         { family: 'IPv4', value: `203.0.113.${i + 1}` },
       ],
     })),
-  };
+  } satisfies NetworkLoadBalancer;
 
   function row(overrides: Partial<ListenerRow> = {}): ListenerRow {
     return {

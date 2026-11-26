@@ -26,9 +26,23 @@ export const IPV4_COPY = {
   requestAction: 'Request IPv4 address',
   noAllocation: 'This project doesn’t have a public IPv4 allocation.',
   usedUp: 'This project has used all of its public IPv4 addresses.',
+  checking: 'Checking this project’s public IPv4 allocation…',
   quotaRefused:
     'This load balancer couldn’t get a public IPv4 address because the project’s IPv4 allocation is used up. Its IPv6 address isn’t affected.',
 } as const;
+
+export function ipv4LocationsWarning(locations: number, available: number): string {
+  const left = `${available} public IPv4 ${available === 1 ? 'address' : 'addresses'}`;
+  return `This load balancer serves ${locations} locations and the project has ${left} left. Each location uses one, so some locations won’t get an IPv4 address until more are granted.`;
+}
+
+export function releaseIpv4Message(locations: string[]): string {
+  const where =
+    locations.length > 0
+      ? `its public IPv4 ${locations.length === 1 ? 'address' : 'addresses'} in ${locations.join(', ')}`
+      : 'its public IPv4 address';
+  return `Saving releases ${where}. The same address can’t be kept, and isn’t guaranteed back if you add IPv4 again later. Its IPv6 address isn’t affected.`;
+}
 
 export function deriveIpv4Availability(verdict: ResourceQuotaVerdict): Ipv4Availability {
   const counts = { limit: verdict.limit, allocated: verdict.allocated, available: verdict.available };

@@ -1,4 +1,4 @@
-import { IPV4_COPY, type Ipv4Availability } from '../lib/ipv4-quota';
+import { IPV4_COPY, type Ipv4Availability, ipv4LocationsWarning } from '../lib/ipv4-quota';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Checkbox } from '@datum-cloud/datum-ui/checkbox';
 import { Form, useField, useWatch } from '@datum-cloud/datum-ui/form';
@@ -10,13 +10,7 @@ export const IP_FAMILY_COPY = {
   ipv6: 'IPv6',
   ipv6Hint: 'Always on',
   description: 'Each location the load balancer serves gets one address of each family.',
-  checking: 'Checking this project’s public IPv4 allocation…',
 } as const;
-
-export function locationsWarning(locations: number, available: number): string {
-  const left = `${available} public IPv4 ${available === 1 ? 'address' : 'addresses'}`;
-  return `This load balancer serves ${locations} locations and the project has ${left} left. Each location uses one, so some locations won’t get an IPv4 address until more are granted.`;
-}
 
 export function isChecked(value: unknown): boolean {
   return value === true || value === 'on' || value === 'true';
@@ -67,7 +61,7 @@ export function IpFamilyField({
         <Form.Checkbox label={IPV4_COPY.optionLabel} disabled={!enabled} />
       </Form.Field>
       {availability.state === 'loading' && !hasIpv4 && (
-        <p className="text-muted-foreground text-xs">{IP_FAMILY_COPY.checking}</p>
+        <p className="text-muted-foreground text-xs">{IPV4_COPY.checking}</p>
       )}
       {explainDisabled && (
         <Ipv4Note
@@ -78,7 +72,7 @@ export function IpFamilyField({
       {short && (
         <Ipv4Note
           tone="warning"
-          lines={[locationsWarning(locations, availability.available ?? 0)]}
+          lines={[ipv4LocationsWarning(locations, availability.available ?? 0)]}
           onRequest={onRequest}
         />
       )}

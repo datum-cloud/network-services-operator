@@ -33,7 +33,7 @@ import {
   PLUGIN_ID,
   useNetworkServices,
 } from '../lib/api';
-import { useIpv4Availability, useRequestIpv4 } from '../lib/ipv4-quota';
+import { releaseIpv4Message, useIpv4Availability, useRequestIpv4 } from '../lib/ipv4-quota';
 import type { NetworkLoadBalancer, NetworkService } from '../schema';
 import { Button } from '@datum-cloud/datum-ui/button';
 import { Form, useField, useWatch } from '@datum-cloud/datum-ui/form';
@@ -44,14 +44,6 @@ import { useRef, useState } from 'react';
 
 const NO_ERRORS: NlbCreateErrors = { fields: {} };
 const MAX_LISTENERS = 16;
-
-export function releaseIpv4Message(locations: string[]): string {
-  const where =
-    locations.length > 0
-      ? `its public IPv4 ${locations.length === 1 ? 'address' : 'addresses'} in ${locations.join(', ')}`
-      : 'its public IPv4 address';
-  return `Saving releases ${where}. The same address can’t be kept, and isn’t guaranteed back if you add IPv4 again later. Its IPv6 address isn’t affected.`;
-}
 
 /**
  * Checks a new or edited listener against the NLB's others. Listeners on

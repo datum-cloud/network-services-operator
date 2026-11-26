@@ -130,14 +130,12 @@ export function toRouteBackendPatch(
   };
 }
 
-type WithAddressFamilies = NetworkLoadBalancer & { addressFamilies?: Record<string, IpFamily[]> };
-
 export function listenerFamilies(
   nlb: NetworkLoadBalancer,
   listener: NetworkLoadBalancerListener
 ): IpFamily[] {
   const families = listener.addressRef
-    ? (nlb as WithAddressFamilies).addressFamilies?.[listener.addressRef]
+    ? nlb.addressFamilies?.[listener.addressRef]
     : undefined;
   return families && families.length > 0 ? families : ['IPv6'];
 }

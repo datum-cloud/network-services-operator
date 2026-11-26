@@ -1,4 +1,5 @@
-import { IpFamilyField, locationsWarning } from './ip-family-field';
+import { ipv4LocationsWarning } from '../lib/ipv4-quota';
+import { IpFamilyField } from './ip-family-field';
 import { deriveIpv4Availability, IPV4_COPY, type Ipv4Availability } from '../lib/ipv4-quota';
 import { IPV4_VERDICTS } from '../test/portal-host';
 import { Form } from '@datum-cloud/datum-ui/form';
@@ -66,9 +67,9 @@ describe('IpFamilyField', () => {
 
   it('warns only once IPv4 is checked for more locations than addresses left', () => {
     const { onRequest } = renderField(available, { locations: 3 });
-    expect(screen.queryByText(locationsWarning(3, 1))).not.toBeInTheDocument();
+    expect(screen.queryByText(ipv4LocationsWarning(3, 1))).not.toBeInTheDocument();
     fireEvent.click(ipv4Box());
-    expect(screen.getByText(locationsWarning(3, 1))).toBeInTheDocument();
+    expect(screen.getByText(ipv4LocationsWarning(3, 1))).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: IPV4_COPY.requestAction }));
     expect(onRequest).toHaveBeenCalledOnce();
   });
@@ -88,7 +89,7 @@ describe('IpFamilyField', () => {
   });
 
   it('words the warning for one or several addresses left', () => {
-    expect(locationsWarning(3, 1)).toContain('1 public IPv4 address left');
-    expect(locationsWarning(4, 2)).toContain('2 public IPv4 addresses left');
+    expect(ipv4LocationsWarning(3, 1)).toContain('1 public IPv4 address left');
+    expect(ipv4LocationsWarning(4, 2)).toContain('2 public IPv4 addresses left');
   });
 });

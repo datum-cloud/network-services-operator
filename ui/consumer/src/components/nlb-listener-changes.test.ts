@@ -157,7 +157,7 @@ describe('address families', () => {
       { requestName: 'udp-7777', location: 'eu-west-1', addresses: [{ family: 'IPv6', value: '2001:db8::2' }] },
       { requestName: 'tcp-80', location: 'us-east-1', addresses: [{ family: 'IPv6', value: '2001:db8::3' }] },
     ],
-  } satisfies NetworkLoadBalancer & { addressFamilies: Record<string, ('IPv4' | 'IPv6')[]> };
+  } satisfies NetworkLoadBalancer;
 
   it('reads an address without families as IPv6 only', () => {
     expect(listenerFamilies(nlb, udp)).toEqual(['IPv6']);

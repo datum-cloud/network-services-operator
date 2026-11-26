@@ -598,16 +598,19 @@ When a physical claim is deleted:
    IPAM claims behind it. Under `Retain` it unbinds the interface, which keeps
    its addresses and stays off the port until a claim of the same name binds it
    again.
-4. Under `Delete`, NSO reads each IPAM claim again, and lists the IPAM
-   allocations in the same IPAM namespace. The release is verified once each
-   IPAM claim is gone and no allocation's `spec.claimRef` names one. Under
+4. Under `Delete`, NSO reads again every IPAM claim the address could be held
+   under, by each name it can carry, and lists the IPAM allocations in the
+   same IPAM namespace. The release is verified once every one of those IPAM
+   claims is gone and no allocation's `spec.claimRef` names any of them. Under
    `Retain`, IPAM keeps the allocations on purpose, so the release is verified
    once the interface is unbound.
 5. NSO removes the claim's entry from the hold.
 6. NSO removes its own finalizer, and the claim is gone.
 
 Until each step completes, the claim stays and its conditions say which step it
-is waiting on. A hold entry whose claim no longer exists, read from the API
+is waiting on. A release waiting on IPAM says so in its own reason,
+`ReleaseUnverified`, apart from one waiting on the port, `AwaitingDetach`, and
+its message names the address still held. It does not name NSO's IPAM claims. A hold entry whose claim no longer exists, read from the API
 server rather than a cache, is removed the next time NSO writes that hold, so
 an entry cannot outlive its claim.
 
@@ -621,12 +624,17 @@ then is refused as already existing, and the writer retries once the old claim
 is gone. Naming a boot claim from its operation means a new operation never
 needs an old operation's name.
 
-The claim's absence is the whole contract for a release. A provider confirms an
-address is free by finding the claim gone, not by reading IPAM itself. The
-names NSO gives its IPAM claims are internal. An address can already be held
-under either of two names, one of them specific to the location, and NSO may
-change how it names them. NSO checks every name an address can be held under
-before it lets the claim go.
+Under `Delete`, the claim's absence is the whole contract for a release. A
+provider confirms an address is free by finding the claim gone, not by reading
+IPAM itself. Under `Retain`, the claim's absence means the port no longer
+carries the network, and the interface keeps its addresses for the next claim
+of that name.
+
+The names NSO gives its IPAM claims stay internal. NSO can already hold an
+address under either of two names, one of them specific to the location, and
+may change how it names them. Today's release frees the first of those names it
+finds and does not read IPAM back. Checking every name, as step 4 does, is new
+work in this design.
 
 The verified release in step 4 applies to physical claims only. Today, for
 every mode, NSO finds each IPAM claim, deletes it, and removes its own
@@ -682,9 +690,10 @@ there.
 - **Addresses.** A boot claim's address comes from IPAM through NSO, like any
   claim's. The provider chooses the boot network's address families. Firmware
   usually needs IPv4. Once bound, the claim reports the address in
-  `status.addresses`, one entry per family, each with its `family`, `address`
-  and `gateway`. A reader picks the entry by `family: IPv4`, not by its place
-  in the list, because the list's order is not part of the contract.
+  `status.addresses`, one entry per family, each with its `family` and
+  `address`, and its `gateway` once the location has a subnet. A reader picks
+  the entry by `family: IPv4`, not by its place in the list, and waits for the
+  gateway before it boots the server.
 - **Lifetime.** The provider names a boot claim from the operation it serves,
   creates it before the operation starts and deletes it when the operation ends.
   NSO adds no lifetime of its own.
@@ -879,17 +888,20 @@ The reasons for each change and rejection:
   only providers can write, in a namespace only providers may use for it.
   Isolation follows the purpose, so Fleet gets an isolated boot claim without
   setting anything else.
-- **Picking the address by family.** NSO publishes one address per family and
-  promises nothing about their order. Reading the first entry works for a
-  claim that asks only for IPv4 and breaks quietly the day a boot network also
-  carries IPv6.
+- **Picking the address by family.** NSO publishes one address per family.
+  Today they follow the order of the claim's `ipFamilies`, but that order is
+  not promised, and this design adds that statement to the field's API
+  documentation. A reader that takes the first entry breaks quietly if a claim
+  ever lists IPv6 first.
 - **No IPAM link.** If Fleet also verified IPAM, two components would decide
   when an address is free, and a change in NSO's naming would break Fleet
-  without a single NSO field changing. NSO already holds the claim until every
-  IPAM claim it could have used is gone and no IPAM allocation names one, so
-  the claim's absence already proves what the link was meant to prove. The
-  link would also have to name a resource in IPAM's own API, which is a
-  contract IPAM would have to agree to.
+  without a single NSO field changing. Under this design NSO holds a physical
+  claim until every IPAM claim it could have used is gone and no IPAM
+  allocation names one, so the claim's absence proves what the link was meant
+  to prove. A stuck release names the address it is waiting on, so Fleet can
+  tell it from a stuck port without reading IPAM. The link would also have to
+  name a resource in IPAM's own API, which is a contract IPAM would have to
+  agree to.
 - **Safety rules on the handover.** Fleet's model of what a port carries is
   NSO's. The realizer adds the steps that keep it honest when a switch
   misbehaves: it withdraws `Programmed` before a change, reads the port back,
@@ -925,7 +937,9 @@ tests for concurrency, authorization, lifecycle and recovery.
 2. **Admission.** The rule that limits physical claims to provider identities,
    and the rule that limits removing the detach finalizer.
 3. **Verified release.** NSO keeps a physical claim until IPAM confirms its
-   addresses are released.
+   addresses are released under every name they could be held under. The
+   claim reports `ReleaseUnverified` with the address still held, and the API
+   documentation for `status.addresses` says its order is not promised.
 4. **Port holds and detach.** The `SwitchPortHold`, the binding order, waiting
    for a port, and the detach finalizer.
 5. **Test realizer.** The realizer contract against a simulated switch,

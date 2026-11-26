@@ -24,6 +24,9 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/kustomize/api/krusty"
+	kustypes "sigs.k8s.io/kustomize/api/types"
+	"sigs.k8s.io/kustomize/kyaml/filesys"
 	"sigs.k8s.io/yaml"
 
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -359,4 +362,64 @@ func TestOnlyTheOperatorWritesPhysicalInterfaces(t *testing.T) {
 	require.NoError(t, e.as(operator).Create(e.ctx, iface("by-operator")))
 	requireRefused(t, e.as(provider).Create(e.ctx, iface("by-provider")))
 	requireRefused(t, e.as(realizer).Create(e.ctx, iface("by-realizer")))
+}
+
+func TestBootClaimsSurviveAProviderProjectChange(t *testing.T) {
+	e := startEnv(t)
+	e.configure()
+
+	claim := physicalClaim(providerNamespace, "boot-then-unlisted")
+	claim.Spec.Purpose = networkingv1alpha.NetworkInterfacePurposeBoot
+	require.NoError(t, e.as(provider).Create(e.ctx, claim))
+	key := client.ObjectKeyFromObject(claim)
+
+	var stored networkingv1alpha.NetworkInterfaceClaim
+	require.NoError(t, e.admin.Get(e.ctx, key, &stored))
+	stored.Finalizers = []string{networkingv1alpha.NetworkInterfaceClaimDetachFinalizer}
+	require.NoError(t, e.as(operator).Update(e.ctx, &stored))
+
+	e.setLists(map[int]string{4: "[]"})
+	require.Eventually(t, func() bool {
+		probe := physicalClaim(providerNamespace, "boot-probe")
+		probe.Spec.Purpose = networkingv1alpha.NetworkInterfacePurposeBoot
+		err := e.as(provider).Create(e.ctx, probe)
+		if err == nil {
+			_ = e.admin.Delete(e.ctx, probe)
+		}
+		return refusedByPolicy(err)
+	}, 30*time.Second, 200*time.Millisecond)
+
+	require.NoError(t, e.admin.Get(e.ctx, key, &stored))
+	stored.Finalizers = nil
+	require.NoError(t, e.as(realizer).Update(e.ctx, &stored),
+		"an existing boot claim must still release after its project leaves the list")
+}
+
+// The policy exempts the operator by username, and that username comes from the
+// service account the cell bundle runs as.
+func TestOperatorDefaultMatchesTheCellServiceAccount(t *testing.T) {
+	opts := krusty.MakeDefaultOptions()
+	opts.LoadRestrictions = kustypes.LoadRestrictionsNone
+	resources, err := krusty.MakeKustomizer(opts).Run(filesys.MakeFsOnDisk(), filepath.Join("..", "..", "config", "cell"))
+	require.NoError(t, err)
+
+	var serviceAccount, namespace string
+	var operators []string
+	for _, resource := range resources.Resources() {
+		switch resource.GetKind() {
+		case "Deployment":
+			name, err := resource.GetString("spec.template.spec.serviceAccountName")
+			require.NoError(t, err)
+			serviceAccount, namespace = name, resource.GetNamespace()
+		case "ValidatingAdmissionPolicy":
+			if resource.GetName() != "physical-attachment-writers" {
+				continue
+			}
+			expression, err := resource.GetString("spec.variables[0].expression")
+			require.NoError(t, err)
+			operators = append(operators, expression)
+		}
+	}
+	require.NotEmpty(t, serviceAccount)
+	require.Equal(t, []string{"['system:serviceaccount:" + namespace + ":" + serviceAccount + "']"}, operators)
 }

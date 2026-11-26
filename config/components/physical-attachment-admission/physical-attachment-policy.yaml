@@ -25,8 +25,9 @@ spec:
         (request.operation == 'UPDATE' && has(oldObject.metadata.finalizers) &&
           'networking.datumapis.com/physical-detach' in oldObject.metadata.finalizers)
   # The first five variables are the lists a deployment sets, in this order.
-  # Each is a CEL list of strings. Leaving a list empty refuses whatever it
-  # would allow.
+  # Deployments patch them by index, so the order is a contract: add new
+  # variables after them, never between. Each is a CEL list of strings, and
+  # leaving a list empty refuses whatever it would allow.
   variables:
     - name: operators
       expression: >-
@@ -103,7 +104,8 @@ spec:
         'only the network services operator may add the ' + variables.detachFinalizer + ' finalizer'
       reason: Forbidden
     - expression: >-
-        variables.isOperator || !(has(object.spec.purpose) && object.spec.purpose == 'Boot') ||
+        variables.isOperator || request.operation != 'CREATE' ||
+        !(has(object.spec.purpose) && object.spec.purpose == 'Boot') ||
         (variables.project != '' && variables.project in variables.providerProjects)
       messageExpression: >-
         'a boot claim is only accepted in a provider project namespace, and namespace ' +

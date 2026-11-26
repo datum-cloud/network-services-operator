@@ -12,9 +12,10 @@ isolation on any other mode, and keep the mode from changing.
 - Only the realizer, or a break-glass operator, may remove the
   `networking.datumapis.com/physical-detach` finalizer.
 - Only the operator may add that finalizer, or write a physical interface.
-- A claim with `purpose: Boot` is accepted only in a namespace whose project,
+- A claim with `purpose: Boot` is created only in a namespace whose project,
   decoded from its `meta.datumapis.com/upstream-cluster-name` label, is a
-  listed provider project.
+  listed provider project. Later updates are not checked again, so changing
+  the list never strands a boot claim that already exists.
 
 The lists are the first five variables of the policy, each a CEL list of
 strings, in this order:
@@ -38,8 +39,16 @@ deployment fills them in. A deployment replaces a list with a JSON patch:
 ```
 
 The policy only matches physical claims and interfaces, and writes that add
-or remove the detach finalizer, so a wrong list can only stop physical
-attachment. Every other claim and interface is admitted as before.
+or remove the detach finalizer, so a wrong list can only affect physical
+attachment. Every other claim and interface is admitted as before. Within
+physical attachment, a wrong `realizers` or `breakGlassGroups` list leaves
+deleted claims waiting on their detach finalizer, with their addresses held.
+
+Patches name the lists by index, so the order of the first five variables is
+part of this component's contract. The operator's default entry is the cell's
+own service account, and a test renders `config/cell` to keep the two in
+step. A deployment that renames that service account must replace variable 0
+too.
 
 An operator in a break-glass group removes a detach finalizer only after
 confirming on the switch that the port no longer carries the claim's

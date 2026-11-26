@@ -817,7 +817,18 @@ tasks:
           write "{{.TMP_DIR}}/.milo-${proj}.yaml" e2e-tenant-tester-token \
             "/apis/resourcemanager.miloapis.com/v1alpha1/projects/${proj}/control-plane"
         done
-      - kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null
+      - |
+        for i in $(seq 1 60); do
+          if kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null 2>&1; then
+            break
+          fi
+          if [ "$i" -eq 60 ]; then
+            echo "❌ Milo never answered on 127.0.0.1:{{.MILO_NODE_PORT}}"
+            kubectl --kubeconfig {{.MILO_ADMIN_KUBECONFIG}} get --raw /healthz > /dev/null
+            exit 1
+          fi
+          sleep 1
+        done
       - echo "✅ Milo reachable from the host on 127.0.0.1:{{.MILO_NODE_PORT}}"
 
   milo-bootstrap:

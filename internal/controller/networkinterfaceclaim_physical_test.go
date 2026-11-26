@@ -48,8 +48,6 @@ func (s *scenario) physicalSpec(port string, purpose networkingv1alpha.NetworkIn
 	}
 }
 
-// createPhysicalClaim writes a physical claim on the default network, carrying both
-// finalizers the way NSO's first write leaves it.
 func (s *scenario) createPhysicalClaim(
 	name, port string,
 	purpose networkingv1alpha.NetworkInterfacePurpose,
@@ -65,8 +63,6 @@ func (s *scenario) createPhysicalClaim(
 	return claim
 }
 
-// sibling is another namespace on the same planes and the same switch,
-// belonging to the given project.
 func (s *scenario) sibling(project string) *scenario {
 	s.t.Helper()
 	namespace := &corev1.Namespace{}
@@ -106,8 +102,7 @@ func (s *scenario) requireHold(port string) *networkingv1alpha.SwitchPortHold {
 	return hold
 }
 
-// detach stands in for the realizer confirming the port no longer carries the
-// claim's network.
+// detach stands in for the realizer.
 func (s *scenario) detach(name string) {
 	s.t.Helper()
 	claim := s.getClaim(name)
@@ -129,8 +124,6 @@ func (s *scenario) requireAwaitingDetach(name string) {
 	require.Equal(s.t, networkingv1alpha.NetworkInterfaceClaimReasonReleasing, prepared.Reason)
 }
 
-// deleteAndDetach deletes a recorded physical claim, checks NSO waits for the
-// realizer, and then detaches it.
 func (s *scenario) deleteAndDetach(claim *networkingv1alpha.NetworkInterfaceClaim) {
 	s.t.Helper()
 	require.NoError(s.t, s.client.Delete(s.ctx, claim))
@@ -269,7 +262,6 @@ func TestAnotherProjectWaitsForAHeldPort(t *testing.T) {
 	require.True(t, other.claimGone("their-data"))
 	require.Equal(t, hold.ResourceVersion, s.requireHold("Ethernet1/12").ResourceVersion)
 
-	// The next claim takes the port once its last holder leaves.
 	s.deletePhysicalClaim(s.getClaim("server-data"))
 	_, err := s.getHold("Ethernet1/12")
 	require.True(t, apierrors.IsNotFound(err), "a hold that records nothing is deleted")

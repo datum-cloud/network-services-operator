@@ -192,9 +192,8 @@ func (r *NetworkInterfaceReconciler) heldByLiveClaim(
 	}
 
 	// A claim being deleted holds nothing. Its own release cannot free these
-	// addresses once the interface is gone. A physical claim still waiting for
-	// its port to be detached is the exception: the port may carry these
-	// addresses, and its release finds them by its own name once it is clear.
+	// addresses once the interface is gone. A physical claim not yet detached
+	// is the exception: the port may still carry them.
 	return claim.DeletionTimestamp.IsZero() ||
 		controllerutil.ContainsFinalizer(&claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer), nil
 }

@@ -17,9 +17,6 @@ const (
 	miloProjectAPIGroup = "resourcemanager.miloapis.com"
 	miloProjectKind     = "Project"
 
-	// Each attempt starts from a fresh read, so a conflict only means another
-	// writer moved first. A hold contended past this many attempts is left to
-	// the next reconcile.
 	switchPortHoldWriteAttempts = 5
 )
 
@@ -53,9 +50,8 @@ func holdIsForPort(hold *networkingv1alpha.SwitchPortHold, claim *networkingv1al
 	return hold.Spec.Switch == point.Switch && hold.Spec.Port == point.Port
 }
 
-// holdRecords reports whether the port's hold carries an entry under the
-// claim's name. An entry under its name for another network counts too: the
-// realizer may have acted on it, so only the realizer may say the port is clear.
+// An entry under the claim's name for another network counts too: the realizer
+// may have acted on it, so only the realizer may say the port is clear.
 func holdRecords(hold *networkingv1alpha.SwitchPortHold, claim *networkingv1alpha.NetworkInterfaceClaim) bool {
 	if !holdIsForPort(hold, claim) {
 		return false
@@ -68,9 +64,8 @@ func holdRecords(hold *networkingv1alpha.SwitchPortHold, claim *networkingv1alph
 	})
 }
 
-// readHold reads the claim's hold from the API server, returning nil when the
-// port has none. A cache could answer with a hold that another writer has
-// since changed, and every decision here rests on the current one.
+// reader must not be a cache: a stale hold can say a claim was never recorded,
+// and NSO would detach a port the realizer may still be carrying.
 func readHold(
 	ctx context.Context,
 	reader client.Reader,
@@ -86,9 +81,6 @@ func readHold(
 	return hold, nil
 }
 
-// recordOnHold records the claim on its port's hold, creating the hold for a
-// free port. It reports false when the port is held by claims this one cannot
-// share it with, and leaves the hold as it was.
 func recordOnHold(
 	ctx context.Context,
 	cl client.Client,
@@ -130,6 +122,10 @@ func recordOnHold(
 			}
 		}
 
+		if alreadyRecorded(hold, claim) {
+			return true, nil
+		}
+
 		before := hold.Spec.DeepCopy()
 		if err := pruneHold(ctx, reader, hold, claim); err != nil {
 			return false, err
@@ -154,9 +150,16 @@ func recordOnHold(
 	return false, lastErr
 }
 
-// admitToHold records the claim if the port can carry it, reporting whether
-// the hold now records it. A port carries one boot claim, and network claims
-// from one project with each network at most once.
+func alreadyRecorded(hold *networkingv1alpha.SwitchPortHold, claim *networkingv1alpha.NetworkInterfaceClaim) bool {
+	entry := holdEntryFor(claim)
+	sameName := func(held networkingv1alpha.SwitchPortHoldClaimRef) bool { return sameClaim(held, claim) }
+	if isBootClaim(claim) {
+		return hold.Spec.Boot != nil && *hold.Spec.Boot == entry && !slices.ContainsFunc(hold.Spec.NetworkClaims, sameName)
+	}
+	return hold.Spec.ConsumerRef != nil && slices.Contains(hold.Spec.NetworkClaims, entry) &&
+		(hold.Spec.Boot == nil || !sameName(*hold.Spec.Boot))
+}
+
 func admitToHold(
 	hold *networkingv1alpha.SwitchPortHold,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
@@ -209,8 +212,6 @@ func removeNetworkClaim(hold *networkingv1alpha.SwitchPortHold, claim *networkin
 	})
 }
 
-// clearEmptyConsumer drops the project from a hold its last network claim has
-// left, so a hold kept only by a boot claim names no project.
 func clearEmptyConsumer(hold *networkingv1alpha.SwitchPortHold) {
 	if len(hold.Spec.NetworkClaims) == 0 {
 		hold.Spec.NetworkClaims = nil
@@ -218,10 +219,9 @@ func clearEmptyConsumer(hold *networkingv1alpha.SwitchPortHold) {
 	}
 }
 
-// pruneHold drops every entry whose claim is gone, read from the API server, so
-// no entry outlives its claim. A claim of the same name that names another
-// network, another port, or the other kind of claim is a different claim. The
-// claim being written is never pruned here.
+// A claim of an entry's name that names another network, another port, or the
+// other kind of claim is a different claim, and the entry is as stale as one
+// whose claim is gone.
 func pruneHold(
 	ctx context.Context,
 	reader client.Reader,
@@ -268,9 +268,8 @@ func pruneHold(
 	return nil
 }
 
-// leaveHold removes the claim's entries from its port's hold, and deletes the
-// hold once it records nothing. The delete is conditional on the hold being
-// unchanged since it was read, so a claim recorded in between keeps it.
+// The delete is conditional on the hold being unchanged since it was read, so a
+// claim recorded in between keeps it.
 func leaveHold(
 	ctx context.Context,
 	cl client.Client,

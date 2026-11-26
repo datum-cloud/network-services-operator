@@ -70,6 +70,10 @@ const (
 	// IPAM sends no event when it finishes releasing, so a physical claim
 	// waiting on it looks again.
 	unverifiedReleaseRetryInterval = 10 * time.Second
+
+	// Nothing watches holds, and a handover from boot to customer waits on
+	// this retry.
+	heldClaimRetryInterval = 10 * time.Second
 )
 
 // NetworkInterfaceClaimReconciler binds a NetworkInterfaceClaim to a
@@ -125,9 +129,6 @@ func networkInterfaceClaimWriteRace(err error) (ctrl.Result, bool) {
 	}
 }
 
-// reconcileClaim reads holds through reader, which must not be a cache: a
-// switch port hold is changed only by compare-and-swap against what the API
-// server holds now.
 func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
 	ctx context.Context,
 	cl client.Client,
@@ -144,9 +145,7 @@ func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
 		return r.release(ctx, cl, reader, &claim)
 	}
 
-	// Both finalizers land in one write, so a physical claim deleted before it
-	// has neither and took nothing. The API server refuses a new finalizer on
-	// an object being deleted, so the detach finalizer never reaches one.
+	// One write for both, so a claim deleted before it took nothing.
 	added := controllerutil.AddFinalizer(&claim, networkInterfaceClaimFinalizer)
 	if isPhysical(&claim) {
 		added = controllerutil.AddFinalizer(&claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer) || added
@@ -214,9 +213,8 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 				terminating))
 	}
 
-	// Recording comes before any address or interface exists, so whether the
-	// hold ever recorded the claim is what says the realizer may have touched
-	// the port.
+	// Whether the hold ever recorded the claim is what says the realizer may
+	// have touched the port, so recording comes before anything is allocated.
 	if isPhysical(claim) {
 		recorded, err := recordOnHold(ctx, cl, reader, claim, routing.project)
 		if err != nil {
@@ -229,10 +227,14 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 		if !recorded {
 			// The port may be held by another customer, so the message says
 			// nothing about what holds it.
-			return r.reject(ctx, cl, claim,
+			result, err := r.reject(ctx, cl, claim,
 				networkingv1alpha.NetworkInterfaceClaimReasonAttachmentPointHeld,
 				"The switch port this claim names is held by claims it cannot share the port with, "+
 					"so no address is allocated until the port is free")
+			if err == nil {
+				result.RequeueAfter = heldClaimRetryInterval
+			}
+			return result, err
 		}
 	}
 
@@ -1604,9 +1606,8 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		}
 
 	case verify && (recorded || claim.Status.NetworkInterfaceRef != nil):
-		// A physical claim allocates once it is recorded and before it
-		// records its interface, so a crash in between leaves addresses only
-		// its name can find. A claim the hold never recorded allocated none.
+		// A crash between allocating and recording the interface leaves
+		// addresses only the claim's name can find.
 		if err := r.releaseIPClaims(ctx, cl, claim.Namespace, claim.Name, claimEntries(claim)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -1648,10 +1649,8 @@ func (r *NetworkInterfaceClaimReconciler) release(
 	return ctrl.Result{}, nil
 }
 
-// awaitDetach reports whether the port no longer carries the claim's network,
-// which is when its addresses may be released. While the hold records the
-// claim only the realizer can say so, by removing the detach finalizer. A claim
-// the hold never recorded was never acted on, so its finalizer comes off here.
+// A claim the hold never recorded was never acted on by the realizer, so NSO
+// removes its detach finalizer itself.
 func awaitDetach(
 	ctx context.Context,
 	cl client.Client,

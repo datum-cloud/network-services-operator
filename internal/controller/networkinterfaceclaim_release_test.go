@@ -19,8 +19,6 @@ import (
 
 const physicalClaimName = "server-data"
 
-// boundPhysicalClaim binds a physical claim on the scenario's own port the way
-// a provider's claim is bound, and returns it with the address it holds.
 func boundPhysicalClaim(s *scenario) (*networkingv1alpha.NetworkInterfaceClaim, string) {
 	s.t.Helper()
 	claim := s.createClaim(physicalClaimName, s.physicalSpec("Ethernet1/12", ""))

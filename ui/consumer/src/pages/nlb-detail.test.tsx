@@ -489,13 +489,14 @@ describe('NlbDetail edit listener with IPv4', () => {
     summary: { locations: 1, members: 1, healthy: 1 },
   };
 
-  function openEdit() {
-    mockQuery(useNlbMock, { data: redis });
+  function openEdit(target: NetworkLoadBalancer = redis) {
+    mockQuery(useNlbMock, { data: target });
     mockQuery(useRoutesMock, { data: [redisRoute] });
     mockQuery(useServicesMock, { data: [redisService] });
-    renderPage('/project/demo-project/services/networking/nlb/redisnlb');
+    const page = renderPage('/project/demo-project/services/networking/nlb/redisnlb');
     fireEvent.click(within(listenerRow('tcp-6565')).getByRole('button', { name: 'Actions' }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    return page;
   }
 
   it('opens with IPv4 checked when the listener’s address has IPv4', async () => {
@@ -513,7 +514,59 @@ describe('NlbDetail edit listener with IPv4', () => {
     fireEvent.click(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await screen.findByRole('button', { name: 'Release IPv4 and save' })).toBeInTheDocument();
-    const writes = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method);
-    expect(writes).toEqual([]);
+    expect(apiWrites(fetchMock)).toEqual([]);
+  });
+
+  it('releases IPv4 with one NLB write, then the route, and never writes IPv4 back', async () => {
+    const page = openEdit();
+    const dialog = await screen.findByRole('dialog');
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockClear();
+
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Release IPv4 and save' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(apiWrites(fetchMock)).toEqual([
+      [
+        'PATCH',
+        'networkloadbalancers/redisnlb',
+        [
+          { op: 'test', path: '/spec/exposure/addresses/0/name', value: 'tcp-6565' },
+          { op: 'test', path: '/spec/exposure/addresses/0/families', value: ['IPv6', 'IPv4'] },
+          { op: 'replace', path: '/spec/exposure/addresses/0/families', value: ['IPv6'] },
+        ],
+      ],
+      [
+        'PATCH',
+        'networkloadbalancerroutes/redisnlb-tcp-6565',
+        {
+          spec: {
+            parentRefs: [{ name: 'redisnlb', listener: 'tcp-6565' }],
+            backends: [{ networkService: { name: 'redis', port: 'redis' }, healthCheck: { protocol: 'TCP' } }],
+          },
+        },
+      ],
+    ]);
+
+    page.unmount();
+    openEdit({ ...redis, addressFamilies: { 'tcp-6565': ['IPv6'] } });
+    fetchMock.mockClear();
+    const reopened = await screen.findByRole('dialog');
+    expect(within(reopened).getByRole('checkbox', { name: IPV4_COPY.optionLabel })).not.toBeChecked();
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(apiWrites(fetchMock).map(([method, path]) => [method, path])).toEqual([
+      ['PATCH', 'networkloadbalancerroutes/redisnlb-tcp-6565'],
+    ]);
   });
 });
+
+function apiWrites(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
+  return fetchMock.mock.calls.flatMap(([url, init]) => {
+    const path = String(url).split('/namespaces/default/')[1];
+    const method = (init as RequestInit | undefined)?.method;
+    return path && method ? [[method, path, JSON.parse(String((init as RequestInit).body))]] : [];
+  });
+}

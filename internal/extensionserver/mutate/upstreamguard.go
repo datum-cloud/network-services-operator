@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
+	"go.datum.net/network-services-operator/internal/util/addressrange"
 )
 
 const (
@@ -33,44 +34,17 @@ const (
 	logicalDNSClusterType          = "envoy.cluster.logical_dns"
 )
 
-var nonPublicIPv4Prefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("169.254.0.0/16"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("224.0.0.0/3"),
-}
-
-var nonPublicIPv6Prefixes = []netip.Prefix{
-	netip.MustParsePrefix("::/96"),
-	netip.MustParsePrefix("::ffff:0:0/96"),
-	netip.MustParsePrefix("100::/64"),
-	netip.MustParsePrefix("2001::/32"),
-	netip.MustParsePrefix("2002::/16"),
-	netip.MustParsePrefix("fc00::/7"),
-	netip.MustParsePrefix("fe80::/10"),
-	netip.MustParsePrefix("fec0::/10"),
-	netip.MustParsePrefix("ff00::/8"),
-}
-
-var nat64Prefixes = []netip.Prefix{
-	netip.MustParsePrefix("64:ff9b::/96"),
-	netip.MustParsePrefix("64:ff9b:1::/96"),
-}
-
-var localUseNAT64Range = netip.MustParsePrefix("64:ff9b:1::/48")
-
 func nonPublicUpstreamPrefixes() []netip.Prefix {
-	out := make([]netip.Prefix, 0, len(nonPublicIPv4Prefixes)*(1+len(nat64Prefixes))+len(nonPublicIPv6Prefixes))
-	out = append(out, nonPublicIPv4Prefixes...)
-	out = append(out, nonPublicIPv6Prefixes...)
-	for _, n := range nat64Prefixes {
-		for _, p := range nonPublicIPv4Prefixes {
+	var v4 []netip.Prefix
+	out := make([]netip.Prefix, 0, len(addressrange.NonPublic)*(1+len(addressrange.NAT64TranslationPrefixes())))
+	for _, r := range addressrange.NonPublic {
+		out = append(out, r.Prefix)
+		if r.Prefix.Addr().Is4() {
+			v4 = append(v4, r.Prefix)
+		}
+	}
+	for _, n := range addressrange.NAT64TranslationPrefixes() {
+		for _, p := range v4 {
 			out = append(out, embedIPv4(n, p))
 		}
 	}
@@ -173,11 +147,11 @@ func upstreamAddressGuardFilter() (*hcmv3.HttpFilter, error) {
 		}
 		permissions = append(permissions, perm)
 	}
-	localUse, err := cidrPermission(localUseNAT64Range)
+	localUse, err := cidrPermission(addressrange.LocalUseNAT64.Prefix)
 	if err != nil {
 		return nil, err
 	}
-	embedded, err := cidrPermission(nat64Prefixes[1])
+	embedded, err := cidrPermission(addressrange.LocalUseNAT64Translation)
 	if err != nil {
 		return nil, err
 	}

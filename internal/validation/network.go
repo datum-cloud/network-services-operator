@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	"golang.org/x/net/publicsuffix"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"go.datum.net/network-services-operator/internal/util/addressrange"
 )
 
 const (
@@ -17,39 +20,7 @@ const (
 	schemeHTTPS = "https"
 )
 
-type internalRange struct {
-	prefix netip.Prefix
-	name   string
-}
-
-var internalRanges = []internalRange{
-	{netip.MustParsePrefix("0.0.0.0/8"), "unspecified"},
-	{netip.MustParsePrefix("10.0.0.0/8"), "private"},
-	{netip.MustParsePrefix("100.64.0.0/10"), "carrier-grade NAT"},
-	{netip.MustParsePrefix("127.0.0.0/8"), "loopback"},
-	{netip.MustParsePrefix("169.254.0.0/16"), "link-local"},
-	{netip.MustParsePrefix("172.16.0.0/12"), "private"},
-	{netip.MustParsePrefix("192.0.0.0/24"), "IETF protocol assignments"},
-	{netip.MustParsePrefix("192.0.2.0/24"), "documentation"},
-	{netip.MustParsePrefix("192.168.0.0/16"), "private"},
-	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking"},
-	{netip.MustParsePrefix("198.51.100.0/24"), "documentation"},
-	{netip.MustParsePrefix("203.0.113.0/24"), "documentation"},
-	{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
-	{netip.MustParsePrefix("240.0.0.0/4"), "reserved"},
-	{netip.MustParsePrefix("::/128"), "unspecified"},
-	{netip.MustParsePrefix("::1/128"), "loopback"},
-	{netip.MustParsePrefix("::/96"), "IPv4-compatible"},
-	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64"},
-	{netip.MustParsePrefix("64:ff9b:1::/48"), "local-use NAT64"},
-	{netip.MustParsePrefix("2001::/32"), "Teredo"},
-	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
-	{netip.MustParsePrefix("2002::/16"), "6to4"},
-	{netip.MustParsePrefix("fc00::/7"), "unique local"},
-	{netip.MustParsePrefix("fe80::/10"), "link-local"},
-	{netip.MustParsePrefix("fec0::/10"), "site-local"},
-	{netip.MustParsePrefix("ff00::/8"), "multicast"},
-}
+var internalRanges = append(slices.Clone(addressrange.NonPublic), addressrange.NAT64, addressrange.LocalUseNAT64)
 
 var internalDomainSuffixes = []string{
 	"cluster.local",
@@ -108,26 +79,43 @@ func validateExternalAddr(fldPath *field.Path, host string, addr netip.Addr) fie
 	if addr.Is4In6() {
 		if r, ok := internalRangeOf(addr.Unmap()); ok {
 			return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
-				"is an IPv4-mapped form of %s, which is in the %s range %s; tenant upstreams must be publicly routable", addr.Unmap(), r.name, r.prefix))}
+				"is an IPv4-mapped form of %s, which is in the %s range %s; tenant upstreams must be publicly routable", addr.Unmap(), r.Name, r.Prefix))}
 		}
 		return nil
 	}
 
 	if r, ok := internalRangeOf(addr); ok {
 		return field.ErrorList{field.Invalid(fldPath, host, fmt.Sprintf(
-			"is in the %s range %s; tenant upstreams must be publicly routable", r.name, r.prefix))}
+			"is in the %s range %s; tenant upstreams must be publicly routable", r.Name, r.Prefix))}
 	}
 
 	return nil
 }
 
-func internalRangeOf(addr netip.Addr) (internalRange, bool) {
+func NonPublicAddressRange(host string) (addressrange.Range, bool) {
+	name := strings.TrimSuffix(host, ".")
+	addr, err := netip.ParseAddr(name)
+	if err != nil {
+		legacy, ok := parseLegacyIPv4(name)
+		if !ok {
+			return addressrange.Range{}, false
+		}
+		addr = legacy
+	}
+	addr = addr.WithZone("")
+	if addr.Is4In6() {
+		return internalRangeOf(addr.Unmap())
+	}
+	return internalRangeOf(addr)
+}
+
+func internalRangeOf(addr netip.Addr) (addressrange.Range, bool) {
 	for _, r := range internalRanges {
-		if r.prefix.Contains(addr) {
+		if r.Prefix.Contains(addr) {
 			return r, true
 		}
 	}
-	return internalRange{}, false
+	return addressrange.Range{}, false
 }
 
 func hasDomainSuffix(name, suffix string) bool {

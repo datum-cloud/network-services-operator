@@ -2672,6 +2672,14 @@ func (r *GatewayReconciler) ensureDownstreamHTTPRoute(
 	}
 
 	switch {
+	case len(unresolved.refused) > 0 && !unresolved.otherRefused:
+		apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
+			Message:            nonPublicBackendAddressMessage(unresolved.nonPublic, unresolved.refusedSlices),
+			Type:               string(gatewayv1.RouteConditionResolvedRefs),
+			Reason:             string(gatewayv1.RouteReasonRefNotPermitted),
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: upstreamRoute.Generation,
+		})
 	case len(unresolved.refused) > 0:
 		apimeta.SetStatusCondition(&parentStatus.Conditions, metav1.Condition{
 			Message:            fmt.Sprintf("EndpointSlice refused: %s", strings.Join(unresolved.refused, "; ")),
@@ -2806,9 +2814,9 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 				// it) assumes an object this controller owns the lifecycle
 				// of, which a CNI-published EndpointSlice never is.
 				refusal := r.refuseInternalEndpoints(ctx, upstreamClient, &upstreamEndpointSlice)
-				if refusal != "" {
-					logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
-					unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
+				if refusal.message != "" {
+					logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal.message)
+					unresolved.refuse(sliceKey.String(), refusal)
 					downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
 						{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
 					}))
@@ -2818,9 +2826,9 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 
 				if tenantID, ok := upstreamEndpointSlice.Labels[VPCPodTenantIDLabel]; ok && tenantID != "" {
 					if _, _, ok := identifier.ParseTenantIdentifier(tenantID); !ok {
-						refusal := fmt.Sprintf("label %s=%q is not a tenant identifier", VPCPodTenantIDLabel, tenantID)
-						logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal)
-						unresolved.refused = append(unresolved.refused, fmt.Sprintf("%s: %s", sliceKey, refusal))
+						refusal := endpointRefusal{message: fmt.Sprintf("label %s=%q is not a tenant identifier", VPCPodTenantIDLabel, tenantID)}
+						logger.Info("backend endpointslice refused", "endpointslice", sliceKey.String(), "reason", refusal.message)
+						unresolved.refuse(sliceKey.String(), refusal)
 						downstreamResources = append(downstreamResources, headlessService(downstreamGateway.Namespace, resourceName, []corev1.ServicePort{
 							{Port: *backendRef.Port, Protocol: corev1.ProtocolTCP},
 						}))
@@ -3000,24 +3008,67 @@ func (r *GatewayReconciler) processDownstreamHTTPRouteRules(
 }
 
 type unresolvedBackends struct {
-	missing []string
-	refused []string
+	missing       []string
+	refused       []string
+	refusedSlices []string
+	nonPublic     []string
+	otherRefused  bool
+}
+
+func (u *unresolvedBackends) refuse(sliceKey string, refusal endpointRefusal) {
+	u.refused = append(u.refused, fmt.Sprintf("%s: %s", sliceKey, refusal.message))
+	u.refusedSlices = append(u.refusedSlices, sliceKey)
+	if len(refusal.nonPublic) == 0 {
+		u.otherRefused = true
+		return
+	}
+	for _, entry := range refusal.nonPublic {
+		if !slices.Contains(u.nonPublic, entry) {
+			u.nonPublic = append(u.nonPublic, entry)
+		}
+	}
+}
+
+type endpointRefusal struct {
+	message   string
+	nonPublic []string
+}
+
+const (
+	nonPublicBackendAddressPrefix    = "Backend address not public: "
+	nonPublicBackendAddressSeparator = ". Refused EndpointSlices: "
+)
+
+func nonPublicBackendAddressMessage(nonPublic, sliceKeys []string) string {
+	return nonPublicBackendAddressPrefix + strings.Join(nonPublic, "; ") + nonPublicBackendAddressSeparator + strings.Join(sliceKeys, ", ")
+}
+
+func nonPublicBackendAddressDetail(message string) (string, bool) {
+	rest, ok := strings.CutPrefix(message, nonPublicBackendAddressPrefix)
+	if !ok {
+		return "", false
+	}
+	detail, _, ok := strings.Cut(rest, nonPublicBackendAddressSeparator)
+	if !ok || detail == "" {
+		return "", false
+	}
+	return detail, true
 }
 
 func (r *GatewayReconciler) refuseInternalEndpoints(
 	ctx context.Context,
 	upstreamClient client.Client,
 	slice *discoveryv1.EndpointSlice,
-) string {
+) endpointRefusal {
 	suffixes := r.Config.Gateway.PermittedInternalUpstreamHostSuffixes
 	vouched := sets.New(connectorPlaceholderHost)
 	if len(validation.ValidateEndpointSliceAddresses(slice, vouched, suffixes)) == 0 {
-		return ""
+		return endpointRefusal{}
 	}
 
 	var interfaces networkingv1alpha.NetworkInterfaceList
 	if err := upstreamClient.List(ctx, &interfaces, client.InNamespace(slice.Namespace)); err != nil {
-		return fmt.Sprintf("failed listing network interfaces: %v", err)
+		return endpointRefusal{message: fmt.Sprintf("failed listing network interfaces: %v", err)}
 	}
 	for i := range interfaces.Items {
 		if !isServiceMember(&interfaces.Items[i]) {
@@ -3028,9 +3079,19 @@ func (r *GatewayReconciler) refuseInternalEndpoints(
 
 	errs := validation.ValidateEndpointSliceAddresses(slice, vouched, suffixes)
 	if len(errs) == 0 {
-		return ""
+		return endpointRefusal{}
 	}
-	return errs.ToAggregate().Error()
+	refusal := endpointRefusal{message: errs.ToAggregate().Error()}
+	for _, e := range errs {
+		address := fmt.Sprint(e.BadValue)
+		r, ok := validation.NonPublicAddressRange(address)
+		if !ok {
+			refusal.nonPublic = nil
+			return refusal
+		}
+		refusal.nonPublic = append(refusal.nonPublic, fmt.Sprintf("%s is in the %s range", address, r.Name))
+	}
+	return refusal
 }
 
 func headlessService(namespace, name string, ports []corev1.ServicePort) *corev1.Service {

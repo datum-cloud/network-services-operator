@@ -63,6 +63,8 @@ type HTTPProxyReconciler struct {
 	DownstreamCluster cluster.Cluster
 
 	routing *routingObserver
+
+	backendAddresses *backendAddressObserver
 }
 
 type desiredHTTPProxyResources struct {
@@ -409,6 +411,8 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 		}
 	}
 
+	applyRouteRefNotPermitted(httpRoute, programmedCondition)
+	recheckBackendAddresses := r.applyBackendAddressNotPublic(ctx, &httpProxy, programmedCondition)
 	if err := r.applyBackendSettingsNotApplied(ctx, cl.GetClient(), string(req.ClusterName), httpRoute, gateway.Name, programmedCondition); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -417,6 +421,9 @@ func (r *HTTPProxyReconciler) Reconcile(ctx context.Context, req mcreconcile.Req
 
 	if recheck := r.reconcileHTTPProxyHostnameStatus(ctx, cl.GetClient(), gateway, httpProxyCopy, string(req.ClusterName)); recheck {
 		return ctrl.Result{RequeueAfter: routingRecheckInterval}, nil
+	}
+	if recheckBackendAddresses {
+		return ctrl.Result{RequeueAfter: backendAddressRecheckInterval}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -725,6 +732,9 @@ func (r *HTTPProxyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	ownership := downstreamclient.NewEventOwnership(mgr, r.Config.DownstreamResourceManagement.EventOwnership)
 	if r.routing == nil {
 		r.routing = newRoutingObserver()
+	}
+	if r.backendAddresses == nil {
+		r.backendAddresses = newBackendAddressObserver()
 	}
 	if err := mgr.Add(httpProxyFleet); err != nil {
 		return fmt.Errorf("failed to add httpproxy metrics collector: %w", err)

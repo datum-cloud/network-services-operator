@@ -171,7 +171,7 @@ func keptInterfacesOnNetworkContext(ctx context.Context, cl client.Client, obj c
 }
 
 // heldByLiveClaim reports whether a claim named in claimRef still exists and is
-// not being deleted.
+// not being deleted, or is a physical claim whose port is not yet detached.
 func (r *NetworkInterfaceReconciler) heldByLiveClaim(
 	ctx context.Context,
 	cl client.Client,
@@ -192,8 +192,10 @@ func (r *NetworkInterfaceReconciler) heldByLiveClaim(
 	}
 
 	// A claim being deleted holds nothing. Its own release cannot free these
-	// addresses once the interface is gone.
-	return claim.DeletionTimestamp.IsZero(), nil
+	// addresses once the interface is gone. A physical claim not yet detached
+	// is the exception: the port may still carry them.
+	return claim.DeletionTimestamp.IsZero() ||
+		controllerutil.ContainsFinalizer(&claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer), nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

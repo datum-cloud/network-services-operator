@@ -89,10 +89,16 @@ const (
 	// control plane is not bootstrapped rather than that it is slow to appear.
 	NetworkInterfaceClaimReasonProjectNamespaceNotFound = "ProjectNamespaceNotFound"
 
-	// NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported means the claim
-	// asks for a physical attachment, which this operator does not bind yet.
-	// Nothing is allocated for it.
-	NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported = "PhysicalAttachmentUnsupported"
+	// NetworkInterfaceClaimReasonAttachmentPointHeld means the switch port the
+	// physical claim names is held by claims it cannot share the port with, so
+	// the claim waits and nothing is allocated for it. The provider reads the
+	// port's SwitchPortHold to see what holds it.
+	NetworkInterfaceClaimReasonAttachmentPointHeld = "AttachmentPointHeld"
+
+	// NetworkInterfaceClaimReasonAwaitingDetach means a physical claim is being
+	// deleted and the realizer has not yet taken its network off the switch
+	// port, so its addresses stay held.
+	NetworkInterfaceClaimReasonAwaitingDetach = "AwaitingDetach"
 )
 
 // NetworkInterfaceAddressRequest asks for one address beyond the ones the

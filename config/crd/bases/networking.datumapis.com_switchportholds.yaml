@@ -1,0 +1,174 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: switchportholds.networking.datumapis.com
+spec:
+  group: networking.datumapis.com
+  names:
+    kind: SwitchPortHold
+    listKind: SwitchPortHoldList
+    plural: switchportholds
+    singular: switchporthold
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.switch
+      name: Switch
+      type: string
+    - jsonPath: .spec.port
+      name: Port
+      type: string
+    - jsonPath: .spec.boot.name
+      name: Boot
+      type: string
+    - jsonPath: .spec.consumerRef.name
+      name: Consumer
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha
+    schema:
+      openAPIV3Schema:
+        description: |-
+          SwitchPortHold records the physical claims that name one switch port, which
+          decides what the port carries. The operator is its only writer and changes
+          it only by compare-and-swap. The physical realizer reads it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SwitchPortHoldSpec records the claims that name one switch
+              port.
+            properties:
+              boot:
+                description: |-
+                  boot is the one boot claim on the port. While it is set the port carries
+                  its network and nothing else.
+                properties:
+                  name:
+                    description: name is the claim's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: namespace is the claim's namespace.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  network:
+                    description: network is the network the claim names, in the claim's
+                      namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                - namespace
+                - network
+                type: object
+              consumerRef:
+                description: |-
+                  consumerRef is the project whose network claims hold the port. It is set
+                  with the first network claim and cleared with the last.
+                properties:
+                  apiGroup:
+                    description: apiGroup is the API group of the project type.
+                    minLength: 1
+                    type: string
+                  kind:
+                    description: kind is the project type.
+                    minLength: 1
+                    type: string
+                  name:
+                    description: name is the project's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - apiGroup
+                - kind
+                - name
+                type: object
+              networkClaims:
+                description: |-
+                  networkClaims are the network claims on the port, all from the project
+                  in consumerRef.
+                items:
+                  description: SwitchPortHoldClaimRef names a physical claim recorded
+                    on a hold.
+                  properties:
+                    name:
+                      description: name is the claim's name.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: namespace is the claim's namespace.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    network:
+                      description: network is the network the claim names, in the
+                        claim's namespace.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  - namespace
+                  - network
+                  type: object
+                maxItems: 256
+                type: array
+                x-kubernetes-list-type: atomic
+              port:
+                description: port is the switch port, stored in full.
+                maxLength: 253
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: port is immutable
+                  rule: self == oldSelf
+              switch:
+                description: |-
+                  switch is the switch, stored in full. A hold whose stored pair differs
+                  from a claim's is a hash collision, and the claim is refused.
+                maxLength: 253
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: switch is immutable
+                  rule: self == oldSelf
+            required:
+            - port
+            - switch
+            type: object
+            x-kubernetes-validations:
+            - message: consumerRef is set exactly when networkClaims records a claim
+              rule: has(self.consumerRef) == (has(self.networkClaims) && size(self.networkClaims)
+                > 0)
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

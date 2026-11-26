@@ -70,6 +70,10 @@ const (
 	// IPAM sends no event when it finishes releasing, so a physical claim
 	// waiting on it looks again.
 	unverifiedReleaseRetryInterval = 10 * time.Second
+
+	// Nothing watches holds, and a handover from boot to customer waits on
+	// this retry.
+	heldClaimRetryInterval = 10 * time.Second
 )
 
 // NetworkInterfaceClaimReconciler binds a NetworkInterfaceClaim to a
@@ -90,6 +94,7 @@ type NetworkInterfaceClaimReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=switchportholds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=locations.miloapis.com,resources=servinglocations,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -104,7 +109,8 @@ func (r *NetworkInterfaceClaimReconciler) Reconcile(ctx context.Context, req mcr
 	logger.V(1).Info("reconciling network interface claim")
 	defer logger.V(1).Info("reconcile complete")
 
-	result, err := r.reconcileClaim(ctx, cl.GetClient(), cl.GetEventRecorder("networkinterfaceclaim-controller"), req.NamespacedName)
+	result, err := r.reconcileClaim(ctx, cl.GetClient(), cl.GetAPIReader(),
+		cl.GetEventRecorder("networkinterfaceclaim-controller"), req.NamespacedName)
 	if retryResult, expected := networkInterfaceClaimWriteRace(err); expected {
 		// Another reconciler or the API server won the write race. A fresh read is
 		// required, but this is normal convergence rather than a controller error.
@@ -126,6 +132,7 @@ func networkInterfaceClaimWriteRace(err error) (ctrl.Result, bool) {
 func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
 	ctx context.Context,
 	cl client.Client,
+	reader client.Reader,
 	recorder events.EventRecorder,
 	key client.ObjectKey,
 ) (ctrl.Result, error) {
@@ -135,30 +142,30 @@ func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
 	}
 
 	if !claim.DeletionTimestamp.IsZero() {
-		return r.release(ctx, cl, &claim)
+		return r.release(ctx, cl, reader, &claim)
 	}
 
-	if controllerutil.AddFinalizer(&claim, networkInterfaceClaimFinalizer) {
+	// One write for both, so a claim deleted before it took nothing.
+	added := controllerutil.AddFinalizer(&claim, networkInterfaceClaimFinalizer)
+	if isPhysical(&claim) {
+		added = controllerutil.AddFinalizer(&claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer) || added
+	}
+	if added {
 		if err := cl.Update(ctx, &claim); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed adding finalizer: %w", err)
 		}
 	}
 
-	return r.fulfill(ctx, cl, recorder, &claim)
+	return r.fulfill(ctx, cl, reader, recorder, &claim)
 }
 
 func (r *NetworkInterfaceClaimReconciler) fulfill(
 	ctx context.Context,
 	cl client.Client,
+	reader client.Reader,
 	recorder events.EventRecorder,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 ) (ctrl.Result, error) {
-	if claim.Spec.AttachmentMode == networkingv1alpha.NetworkInterfaceAttachmentModePhysical {
-		return r.reject(ctx, cl, claim,
-			networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported,
-			"Physical attachment is not available yet, so no address is allocated for this claim")
-	}
-
 	location, err := r.location(ctx)
 	if err != nil {
 		var unresolved *locationidentity.LocationUnresolved
@@ -204,6 +211,31 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 			networkingv1alpha.NetworkInterfaceClaimReasonSubnetTerminating,
 			fmt.Sprintf("Subnet %q addresses this location and is being deleted, so no address can be allocated in it",
 				terminating))
+	}
+
+	// Whether the hold ever recorded the claim is what says the realizer may
+	// have touched the port, so recording comes before anything is allocated.
+	if isPhysical(claim) {
+		recorded, err := recordOnHold(ctx, cl, reader, claim, routing.project)
+		if err != nil {
+			var refused *bindingRefused
+			if errors.As(err, &refused) {
+				return r.reject(ctx, cl, claim, refused.reason, refused.message)
+			}
+			return ctrl.Result{}, err
+		}
+		if !recorded {
+			// The port may be held by another customer, so the message says
+			// nothing about what holds it.
+			result, err := r.reject(ctx, cl, claim,
+				networkingv1alpha.NetworkInterfaceClaimReasonAttachmentPointHeld,
+				"The switch port this claim names is held by claims it cannot share the port with, "+
+					"so no address is allocated until the port is free")
+			if err == nil {
+				result.RequeueAfter = heldClaimRetryInterval
+			}
+			return result, err
+		}
 	}
 
 	ipamClient, err := r.IPAM.ClientForProject(routing.project)
@@ -1499,6 +1531,7 @@ func seedCondition(conditions *[]metav1.Condition, conditionType string, generat
 func (r *NetworkInterfaceClaimReconciler) release(
 	ctx context.Context,
 	cl client.Client,
+	reader client.Reader,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(claim, networkInterfaceClaimFinalizer) {
@@ -1507,6 +1540,19 @@ func (r *NetworkInterfaceClaimReconciler) release(
 
 	if err := markReleasing(ctx, cl, claim); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	physical := isPhysical(claim)
+	recorded := false
+	if physical {
+		hold, err := readHold(ctx, reader, claim)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		recorded = hold != nil && holdRecords(hold, claim)
+		if detached, err := awaitDetach(ctx, cl, claim, recorded); err != nil || !detached {
+			return ctrl.Result{}, err
+		}
 	}
 
 	var iface networkingv1alpha.NetworkInterface
@@ -1520,7 +1566,7 @@ func (r *NetworkInterfaceClaimReconciler) release(
 	held := interfaceExists && iface.Spec.ClaimRef != nil &&
 		iface.Spec.ClaimRef.Name == claim.Name
 	retain := claim.Spec.ReclaimPolicy == networkingv1alpha.NetworkInterfaceReclaimPolicyRetain
-	verify := claim.Spec.AttachmentMode == networkingv1alpha.NetworkInterfaceAttachmentModePhysical && !retain
+	verify := physical && !retain
 
 	switch {
 	case held && retain:
@@ -1559,16 +1605,21 @@ func (r *NetworkInterfaceClaimReconciler) release(
 			return ctrl.Result{}, err
 		}
 
+	case verify && (recorded || claim.Status.NetworkInterfaceRef != nil):
+		// A crash between allocating and recording the interface leaves
+		// addresses only the claim's name can find.
+		if err := r.releaseIPClaims(ctx, cl, claim.Namespace, claim.Name, claimEntries(claim)); err != nil {
+			return ctrl.Result{}, err
+		}
+		if result, err := r.awaitRelease(ctx, cl, claim, claim.Name, claimEntries(claim)); err != nil || !result.IsZero() {
+			return result, err
+		}
+
 	case !retain:
 		// The interface is gone, or never named this claim. Either way the
 		// addresses this claim allocated are named after it.
 		if err := r.releaseClaimAllocations(ctx, cl, claim); err != nil {
 			return ctrl.Result{}, err
-		}
-		if verify && claim.Status.NetworkInterfaceRef != nil {
-			if result, err := r.awaitRelease(ctx, cl, claim, claim.Name, claimEntries(claim)); err != nil || !result.IsZero() {
-				return result, err
-			}
 		}
 	}
 
@@ -1578,6 +1629,12 @@ func (r *NetworkInterfaceClaimReconciler) release(
 	}
 	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name, location); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	if physical {
+		if err := leaveHold(ctx, cl, reader, claim); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	controllerutil.RemoveFinalizer(claim, networkInterfaceClaimFinalizer)
@@ -1590,6 +1647,40 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		return ctrl.Result{}, fmt.Errorf("failed removing finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// A claim the hold never recorded was never acted on by the realizer, so NSO
+// removes its detach finalizer itself.
+func awaitDetach(
+	ctx context.Context,
+	cl client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	recorded bool,
+) (bool, error) {
+	if !controllerutil.ContainsFinalizer(claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer) {
+		return true, nil
+	}
+
+	if !recorded {
+		controllerutil.RemoveFinalizer(claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer)
+		if err := cl.Update(ctx, claim); err != nil {
+			return false, fmt.Errorf("failed removing the detach finalizer: %w", err)
+		}
+		return true, nil
+	}
+
+	if apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkInterfaceClaimReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkInterfaceClaimReasonAwaitingDetach,
+		ObservedGeneration: claim.Generation,
+		Message:            "Waiting for the switch port to stop carrying this claim's network before its addresses are released",
+	}) {
+		if err := cl.Status().Update(ctx, claim); err != nil {
+			return false, fmt.Errorf("failed reporting a pending detach: %w", err)
+		}
+	}
+	return false, nil
 }
 
 // awaitRelease holds a physical claim until IPAM no longer holds any of its
@@ -1717,8 +1808,7 @@ func markReleasing(ctx context.Context, cl client.Client, claim *networkingv1alp
 		// A later step of the release names what it waits on in Ready, and
 		// restating Releasing would hide it.
 		if current := apimeta.FindStatusCondition(claim.Status.Conditions, conditionType); current != nil &&
-			current.Status == metav1.ConditionFalse &&
-			current.Reason == networkingv1alpha.NetworkInterfaceClaimReasonReleaseUnverified {
+			current.Status == metav1.ConditionFalse && releaseStepPending(claim, current.Reason) {
 			continue
 		}
 		changed = apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
@@ -1736,6 +1826,17 @@ func markReleasing(ctx context.Context, cl client.Client, claim *networkingv1alp
 		return fmt.Errorf("failed marking claim as releasing: %w", err)
 	}
 	return nil
+}
+
+func releaseStepPending(claim *networkingv1alpha.NetworkInterfaceClaim, reason string) bool {
+	switch reason {
+	case networkingv1alpha.NetworkInterfaceClaimReasonReleaseUnverified:
+		return true
+	case networkingv1alpha.NetworkInterfaceClaimReasonAwaitingDetach:
+		return controllerutil.ContainsFinalizer(claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer)
+	default:
+		return false
+	}
 }
 
 func (r *NetworkInterfaceClaimReconciler) releaseAddresses(

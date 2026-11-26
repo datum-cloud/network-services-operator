@@ -91,7 +91,7 @@ type APIProjectIdentityResolver struct {
 func (r *APIProjectIdentityResolver) ProjectUID(ctx context.Context, name string) (types.UID, error) {
 	project := &unstructured.Unstructured{}
 	project.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "resourcemanager.miloapis.com", Version: "v1alpha1", Kind: "Project",
+		Group: miloProjectAPIGroup, Version: "v1alpha1", Kind: miloProjectKind,
 	})
 	if err := r.Reader.Get(ctx, client.ObjectKey{Name: name}, project); err != nil {
 		return "", err

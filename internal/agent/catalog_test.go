@@ -49,6 +49,7 @@ var outOfScopeAPIFiles = map[string]string{
 	"portrange_types.go":                        "port interval value and validation helpers; declares no condition reasons",
 	"subnet_types.go":                           "address management below a network",
 	"subnetclaim_types.go":                      "address management below a network",
+	"switchporthold_types.go":                   "which physical claims hold a switch port, in a cell",
 	"trafficprotectionpolicy_types.go":          "declares no reasons of its own; the controller writes upstream Gateway API policy reasons",
 	"zz_generated.deepcopy.go":                  "generated",
 }

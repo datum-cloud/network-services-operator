@@ -483,11 +483,19 @@ func claimRefusals() []ReasonInfo {
 			Remediation: remediationWait, Skill: SkillInterfaceTriage,
 			ExpectedDuration: windowRemoval,
 		}},
-		{networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported, ReasonInfo{
-			Actionability: ActionabilityPlatform, Scope: ScopeInstance,
-			Explanation: "This server's network interface asks to reach its network through a switch port, " +
-				"which the platform cannot attach yet, so no address was given to it.",
-			Remediation: remediationEscalate, Skill: SkillInterfaceTriage,
+		{networkingv1alpha.NetworkInterfaceClaimReasonAttachmentPointHeld, ReasonInfo{
+			Actionability: ActionabilityTransient, Scope: ScopeInstance,
+			Explanation: "The switch port this server's network interface is cabled to is still in use for " +
+				"something it cannot share the port with, so no address has been given to it yet.",
+			Remediation: remediationWait, Skill: SkillInterfaceTriage,
+			ExpectedDuration: windowRemoval,
+		}},
+		{networkingv1alpha.NetworkInterfaceClaimReasonAwaitingDetach, ReasonInfo{
+			Actionability: ActionabilityTransient, Scope: ScopeInstance,
+			Explanation: "This server's network interface is being removed, and the platform is waiting for " +
+				"its switch port to stop carrying the network before it returns the address.",
+			Remediation: remediationWait, Skill: SkillInterfaceTriage,
+			ExpectedDuration: windowRemoval,
 		}},
 		{reasonInterfaceHeldByAnother, ReasonInfo{
 			Actionability: ActionabilityPlatform, Scope: ScopeInstance,

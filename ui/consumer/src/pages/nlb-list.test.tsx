@@ -1,5 +1,6 @@
 import NlbList from './nlb-list';
 import { ApiError } from '../lib/api';
+import { fakePortalHost } from '../test/portal-host';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -28,24 +29,26 @@ function LocationProbe() {
   return <p data-testid="location-search">{location.search}</p>;
 }
 
-function renderPage() {
+function renderPage(host = fakePortalHost()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/project/demo-project/services/networking/nlb']}>
-        <Routes>
-          <Route
-            path="/project/:projectId/services/:serviceSlug/nlb"
-            element={
-              <>
-                <NlbList />
-                <LocationProbe />
-              </>
-            }
-          />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <host.Wrapper>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/project/demo-project/services/networking/nlb']}>
+          <Routes>
+            <Route
+              path="/project/:projectId/services/:serviceSlug/nlb"
+              element={
+                <>
+                  <NlbList />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </host.Wrapper>
   );
 }
 

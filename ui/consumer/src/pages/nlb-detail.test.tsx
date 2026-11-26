@@ -1,5 +1,6 @@
 import NlbDetail from './nlb-detail';
 import { ApiError } from '../lib/api';
+import { fakePortalHost } from '../test/portal-host';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -78,19 +79,21 @@ function mockQuery(
 
 const NLB_PATH = '/project/demo-project/services/networking/nlb/edge-nlb';
 
-function renderPage(path = NLB_PATH) {
+function renderPage(path = NLB_PATH, host = fakePortalHost()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route
-            path="/project/:projectId/services/:serviceSlug/nlb/:nlbName/*"
-            element={<NlbDetail />}
-          />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <host.Wrapper>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route
+              path="/project/:projectId/services/:serviceSlug/nlb/:nlbName/*"
+              element={<NlbDetail />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </host.Wrapper>
   );
 }
 

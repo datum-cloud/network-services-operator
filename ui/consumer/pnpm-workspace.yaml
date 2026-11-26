@@ -1,0 +1,28 @@
+# pnpm settings for the consumer UI plugin. It is a single package, not a
+# workspace: there is no `packages:` list.
+
+# Wait a day before installing a newly published version. Most compromised
+# releases are pulled within hours. Our own packages are published and
+# consumed across repos on the same day, so the delay must not hold them back.
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - '@datum-cloud/*'
+
+# Reject a version published with weaker provenance than the versions before
+# it, such as a release pushed with a stolen token for a package that normally
+# publishes from CI.
+trustPolicy: no-downgrade
+
+# Only scripts a local install needs: esbuild checks its platform binary. The
+# image installs with --ignore-scripts.
+allowBuilds:
+  esbuild: true
+
+# @tanstack/react-table ships agent skills. Nothing here builds or runs them.
+permissions:
+  '@tanstack/react-table':
+    skills: false
+
+overrides:
+  '@module-federation/dts-plugin>adm-zip': 0.6.1
+  '@module-federation/dts-plugin>undici': 7.30.1

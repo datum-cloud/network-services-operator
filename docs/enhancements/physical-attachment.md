@@ -237,14 +237,14 @@ spec:
     macAddress: "00:00:5e:00:53:01"
     switch: rack-a1-tor-1
     port: Ethernet1/12
-  isolation: Private
   ipFamilies:
     - IPv4
   reclaimPolicy: Delete
 ```
 
-Its status carries the boot address, and `Programmed` turns true once the port
-carries the boot network untagged.
+It leaves `isolation` unset, so the port joins a private segment of the boot
+network. Its status carries the boot address, and `Programmed` turns true once
+the port carries the boot network untagged.
 
 ### User stories
 
@@ -330,7 +330,12 @@ A physical claim is one of two kinds:
 `purpose` is immutable and only valid on a physical claim. Only provider
 identities may set it, like everything else on a physical claim.
 
-NSO does not decide which networks are boot networks. A boot claim may name any
+A boot claim is accepted only in a provider project's namespace. Each cell's
+configuration lists the provider projects, and admission refuses `purpose:
+Boot` in a namespace whose project is not on the list. A customer's network can
+therefore never outrank another claim on a port, whoever writes the claim.
+
+NSO does not mark which networks are boot networks. A boot claim may name any
 network in its own namespace, and the provider's boot network is the one it
 names in practice. That keeps the boot network an ordinary NSO network.
 
@@ -365,9 +370,16 @@ spec:
   isolation: Private
 ```
 
-`isolation` is optional, immutable, and only valid on a physical claim. Left
-unset, the port joins the network's shared segment and the server can reach
-every other member of the network.
+`isolation` is optional, immutable, and only valid on a physical claim. It
+takes `Private` or `Shared`. Left unset, it follows the claim's purpose:
+
+- A boot claim is private, so servers on the boot network never reach each
+  other unless the provider writes `isolation: Shared`.
+- A network claim is shared, so the server reaches every other member of the
+  network unless the provider writes `isolation: Private`.
+
+The realizer applies that rule. NSO stores no default on the claim, so a writer
+comparing its claim with what it reads back sees no field it did not set.
 
 `Private` asks the realizer to put the port in a segment of its own on the
 network. The server reaches the network's gateway and nothing else on the
@@ -379,9 +391,9 @@ isolated ports, a VLAN per port, or a filter on the port all satisfy the
 contract. A realizer that cannot build one reports the claim `Prepared=False`
 with a reason, and never attaches the port to the shared segment in its place.
 
-Fleet's proposal puts every server on the boot network in isolation. In this
-design the provider asks for that on each boot claim, so a site that wants a
-shared boot segment can have one.
+Fleet's proposal puts every server on the boot network in isolation, and a
+boot claim that leaves `isolation` unset gets exactly that. A site that wants a
+shared boot segment writes `isolation: Shared`.
 
 ### Where a physical claim lives
 
@@ -433,8 +445,12 @@ the detach finalizer described
 [below](#releasing-a-physical-claim-and-proving-it):
 
 - the realizer's configured identity;
-- NSO's own identity, for a claim the hold never recorded; and
+- NSO's own identity; and
 - a configured break-glass group of operators.
+
+Admission cannot read the hold, so it only checks who is asking. NSO's own code
+carries the narrower rule that it removes the finalizer only from a claim the
+hold never recorded.
 
 An operator in the break-glass group uses it only after confirming on the
 switch that the port no longer carries the claim's network. NSO's runbook will
@@ -476,8 +492,10 @@ spec:
 ```
 
 NSO reads the project for `consumerRef` from the claim's namespace, the same way
-it finds the project when it allocates addresses today. The reference uses Milo's
-project type, which NSO's Milo test environment already reads.
+it finds the project when it allocates addresses today. NSO sets `consumerRef`
+when it records the first network claim, and clears it when it removes the last
+one. A hold kept alive only by a boot claim names no project. The reference uses
+Milo's project type, which NSO's Milo test environment already reads.
 
 Every change to a hold is a compare-and-swap. NSO reads the hold from the API
 server rather than from a cache, changes it, and writes it back. If another
@@ -495,6 +513,9 @@ That makes each of these exact under concurrency:
   does not already carry the claim's network. Otherwise the claim waits with
   `AttachmentPointHeld`. It allocates no address while it waits, and its message
   names nothing about any other project.
+- **Recording again.** An entry is matched by the claim's namespace, name and
+  network. An entry with the claim's name and another network is left from an
+  earlier claim of that name, and NSO replaces it.
 - **Leaving a port.** A releasing claim's entry is removed. When the hold has no
   boot claim and no network claims left, NSO deletes it, on the condition that
   nobody has changed it since NSO read it. A claim recorded in between makes the
@@ -568,8 +589,9 @@ When a physical claim is deleted:
 6. NSO removes its own finalizer, and the claim is gone.
 
 Until each step completes, the claim stays and its conditions say which step it
-is waiting on. A hold entry whose claim no longer exists is removed the next
-time NSO writes that hold, so an entry cannot outlive its claim.
+is waiting on. A hold entry whose claim no longer exists, read from the API
+server rather than a cache, is removed the next time NSO writes that hold, so
+an entry cannot outlive its claim.
 
 NSO never releases an address while the detach finalizer is present. A claim
 whose realizer never answers therefore stays, with its addresses held, and that
@@ -672,14 +694,28 @@ The realizer:
 - removes the detach finalizer from a deleted claim once the port no longer
   carries that claim's network.
 
-Two rules keep it safe:
+Three rules keep it safe:
 
+- **Withdraw before changing a port.** Before it changes a port, the realizer
+  writes `Programmed=False` on every claim whose network the change adds or
+  removes. A claim never reports `Programmed=True` for a port that is between
+  states.
+- **Read the port back.** A change counts only once the realizer has read the
+  port back from the switch and found what it asked for. A change that fails,
+  or only partly applies, leaves the port's state unknown. The realizer keeps
+  every detach finalizer on that port, leaves `Programmed` false, and tries
+  again until the read-back matches.
 - **Check after changing a port.** The realizer reads the claims again from the
   API server after it changes a port. If one has gained a deletion timestamp
   meanwhile, the realizer changes the port again before it removes that claim's
   detach finalizer.
-- **Fail closed.** A realizer that cannot reach a switch leaves `Programmed`
-  as it was and keeps every detach finalizer. It never removes one on a guess.
+- **Fail closed.** A realizer that cannot reach a switch changes nothing on the
+  claims beyond the withdrawal above, and keeps every detach finalizer. It never
+  removes one on a guess.
+
+A boot claim recorded on a port whose network claims report `Programmed=True`
+starts with that withdrawal. The network claims go false, the port moves to the
+boot network, and only then does the boot claim go true.
 
 How the realizer reaches a switch, and how a network maps to a segment at a
 site, belong to the Networking team. The test realizer stands in for both in
@@ -698,8 +734,9 @@ writer:
 | `Programmed` | Realizer, on the interface and the claim | The port carries the claim's network. |
 | `Ready` | NSO | All four are true. NSO derives it each time the claim changes. |
 
-The existing realizer for virtual interfaces also writes `Ready` on a claim. The
-physical realizer does not, so `Ready` keeps one writer.
+The existing realizer for virtual interfaces writes `Ready` on a claim only to
+set it `Unknown` while it migrates an attachment. The physical realizer never
+writes `Ready`, so `Ready` keeps one writer.
 
 The [interface design](network-interfaces.md#how-the-guest-consumes-it-and-when-it-is-safe-to-start)
 says nothing may gate creating a workload on `Programmed`. That rule exists
@@ -720,8 +757,9 @@ an agreed contract.
 | Fleet expects | This design | Agreement |
 |---|---|---|
 | `Physical` mode, attachment point on the claim and interface | Same | Agrees |
-| A provider-owned boot network, isolated between servers | An ordinary NSO network. Isolation is per boot claim, and Fleet asks for it on each one. | Agrees, with isolation optional |
-| A separate boot claim per network-booting operation, made before the operation | A physical claim with `purpose: Boot`, named by Fleet from the operation | Agrees |
+| A provider-owned boot network, isolated between servers | An ordinary NSO network. A boot claim is private unless it says `isolation: Shared`. | Agrees |
+| A separate boot claim per network-booting operation, made before the operation | A physical claim with `purpose: Boot`, named by Fleet from the operation, in a provider project's namespace | Agrees |
+| NSO knows a boot claim from the boot network it names | NSO knows a boot claim from `purpose: Boot`, which Fleet must set | **Differs** |
 | A port carries the boot network while a boot claim names it, otherwise its customer networks, otherwise nothing | [What a port carries](#what-a-port-carries) | Agrees |
 | Handoff is one step after the boot claim's release | The realizer moves the port in one change once the boot claim is deleted | Agrees |
 | NSO owns the untagged VLAN and boot isolation. Network operations keeps the base profile and DHCP snooping. | Same | Agrees |
@@ -733,6 +771,10 @@ an agreed contract.
 
 Where the design differs, NSO's model points somewhere better:
 
+- **Knowing a boot claim.** If NSO took precedence from the network a claim
+  names, it would need a way to mark a network as a boot network, and any
+  project can write its own networks. `purpose: Boot` sits on a claim that only
+  providers can write, in a namespace only providers may use for it.
 - **The boot address.** NSO allocates through IPAM for every claim, so a boot
   claim without an address would be a special case in NSO that Fleet would drop
   again. Both pieces of NSO land together, so there is no time when NSO attaches
@@ -756,6 +798,7 @@ Where the design differs, NSO's model points somewhere better:
 | A claim is deleted before NSO adds its finalizers | The claim is deleted at once. Nothing was taken for it. |
 | A claim waiting for a port is deleted | The hold never recorded it, so NSO removes the detach finalizer itself and the claim is deleted. |
 | NSO crashes after recording a claim and before creating its interface | The hold records the claim, so on deletion the realizer, not NSO, removes the detach finalizer, after confirming the port does not carry the network. |
+| A port change fails or only partly applies | Every claim the change touched already reports `Programmed=False`. The realizer keeps the port's detach finalizers and retries until it reads the intended state back from the switch. |
 | The realizer restarts while changing a port | It recomputes what each port carries from the holds and claims, and changes the port again if a claim has a deletion timestamp. |
 | The realizer is down when a claim is deleted | The claim stays with its addresses held and the detach finalizer present, until the realizer returns or a break-glass operator removes it. |
 | NSO is down | No new claim binds and no claim releases. Ports keep what they carry. Fleet's proposal holds installs, wipes and releases until NSO returns. |
@@ -792,8 +835,11 @@ tests for concurrency, authorization, lifecycle and recovery.
   customer's Networks with one client today. Fleet would need a second client
   and write access in each cell, and the platform owners must agree to grant
   it.
-- **Which identities are providers, realizers and break-glass operators.** Each
-  cell's admission rules need them named, per environment.
+- **Which identities are providers, realizers and break-glass operators, and
+  which projects are provider projects.** Each cell's admission rules need them
+  named, per environment.
+- **Fleet sets `purpose: Boot`.** NSO knows a boot claim from that field, not
+  from the network it names. Fleet must agree to set it on each boot claim.
 - **A port NSO cannot release.** This design proposes a break-glass group that
   may remove a detach finalizer after confirming the port on the switch. Who is
   in it, and who confirms the port, needs an owner.

@@ -22,9 +22,12 @@
 #
 # What this environment does and does not stand behind:
 #
-#   * The record is written by the scenario in the shape Galactic publishes
-#     before a node has a locator: the tenant label and annotation, no SRv6
-#     segment. The edge's VRF sidecar ignores such a record, so no private
+#   * The record is written by the scenario as the federated copy an edge
+#     holds for a workload in another location: the tenant label and
+#     annotation, the projection label, and the cluster label of the edge
+#     namespace it lands in, with no owner and no SRv6 segment. It leaves out
+#     the location label, so no write-back sweep collects it. The edge's routing
+#     sidecar ignores a record with no segment, so no private
 #     network exists here and the scenario reads the proxy's configuration
 #     rather than sending traffic. Traffic to a bound backend is the staging
 #     test's job.
@@ -272,6 +275,8 @@ spec:
               ROOT="$(git rev-parse --show-toplevel)"
               . "${ROOT}/test/e2e-edge/_steps/envoy-admin.sh"
               . "${ROOT}/test/e2e-edge/_steps/vpc-bind.sh"
+              CLUSTER="$(kubectl get ns "$DOWNSTREAM_NS" -o jsonpath='{.metadata.labels.meta\.datumapis\.com/upstream-cluster-name}')"
+              [ -n "$CLUSTER" ] || { echo "ERROR: namespace ${DOWNSTREAM_NS} carries no upstream-cluster-name label"; kubectl get ns "$DOWNSTREAM_NS" --show-labels; exit 1; }
               kubectl apply -f - <<EOF
               apiVersion: discovery.k8s.io/v1
               kind: EndpointSlice
@@ -280,6 +285,8 @@ spec:
                 namespace: ${DOWNSTREAM_NS}
                 labels:
                   galactic.datum.net/tenant-id: ${TENANT}
+                  networking.datumapis.com/vpc-endpointslice-projection: "true"
+                  meta.datumapis.com/upstream-cluster-name: ${CLUSTER}
                 annotations:
                   galactic.datum.net/tenant-id: ${TENANT}
               addressType: IPv4
@@ -416,6 +423,8 @@ spec:
               ROOT="$(git rev-parse --show-toplevel)"
               . "${ROOT}/test/e2e-edge/_steps/envoy-admin.sh"
               . "${ROOT}/test/e2e-edge/_steps/vpc-bind.sh"
+              CLUSTER="$(kubectl get ns "$DOWNSTREAM_NS" -o jsonpath='{.metadata.labels.meta\.datumapis\.com/upstream-cluster-name}')"
+              [ -n "$CLUSTER" ] || { echo "ERROR: namespace ${DOWNSTREAM_NS} carries no upstream-cluster-name label"; kubectl get ns "$DOWNSTREAM_NS" --show-labels; exit 1; }
               kubectl apply -f - <<EOF
               apiVersion: discovery.k8s.io/v1
               kind: EndpointSlice
@@ -424,6 +433,8 @@ spec:
                 namespace: ${DOWNSTREAM_NS}
                 labels:
                   galactic.datum.net/tenant-id: ${TENANT}
+                  networking.datumapis.com/vpc-endpointslice-projection: "true"
+                  meta.datumapis.com/upstream-cluster-name: ${CLUSTER}
                 annotations:
                   galactic.datum.net/tenant-id: ${TENANT}
               addressType: IPv4

@@ -112,6 +112,34 @@ func TestVPCBinding_LateTenantSliceChangesGatewayAnnotation(t *testing.T) {
 	assert.Equal(t, bound, gatewayBinding(t, cl))
 }
 
+func TestVPCBinding_LateFederatedCopyChangesGatewayAnnotation(t *testing.T) {
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   testNS,
+		Labels: map[string]string{downstreamclient.UpstreamOwnerClusterNameLabel: "cluster-single"},
+	}}
+	cl := fake.NewClientBuilder().WithScheme(vpcScheme(t)).
+		WithObjects(namespace, networkServiceProxy(testProxy), gateway(), backendCopy(testProxy, testMember)).
+		Build()
+
+	reconcileBinding(t, cl)
+	unbound := gatewayBinding(t, cl)
+	require.NotEmpty(t, unbound)
+
+	unowned := tenantSlice("vpc-us-central-1-unowned", testMember)
+	unowned.OwnerReferences = nil
+	require.NoError(t, cl.Create(context.Background(), unowned))
+	reconcileBinding(t, cl)
+	assert.Equal(t, unbound, gatewayBinding(t, cl), "an unowned, unprojected slice must not bind")
+
+	federated := tenantSlice("vpc-us-central-1-pod", testMember)
+	federated.OwnerReferences = nil
+	federated.Labels[extcache.VPCEndpointSliceProjectionLabel] = "true"
+	federated.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = "cluster-single"
+	require.NoError(t, cl.Create(context.Background(), federated))
+	reconcileBinding(t, cl)
+	assert.NotEqual(t, unbound, gatewayBinding(t, cl), "a federated copy matching its namespace must bind")
+}
+
 func TestVPCBinding_InstanceBackendResolvesFromNamedSlice(t *testing.T) {
 	proxy := &networkingv1alpha.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{Name: testProxy, Namespace: testNS},

@@ -56,19 +56,17 @@ vars:
 
   # IPAM runs on the upstream cluster as the project control plane NSO claims
   # addresses from. Its manifests come from the bundle milo-os/ipam publishes on
-  # every push to main, and its image from ghcr.io — both at the commit go.mod
-  # pins, so the apiserver and the Go client NSO compiles against stay in
-  # lockstep. Nothing is built locally: the image is pulled from ghcr by
-  # digest, multi-arch since upstream 13bd2c8 fixed the arm64 build.
+  # every push to main, and its image from ghcr.io, both at IPAM_COMMIT.
+  # Nothing is built locally: the image is pulled from ghcr by digest,
+  # multi-arch since upstream 13bd2c8 fixed the arm64 build.
   #
   # Digest, not tag: the release workflow republishes on every push, so the tag
   # can move. The tag is kept alongside for legibility. Update all three
-  # together, and keep IPAM_COMMIT equal to the go.mod replace directive —
-  # ipam-bundle fails if the artifact does not carry that commit.
+  # together; ipam-bundle fails if the artifact does not carry IPAM_COMMIT.
   IPAM_BUNDLE_REPO: ghcr.io/milo-os/ipam-kustomize
-  IPAM_BUNDLE_TAG: v0.0.0-2f31bea
-  IPAM_BUNDLE_DIGEST: sha256:f006b5604a924b0ce33adf98644cb106234b75a80fcc937214f3f7e327f8c2eb
-  IPAM_COMMIT: 2f31bea79f624c5a94437dc20d82f8f8bdac666e
+  IPAM_BUNDLE_TAG: v0.0.0-21a89a4
+  IPAM_BUNDLE_DIGEST: sha256:fbb83d725b7fcb343a1baf55734215154915b9e1070df1690eea0dd016182fc1
+  IPAM_COMMIT: 21a89a4382f83a86cd75f4a3c9ec405639d9fea0
   IPAM_STAGE: '{{.TMP_DIR}}/.ipam-bundle'
 
   # The dns-operator CRDs come from its published bundle at the version go.mod
@@ -708,7 +706,7 @@ tasks:
           if [ "$i" -eq 45 ]; then echo "❌ postgres never accepted a connection"; exit 1; fi
           sleep 2
         done
-      - echo "⏳ waiting for the IPAM apiserver (readiness probe has a 60s initial delay)"
+      - echo "⏳ waiting for the IPAM apiserver"
       # rollout status, not `wait pod -l`: a label selector also matches pods
       # left over from a previous revision that are still terminating, and the
       # wait then fails on a pod that is on its way out.

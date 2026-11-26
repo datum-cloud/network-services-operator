@@ -1245,10 +1245,18 @@ tasks:
         set -e
         set -- {{.TARGET}}
         if [ {{.SHARD_COUNT}} -gt 1 ]; then
+          if ! awk '{ s += $2 } END { exit !(s > 0) }' test/e2e/shard-times.txt 2>/dev/null; then
+            echo "test/e2e/shard-times.txt is missing or holds no time, so the shards cannot be split" >&2
+            exit 1
+          fi
           set -- $(find test/e2e -mindepth 1 -maxdepth 1 -type d | sed 's|^test/e2e/||' |
             awk 'NR == FNR { t[$1] = $2; s += $2; n++; next } { w = s / n; if ($1 in t) w = t[$1]; print w, $1 }' test/e2e/shard-times.txt - |
             LC_ALL=C sort -k1,1nr -k2,2 |
             awk -v n={{.SHARD_COUNT}} -v i={{.SHARD_INDEX}} '{ b = 0; for (j = 1; j < n; j++) if (l[j] < l[b]) b = j; l[b] += $1; if (b == i) print "test/e2e/" $2 }')
+          if [ $# -eq 0 ]; then
+            echo "shard {{.SHARD_INDEX}} of {{.SHARD_COUNT}} has no test folder under test/e2e" >&2
+            exit 1
+          fi
         fi
         echo "🧪 chainsaw suite $* (nso-standard={{.UPSTREAM_CLUSTER}}, nso-infra={{.DOWNSTREAM_CLUSTER}}); report {{.REPORT_PATH}}/{{.REPORT_NAME}}.json"
         {{.CHAINSAW}} test "$@" \

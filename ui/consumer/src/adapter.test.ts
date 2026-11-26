@@ -778,7 +778,57 @@ describe('toNetworkLoadBalancer status', () => {
         location: 'iad',
         hostname: 'us-east-1.plea-fried-wgyt2.prism.example',
         addresses: [{ family: 'IPv6', value: '2001:db8::3' }],
+        addressStatuses: [
+          { family: 'IPv6', value: '2001:db8::3', conditions: [] },
+          { family: 'IPv4', value: undefined, conditions: [] },
+        ],
       },
     ]);
+  });
+
+  it('keeps each address’s Allocated condition, so a refused IPv4 address can be explained', () => {
+    const message =
+      'ipclaims.ipam.miloapis.com "nlb-x" is forbidden: You\'ve reached your quota for this resource type (1/1).';
+    const nlb = toNetworkLoadBalancer({
+      status: {
+        endpoints: [
+          {
+            requestName: 'tcp-80',
+            location: 'lhr',
+            addresses: [
+              {
+                family: 'IPv4',
+                conditions: [
+                  { type: 'Allocated', status: 'False', reason: 'AllocationFailed', message },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(nlb.endpoints[0].addresses).toEqual([]);
+    expect(nlb.endpoints[0].addressStatuses).toEqual([
+      {
+        family: 'IPv4',
+        value: undefined,
+        conditions: [{ type: 'Allocated', status: 'False', reason: 'AllocationFailed', message }],
+      },
+    ]);
+  });
+
+  it('maps the families each address asks for by name', () => {
+    const nlb = toNetworkLoadBalancer({
+      spec: {
+        exposure: {
+          addresses: [
+            { name: 'tcp-80', families: ['IPv6', 'IPv4'] },
+            { name: 'udp-53', families: ['IPv6'] },
+            { name: 'bare' },
+          ],
+        },
+      },
+    });
+    expect(nlb.addressFamilies).toEqual({ 'tcp-80': ['IPv6', 'IPv4'], 'udp-53': ['IPv6'], bare: [] });
   });
 });

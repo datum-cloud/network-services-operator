@@ -6,11 +6,14 @@ import {
   useNetworks,
   useNetworkServices,
 } from '../lib/api';
+import { IPV4_COPY, useIpv4Availability, useRequestIpv4 } from '../lib/ipv4-quota';
 import type { NetworkService } from '../schema';
+import { IpFamilyField, Ipv4Note } from './ip-family-field';
 import {
   backendPortOptions,
   healthPortOptions,
   nlbCreateSchema,
+  nlbNameSchema,
   portProtocol,
   SERVING_PORT,
   toNlbCreateErrors,
@@ -34,6 +37,12 @@ export function FieldApiError({ message }: { message: string | undefined }) {
     <p role="alert" className="text-destructive mt-1 text-xs font-medium">
       {message}
     </p>
+  );
+}
+
+export function QuotaRefusedNote({ onRequest }: { onRequest: () => void }) {
+  return (
+    <Ipv4Note tone="danger" lines={[IPV4_COPY.usedUp, IPV4_COPY.paidAddOn]} onRequest={onRequest} />
   );
 }
 
@@ -171,6 +180,7 @@ export function CreateNlbDialog({
   const queryClient = useQueryClient();
   const { data: networks } = useNetworks(projectId);
   const { data: services = [] } = useNetworkServices(projectId);
+  const requestIpv4 = useRequestIpv4();
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<NlbCreateErrors>(NO_ERRORS);
   // Set once the NLB exists but its route doesn't, so a retry only creates the route.
@@ -210,7 +220,8 @@ export function CreateNlbDialog({
         try {
           await createNetworkLoadBalancer(projectId as string, requests.nlb);
         } catch (err) {
-          return fail(toNlbCreateErrors(asApiError(err), 'nlb'));
+          const next = toNlbCreateErrors(asApiError(err), 'nlb');
+          return fail({ ...next, quotaRefused: next.quotaRefused && !!values.ipv4 });
         }
         setCreated({
           name: values.name,
@@ -286,14 +297,18 @@ export function CreateNlbDialog({
                   backend and retry.
                 </p>
               )}
-              {errors.general && <p>{errors.general}</p>}
+              {errors.quotaRefused ? (
+                <QuotaRefusedNote onRequest={() => requestIpv4()} />
+              ) : (
+                errors.general && <p>{errors.general}</p>
+              )}
             </div>
           )}
 
           {created ? (
             <CreatedListenerSummary listener={created} />
           ) : (
-            <ListenerFields networkNames={networkNames} errors={errors} />
+            <ListenerFields networkNames={networkNames} errors={errors} services={services} />
           )}
 
           <div className="flex flex-col gap-4">
@@ -330,12 +345,30 @@ interface CreatedListener {
   port: number;
 }
 
+function CreateIpFamilyField({ services }: { services: NetworkService[] }) {
+  const availability = useIpv4Availability();
+  const requestIpv4 = useRequestIpv4();
+  const name = useWatch('name') as string | undefined;
+  const backend = useWatch('backend') as string | undefined;
+  const service = services.find((s) => s.name === backend);
+  const nlbName = nlbNameSchema.safeParse(name).success ? name : undefined;
+  return (
+    <IpFamilyField
+      availability={availability}
+      onRequest={() => requestIpv4(nlbName)}
+      locations={service?.summary.locations}
+    />
+  );
+}
+
 function ListenerFields({
   networkNames,
   errors,
+  services,
 }: {
   networkNames: string[];
   errors: NlbCreateErrors;
+  services: NetworkService[];
 }) {
   return (
     <>
@@ -386,6 +419,7 @@ function ListenerFields({
             <FieldApiError message={errors.fields.port} />
           </div>
         </div>
+        <CreateIpFamilyField services={services} />
       </div>
     </>
   );

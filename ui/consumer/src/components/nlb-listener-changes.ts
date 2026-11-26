@@ -1,4 +1,4 @@
-import { SERVING_PORT, type NlbListenerValues } from './nlb-create-form';
+import { ipFamilies, type IpFamily, SERVING_PORT, type NlbListenerValues } from './nlb-create-form';
 import type {
   NetworkLoadBalancer,
   NetworkLoadBalancerListener,
@@ -90,6 +90,13 @@ export function planDeleteListener(
  * Changes the listener's protocol and port in place, so it keeps its address.
  * Its name stays as it was: routes refer to it by name.
  */
+export const LISTENER_CHANGED_COPY =
+  'This listener changed while you were editing. Reload and try again.';
+
+export function isConflict(error: { status: number }): boolean {
+  return error.status === 409;
+}
+
 export function toEditListenerPatch(
   nlb: NetworkLoadBalancer,
   listener: NetworkLoadBalancerListener,
@@ -110,7 +117,6 @@ export function toEditListenerPatch(
  * the listener, since one that picked it by port would lose it to a port change.
  */
 export function toRouteBackendPatch(
-  route: NetworkLoadBalancerRoute,
   nlbName: string,
   listener: NetworkLoadBalancerListener,
   values: NlbListenerValues
@@ -120,7 +126,6 @@ export function toRouteBackendPatch(
       ? { protocol: 'TCP', port: values.healthPort }
       : { protocol: 'TCP' };
   return {
-    metadata: { resourceVersion: route.resourceVersion },
     spec: {
       parentRefs: [{ name: nlbName, listener: listener.name }],
       backends: [
@@ -128,4 +133,52 @@ export function toRouteBackendPatch(
       ],
     },
   };
+}
+
+export function listenerFamilies(
+  nlb: NetworkLoadBalancer,
+  listener: NetworkLoadBalancerListener
+): IpFamily[] {
+  const families = listener.addressRef
+    ? nlb.addressFamilies?.[listener.addressRef]
+    : undefined;
+  return families && families.length > 0 ? families : ['IPv6'];
+}
+
+export function listenerHasIpv4(
+  nlb: NetworkLoadBalancer,
+  listener: NetworkLoadBalancerListener
+): boolean {
+  return listenerFamilies(nlb, listener).includes('IPv4');
+}
+
+export function ipv4Locations(
+  nlb: NetworkLoadBalancer,
+  listener: NetworkLoadBalancerListener
+): string[] {
+  return nlb.endpoints
+    .filter(
+      (e) =>
+        e.requestName === listener.addressRef &&
+        e.addresses.some((a) => a.family === 'IPv4' && a.value)
+    )
+    .map((e) => e.location);
+}
+
+export function toAddressFamiliesPatch(
+  nlb: NetworkLoadBalancer,
+  listener: NetworkLoadBalancerListener,
+  ipv4: boolean
+): object[] {
+  const current = listenerFamilies(nlb, listener);
+  if (current.includes('IPv4') === ipv4) return [];
+  const address = listener.addressRef;
+  const index = address ? (nlb.addressNames ?? []).indexOf(address) : -1;
+  if (!address || index < 0) return [];
+  const path = `/spec/exposure/addresses/${index}`;
+  return [
+    { op: 'test', path: `${path}/name`, value: address },
+    { op: 'test', path: `${path}/families`, value: current },
+    { op: 'replace', path: `${path}/families`, value: ipFamilies(ipv4) },
+  ];
 }

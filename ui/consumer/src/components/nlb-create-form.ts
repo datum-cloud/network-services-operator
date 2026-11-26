@@ -1,4 +1,5 @@
 import type { ApiError, NlbCreateRequests } from '../lib/api';
+import { isQuotaRefusalError } from '../lib/ipv4-quota';
 import type { NetworkService, NetworkServicePort } from '../schema';
 import { z } from 'zod';
 
@@ -21,6 +22,7 @@ const listenerFields = {
   backend: z.string({ error: 'Select a backend.' }),
   backendPort: z.string({ error: 'Select one of the backend’s ports.' }),
   healthPort: z.string().optional(),
+  ipv4: z.boolean().optional(),
 };
 
 function requireUdpProbe(
@@ -40,12 +42,14 @@ function requireUdpProbe(
 
 export const nlbListenerSchema = z.object(listenerFields).superRefine(requireUdpProbe);
 
+export const nlbNameSchema = z
+  .string({ error: 'Name is required.' })
+  .max(63, 'At most 63 characters.')
+  .regex(NAME_PATTERN, NAME_MESSAGE);
+
 export const nlbCreateSchema = z
   .object({
-    name: z
-      .string({ error: 'Name is required.' })
-      .max(63, 'At most 63 characters.')
-      .regex(NAME_PATTERN, NAME_MESSAGE),
+    name: nlbNameSchema,
     network: z.string({ error: 'Select a network.' }),
     ...listenerFields,
   })
@@ -77,6 +81,12 @@ export function nlbListenerName(values: Pick<NlbCreateValues, 'protocol' | 'port
   return `${values.protocol.toLowerCase()}-${values.port}`;
 }
 
+export type IpFamily = 'IPv6' | 'IPv4';
+
+export function ipFamilies(ipv4: boolean | undefined): IpFamily[] {
+  return ipv4 ? ['IPv6', 'IPv4'] : ['IPv6'];
+}
+
 function toRouteRequest(nlbName: string, values: NlbListenerValues): NlbCreateRequests['route'] {
   const listener = nlbListenerName(values);
   const healthCheck =
@@ -106,7 +116,7 @@ export function toNlbCreateRequests(values: NlbCreateValues): NlbCreateRequests 
       spec: {
         networkRef: { name: values.network },
         // No locations: the address follows wherever the backend runs.
-        exposure: { addresses: [{ name: listener, families: ['IPv6'] }] },
+        exposure: { addresses: [{ name: listener, families: ipFamilies(values.ipv4) }] },
         listeners: [
           { name: listener, protocol: values.protocol, port: values.port, addressRefs: [listener] },
         ],
@@ -133,7 +143,7 @@ export function toAddListenerRequests(
       {
         op: 'add',
         path: '/spec/exposure/addresses/-',
-        value: { name: listener, families: ['IPv6'] },
+        value: { name: listener, families: ipFamilies(values.ipv4) },
       },
       {
         op: 'add',
@@ -153,6 +163,7 @@ export function toAddListenerRequests(
 export interface NlbCreateErrors {
   fields: Partial<Record<NlbCreateField, string>>;
   general?: string;
+  quotaRefused?: boolean;
 }
 
 const NLB_FIELD_PREFIXES: [string, NlbCreateField][] = [
@@ -177,6 +188,8 @@ export function toNlbCreateErrors(error: ApiError, step: 'nlb' | 'route'): NlbCr
   if (step === 'nlb' && error.status === 409) {
     return { fields: { name: 'A load balancer with this name already exists.' } };
   }
+
+  if (isQuotaRefusalError(error)) return { fields: {}, general: error.message, quotaRefused: true };
 
   const prefixes = step === 'nlb' ? NLB_FIELD_PREFIXES : ROUTE_FIELD_PREFIXES;
   const fields: NlbCreateErrors['fields'] = {};

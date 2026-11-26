@@ -1,9 +1,11 @@
 import { ConfirmDeleteDialog } from './confirm-delete-dialog';
+import { nlbIpv4State, type Ipv4RowState } from './nlb-overview-model';
 import { ProtocolBadge } from './nlb-empty-state';
 import { SortableHeader } from './sortable-header';
 import { StatusBadge } from './status-badge';
 import { TableSearch } from './table-search';
 import { planNlbDelete, useDeleteNetworkLoadBalancer } from '../lib/api';
+import { IPV4_COPY } from '../lib/ipv4-quota';
 import {
   nlbReadyStatusToLabel,
   readyStatusToBadgeType,
@@ -42,6 +44,24 @@ export function toNlbRows(
       backendNames: [...new Set(attached.flatMap((r) => r.backendNames))].sort(),
     };
   });
+}
+
+const IPV4_BADGE: Partial<Record<Ipv4RowState, { label: string; type: 'muted' | 'warning' | 'danger'; title: string }>> = {
+  pending: { label: 'IPv4 pending', type: 'muted', title: 'Allocating a public IPv4 address' },
+  refused: { label: 'IPv4 refused', type: 'warning', title: IPV4_COPY.quotaRefused },
+  failed: { label: 'IPv4 failed', type: 'danger', title: 'Couldn’t assign a public IPv4 address' },
+};
+
+function Ipv4Badge({ nlb }: { nlb: NetworkLoadBalancer }) {
+  const badge = IPV4_BADGE[nlbIpv4State(nlb)];
+  if (!badge) return null;
+  return (
+    <span title={badge.title} data-testid="networking-plugin-nlb-row-ipv4">
+      <StatusBadge type={badge.type} pending={badge.type === 'muted'}>
+        {badge.label}
+      </StatusBadge>
+    </span>
+  );
 }
 
 type NlbColumn = ColumnDef<DataTableFeatures, NlbRow, unknown>;
@@ -167,10 +187,13 @@ export function NlbTable({
         sortDescFirst: false,
         header: ({ column }) => <SortableHeader column={column} title="Status" />,
         cell: ({ row }) => (
-          <span title={row.original.nlb.readyMessage}>
-            <StatusBadge type={readyStatusToBadgeType(row.original.nlb.readyStatus)}>
-              {nlbReadyStatusToLabel(row.original.nlb.readyStatus, row.original.nlb.readyReason)}
-            </StatusBadge>
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span title={row.original.nlb.readyMessage}>
+              <StatusBadge type={readyStatusToBadgeType(row.original.nlb.readyStatus)}>
+                {nlbReadyStatusToLabel(row.original.nlb.readyStatus, row.original.nlb.readyReason)}
+              </StatusBadge>
+            </span>
+            <Ipv4Badge nlb={row.original.nlb} />
           </span>
         ),
       },

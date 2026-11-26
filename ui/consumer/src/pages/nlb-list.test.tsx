@@ -1,5 +1,7 @@
 import NlbList from './nlb-list';
 import { ApiError } from '../lib/api';
+import { buildIpv4QuotaIncreaseRequest, IPV4_COPY } from '../lib/ipv4-quota';
+import { fakePortalHost, IPV4_VERDICTS } from '../test/portal-host';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -28,24 +30,26 @@ function LocationProbe() {
   return <p data-testid="location-search">{location.search}</p>;
 }
 
-function renderPage() {
+function renderPage(host = fakePortalHost()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={['/project/demo-project/services/networking/nlb']}>
-        <Routes>
-          <Route
-            path="/project/:projectId/services/:serviceSlug/nlb"
-            element={
-              <>
-                <NlbList />
-                <LocationProbe />
-              </>
-            }
-          />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <host.Wrapper>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/project/demo-project/services/networking/nlb']}>
+          <Routes>
+            <Route
+              path="/project/:projectId/services/:serviceSlug/nlb"
+              element={
+                <>
+                  <NlbList />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </host.Wrapper>
   );
 }
 
@@ -182,7 +186,25 @@ describe('NLB empty state', () => {
     mockServices([makeService('guestbook')]);
     renderPage();
     expect(screen.getByTestId('networking-plugin-nlb-backends')).toHaveTextContent(
-      '1 backend ready to use: guestbook · IPv4 coming soon'
+      '1 backend ready to use: guestbook · IPv4 available as a paid add-on'
+    );
+  });
+
+  it('offers to request IPv4 when the project has none to use', () => {
+    mockServices([makeService('guestbook')]);
+    const host = fakePortalHost(IPV4_VERDICTS.missing);
+    renderPage(host);
+    const line = screen.getByTestId('networking-plugin-nlb-backends');
+    expect(line).not.toHaveTextContent('coming soon');
+    fireEvent.click(within(line).getByRole('button', { name: IPV4_COPY.requestAction }));
+    expect(host.requestQuotaIncrease).toHaveBeenCalledWith(buildIpv4QuotaIncreaseRequest());
+  });
+
+  it('leaves IPv4 out of the backend line while availability loads', () => {
+    mockServices([makeService('guestbook')]);
+    renderPage(fakePortalHost(IPV4_VERDICTS.loading));
+    expect(screen.getByTestId('networking-plugin-nlb-backends')).toHaveTextContent(
+      /^1 backend ready to use: guestbook$/
     );
   });
 

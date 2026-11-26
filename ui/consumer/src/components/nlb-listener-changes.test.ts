@@ -1,7 +1,11 @@
 import {
+  ipv4Locations,
+  listenerFamilies,
+  listenerHasIpv4,
   planDeleteListener,
   routeOnlyServes,
   routesForListener,
+  toAddressFamiliesPatch,
   toEditListenerPatch,
   toRouteBackendPatch,
 } from './nlb-listener-changes';
@@ -115,7 +119,7 @@ describe('toRouteBackendPatch', () => {
     const route = makeRoute('by-port', [{ name: 'edge-nlb', port: 7777 }]);
     expect(routeOnlyServes(route, 'edge-nlb', udp)).toBe(true);
     expect(
-      toRouteBackendPatch(route, 'edge-nlb', udp, {
+      toRouteBackendPatch('edge-nlb', udp, {
         protocol: 'UDP',
         port: 7777,
         backend: 'dns',
@@ -123,7 +127,6 @@ describe('toRouteBackendPatch', () => {
         healthPort: 'dns-tcp',
       })
     ).toEqual({
-      metadata: { resourceVersion: '7' },
       spec: {
         parentRefs: [{ name: 'edge-nlb', listener: 'udp-7777' }],
         backends: [
@@ -134,5 +137,58 @@ describe('toRouteBackendPatch', () => {
         ],
       },
     });
+  });
+});
+
+describe('address families', () => {
+  const dual = {
+    ...nlb,
+    addressFamilies: { 'tcp-80': ['IPv6'], 'udp-7777': ['IPv6', 'IPv4'] },
+    endpoints: [
+      {
+        requestName: 'udp-7777',
+        location: 'us-east-1',
+        addresses: [
+          { family: 'IPv6', value: '2001:db8::1' },
+          { family: 'IPv4', value: '203.0.113.7' },
+        ],
+      },
+      { requestName: 'udp-7777', location: 'eu-west-1', addresses: [{ family: 'IPv6', value: '2001:db8::2' }] },
+      { requestName: 'tcp-80', location: 'us-east-1', addresses: [{ family: 'IPv6', value: '2001:db8::3' }] },
+    ],
+  } satisfies NetworkLoadBalancer;
+
+  it('reads an address without families as IPv6 only', () => {
+    expect(listenerFamilies(nlb, udp)).toEqual(['IPv6']);
+    expect(listenerHasIpv4(nlb, udp)).toBe(false);
+    expect(listenerHasIpv4(dual, udp)).toBe(true);
+    expect(listenerHasIpv4(dual, tcp)).toBe(false);
+  });
+
+  it('lists only the locations holding an allocated IPv4 address', () => {
+    expect(ipv4Locations(dual, udp)).toEqual(['us-east-1']);
+    expect(ipv4Locations(dual, tcp)).toEqual([]);
+  });
+
+  it('adds IPv4 to the listener’s own address, guarded by its name and families', () => {
+    expect(toAddressFamiliesPatch(nlb, udp, true)).toEqual([
+      { op: 'test', path: '/spec/exposure/addresses/2/name', value: 'udp-7777' },
+      { op: 'test', path: '/spec/exposure/addresses/2/families', value: ['IPv6'] },
+      { op: 'replace', path: '/spec/exposure/addresses/2/families', value: ['IPv6', 'IPv4'] },
+    ]);
+  });
+
+  it('removes IPv4 back to IPv6 only', () => {
+    expect(toAddressFamiliesPatch(dual, udp, false)).toEqual([
+      { op: 'test', path: '/spec/exposure/addresses/2/name', value: 'udp-7777' },
+      { op: 'test', path: '/spec/exposure/addresses/2/families', value: ['IPv6', 'IPv4'] },
+      { op: 'replace', path: '/spec/exposure/addresses/2/families', value: ['IPv6'] },
+    ]);
+  });
+
+  it('patches nothing when the families don’t change or the address is unknown', () => {
+    expect(toAddressFamiliesPatch(nlb, udp, false)).toEqual([]);
+    expect(toAddressFamiliesPatch(dual, udp, true)).toEqual([]);
+    expect(toAddressFamiliesPatch({ ...nlb, addressNames: [] }, udp, true)).toEqual([]);
   });
 });

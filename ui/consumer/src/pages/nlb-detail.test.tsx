@@ -1,5 +1,8 @@
 import NlbDetail from './nlb-detail';
 import { ApiError } from '../lib/api';
+import { IPV4_FAILED_COPY, IPV4_RETRY_COPY } from '../components/ipv4-quota-callout';
+import { buildIpv4QuotaIncreaseRequest, IPV4_COPY } from '../lib/ipv4-quota';
+import { fakePortalHost } from '../test/portal-host';
 import * as api from '../lib/api';
 import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } from '../schema';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -78,19 +81,21 @@ function mockQuery(
 
 const NLB_PATH = '/project/demo-project/services/networking/nlb/edge-nlb';
 
-function renderPage(path = NLB_PATH) {
+function renderPage(path = NLB_PATH, host = fakePortalHost()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route
-            path="/project/:projectId/services/:serviceSlug/nlb/:nlbName/*"
-            element={<NlbDetail />}
-          />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
+    <host.Wrapper>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route
+              path="/project/:projectId/services/:serviceSlug/nlb/:nlbName/*"
+              element={<NlbDetail />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </host.Wrapper>
   );
 }
 
@@ -169,7 +174,9 @@ describe('NlbDetail', () => {
       '/project/demo-project/services/networking/networks/kevnett'
     );
     expect(info.getByText('Follows backends · 2 cities')).toBeInTheDocument();
-    expect(info.getByText('IPv4 coming soon')).toBeInTheDocument();
+    expect(info.getByText('IPv6')).toBeInTheDocument();
+    expect(info.queryByText('IPv4 coming soon')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('networking-plugin-nlb-ipv4-quota')).not.toBeInTheDocument();
     expect(screen.getByTestId('networking-plugin-nlb-summary')).toHaveTextContent(
       'Forwarding on 1 listener'
     );
@@ -332,3 +339,234 @@ describe('NlbDetail', () => {
     expect(await screen.findByTestId('networking-plugin-nlb-listeners')).toBeInTheDocument();
   });
 });
+
+const QUOTA_403 =
+  'ipclaims.ipam.miloapis.com "nlb-1-udp-7777-b" is forbidden: You\'ve reached your quota for this resource type (public-ipv4claims 1/1). Delete unused resources to free up capacity, or contact support to request a higher limit.';
+
+function ipv4Nlb(
+  lhrIpv4: NonNullable<NetworkLoadBalancer['endpoints'][number]['addressStatuses']>[number]
+): NetworkLoadBalancer {
+  return {
+    ...nlb,
+    listeners: [nlb.listeners[0]],
+    addressFamilies: { 'udp-7777': ['IPv6', 'IPv4'] },
+    endpoints: [
+      {
+        ...nlb.endpoints[0],
+        addresses: [
+          { family: 'IPv4', value: '203.0.113.7' },
+          { family: 'IPv6', value: '2001:db8::3' },
+        ],
+        addressStatuses: [
+          { family: 'IPv4', value: '203.0.113.7', conditions: [] },
+          { family: 'IPv6', value: '2001:db8::3', conditions: [] },
+        ],
+      },
+      {
+        ...nlb.endpoints[1],
+        addressStatuses: [{ family: 'IPv6', value: '2001:db8::4', conditions: [] }, lhrIpv4],
+      },
+    ],
+  };
+}
+
+describe('NlbDetail IPv4', () => {
+  it('shows the IPv4 address under the IPv6 one, picked by family not position', () => {
+    mockQuery(useNlbMock, {
+      data: ipv4Nlb({ family: 'IPv4', value: '203.0.113.8', conditions: [] }),
+    });
+    renderPage();
+    const row = within(listenerRow('udp-7777'));
+    const v6 = row.getByText('2001:db8::3');
+    const v4 = row.getByText('203.0.113.7');
+    expect(v6.compareDocumentPosition(v4) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(row.getByRole('button', { name: 'Copy 203.0.113.7' })).toBeInTheDocument();
+    const info = within(screen.getByTestId('networking-plugin-nlb-info'));
+    expect(info.getByText('IPv6 + IPv4')).toBeInTheDocument();
+    expect(screen.queryByTestId('networking-plugin-nlb-ipv4-quota')).not.toBeInTheDocument();
+  });
+
+  it('shows a pending IPv4 address while it is allocated', () => {
+    mockQuery(useNlbMock, {
+      data: {
+        ...nlb,
+        listeners: [nlb.listeners[0]],
+        addressFamilies: { 'udp-7777': ['IPv6', 'IPv4'] },
+      },
+    });
+    renderPage();
+    expect(
+      within(listenerRow('udp-7777')).getByLabelText('Allocating an IPv4 address')
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('networking-plugin-nlb-ipv4-quota')).not.toBeInTheDocument();
+  });
+
+  it('explains a quota refusal, names the location and requests IPv4 for this NLB', () => {
+    const host = fakePortalHost();
+    mockQuery(useNlbMock, {
+      data: ipv4Nlb({
+        family: 'IPv4',
+        conditions: [
+          { type: 'Allocated', status: 'False', reason: 'AllocationFailed', message: QUOTA_403 },
+        ],
+      }),
+    });
+    renderPage(NLB_PATH, host);
+    const callout = within(screen.getByTestId('networking-plugin-nlb-ipv4-quota'));
+    expect(callout.getByText(IPV4_COPY.quotaRefused)).toBeInTheDocument();
+    expect(callout.getByText('lhr')).toBeInTheDocument();
+    expect(callout.getByText(IPV4_RETRY_COPY)).toBeInTheDocument();
+    expect(callout.getByText(IPV4_COPY.paidAddOn)).toBeInTheDocument();
+    expect(screen.queryByText(/is forbidden/)).not.toBeInTheDocument();
+    fireEvent.click(callout.getByRole('button', { name: IPV4_COPY.requestAction }));
+    expect(host.requestQuotaIncrease).toHaveBeenCalledWith(buildIpv4QuotaIncreaseRequest('edge-nlb'));
+    expect(within(listenerRow('udp-7777')).getByText('203.0.113.7')).toBeInTheDocument();
+    expect(within(listenerRow('udp-7777')).getByText('IPv4 refused')).toBeInTheDocument();
+  });
+
+  it('shows a non-quota failure with the condition text and no raw 403 lead', () => {
+    mockQuery(useNlbMock, {
+      data: ipv4Nlb({
+        family: 'IPv4',
+        conditions: [
+          {
+            type: 'Allocated',
+            status: 'False',
+            reason: 'AllocationFailed',
+            message: 'ipclaims.ipam.miloapis.com "nlb-1" is forbidden: pool exhausted in lhr',
+          },
+        ],
+      }),
+    });
+    renderPage();
+    const callout = within(screen.getByTestId('networking-plugin-nlb-ipv4-failed'));
+    expect(callout.getByText(IPV4_FAILED_COPY)).toBeInTheDocument();
+    expect(callout.getByText(/pool exhausted in lhr/)).toBeInTheDocument();
+    expect(screen.queryByText(/is forbidden/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('networking-plugin-nlb-ipv4-quota')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: IPV4_COPY.requestAction })
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('NlbDetail edit listener with IPv4', () => {
+  const redis: NetworkLoadBalancer = {
+    uid: 'redis-uid',
+    name: 'redisnlb',
+    resourceVersion: '900',
+    createdAt: new Date('2026-11-26T00:00:00Z'),
+    networkName: 'kevnett',
+    listeners: [{ name: 'tcp-6565', protocol: 'TCP', port: 6565, addressRef: 'tcp-6565', index: 0 }],
+    addressNames: ['tcp-6565'],
+    addressFamilies: { 'tcp-6565': ['IPv6', 'IPv4'] },
+    endpoints: [
+      {
+        requestName: 'tcp-6565',
+        location: 'us-central-1',
+        addresses: [
+          { family: 'IPv6', value: '2607:ed40:1fe:1000::4' },
+          { family: 'IPv4', value: '67.14.170.2' },
+        ],
+      },
+    ],
+    readyStatus: 'True',
+  };
+  const redisRoute: NetworkLoadBalancerRoute = {
+    uid: 'rr',
+    name: 'redisnlb-tcp-6565',
+    resourceVersion: '1',
+    parents: [{ name: 'redisnlb', listener: 'tcp-6565' }],
+    backendNames: ['redis'],
+    backends: [{ name: 'redis', port: 'redis', healthCheck: { protocol: 'TCP' } }],
+    parentStatuses: [{ name: 'redisnlb', listener: 'tcp-6565', effective: true, status: 'True' }],
+  };
+  const redisService: NetworkService = {
+    ...service,
+    uid: 'redis',
+    name: 'redis',
+    ports: [{ name: 'redis', port: 6379, protocol: 'TCP' }],
+    summary: { locations: 1, members: 1, healthy: 1 },
+  };
+
+  function openEdit(target: NetworkLoadBalancer = redis) {
+    mockQuery(useNlbMock, { data: target });
+    mockQuery(useRoutesMock, { data: [redisRoute] });
+    mockQuery(useServicesMock, { data: [redisService] });
+    const page = renderPage('/project/demo-project/services/networking/nlb/redisnlb');
+    fireEvent.click(within(listenerRow('tcp-6565')).getByRole('button', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    return page;
+  }
+
+  it('opens with IPv4 checked when the listener’s address has IPv4', async () => {
+    openEdit();
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Edit TCP 6565');
+    expect(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel })).toBeChecked();
+  });
+
+  it('asks before releasing IPv4, before any write', async () => {
+    openEdit();
+    const dialog = await screen.findByRole('dialog');
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockClear();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('button', { name: 'Release IPv4 and save' })).toBeInTheDocument();
+    expect(apiWrites(fetchMock)).toEqual([]);
+  });
+
+  it('releases IPv4 with one NLB write, then the route, and never writes IPv4 back', async () => {
+    const page = openEdit();
+    const dialog = await screen.findByRole('dialog');
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock.mockClear();
+
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: IPV4_COPY.optionLabel }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Release IPv4 and save' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(apiWrites(fetchMock)).toEqual([
+      [
+        'PATCH',
+        'networkloadbalancers/redisnlb',
+        [
+          { op: 'test', path: '/spec/exposure/addresses/0/name', value: 'tcp-6565' },
+          { op: 'test', path: '/spec/exposure/addresses/0/families', value: ['IPv6', 'IPv4'] },
+          { op: 'replace', path: '/spec/exposure/addresses/0/families', value: ['IPv6'] },
+        ],
+      ],
+      [
+        'PATCH',
+        'networkloadbalancerroutes/redisnlb-tcp-6565',
+        {
+          spec: {
+            parentRefs: [{ name: 'redisnlb', listener: 'tcp-6565' }],
+            backends: [{ networkService: { name: 'redis', port: 'redis' }, healthCheck: { protocol: 'TCP' } }],
+          },
+        },
+      ],
+    ]);
+
+    page.unmount();
+    openEdit({ ...redis, addressFamilies: { 'tcp-6565': ['IPv6'] } });
+    fetchMock.mockClear();
+    const reopened = await screen.findByRole('dialog');
+    expect(within(reopened).getByRole('checkbox', { name: IPV4_COPY.optionLabel })).not.toBeChecked();
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(apiWrites(fetchMock).map(([method, path]) => [method, path])).toEqual([
+      ['PATCH', 'networkloadbalancerroutes/redisnlb-tcp-6565'],
+    ]);
+  });
+});
+
+function apiWrites(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
+  return fetchMock.mock.calls.flatMap(([url, init]) => {
+    const path = String(url).split('/namespaces/default/')[1];
+    const method = (init as RequestInit | undefined)?.method;
+    return path && method ? [[method, path, JSON.parse(String((init as RequestInit).body))]] : [];
+  });
+}

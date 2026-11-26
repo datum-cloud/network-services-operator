@@ -1,8 +1,9 @@
 import { AddListenerDialog } from '../components/add-listener-dialog';
+import { Ipv4QuotaCallout } from '../components/ipv4-quota-callout';
 import { DeleteListenerDialog } from '../components/delete-listener-dialog';
 import { ConfirmDeleteDialog } from '../components/confirm-delete-dialog';
 import { NlbOverview } from '../components/nlb-overview';
-import { toListenerRows, type ListenerRow } from '../components/nlb-overview-model';
+import { ipv4Issues, toListenerRows, type ListenerRow } from '../components/nlb-overview-model';
 import { deleteDescription } from '../components/nlb-table';
 import { PluginTabs } from '../components/plugin-tabs';
 import {
@@ -213,6 +214,7 @@ function OverviewTab() {
         rows={rows}
         networkHref={networkHref}
         servicesHref={servicesHref}
+        notice={<Ipv4QuotaCallout nlbName={nlb.name} issues={ipv4Issues(nlb)} />}
         listenerActions={{
           onAdd: () => setListenerDialog({}),
           onEdit: (row) => setListenerDialog({ editing: row }),

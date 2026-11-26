@@ -124,6 +124,7 @@ algorithm and health checks instead.
 
 | Reason | What it means | Whose |
 |---|---|---|
+| `BackendAddressNotPublic` | An origin resolves to a private, loopback or other non-public address, which Datum refuses to connect to. The message names the address | Theirs — point the name at a public address, or use a connector |
 | `MultipleNetworks` | The service selects things on more than one network, and a service covers one | Theirs — narrow the selector |
 | `NoServingLocations` | Every location it has something in is out of rotation | Datum's |
 | `NetworkServiceMembersUnreferenced` | More members than Datum is currently sending traffic to; it serves, but not from all | Datum's |
@@ -134,10 +135,12 @@ being used.
 
 ## When the origin is a URL and the load balancer looks fine
 
-Nothing in the load balancer's status watches a URL origin. If everything reads
-`ok` and requests still fail, the answer is in the access logs, not in status:
-response flags and upstream codes say whether Datum could reach the origin at
-all. Load `access-log-triage`.
+The status checks only one thing about a URL origin: whether its hostname
+resolves to an address Datum refuses (`BackendAddressNotPublic`). Datum checks
+from its own resolver every few minutes, so the result is advisory. If
+everything reads `ok` and requests still fail, the answer is in the access logs,
+not in status: response flags and upstream codes say whether Datum could reach
+the origin at all. Load `access-log-triage`.
 
 Do not diagnose the customer's own server from here. Say what Datum saw when it
 tried.

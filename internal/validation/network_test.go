@@ -62,6 +62,7 @@ func TestValidateExternalHost(t *testing.T) {
 		{host: "::ffff:100.64.0.1", refusal: "IPv4-mapped form of 100.64.0.1, which is in the carrier-grade NAT range"},
 		{host: "::ffff:7f00:1", refusal: "IPv4-mapped form of 127.0.0.1"},
 		{host: "::ffff:192.0.2.1", refusal: "IPv4-mapped form of 192.0.2.1, which is in the documentation range"},
+		{host: "100::1", refusal: "discard-only range 100::/64"},
 		{host: "2130706433", refusal: "IPv4 address 127.0.0.1 in a non-canonical spelling"},
 		{host: "0x7f000001", refusal: "IPv4 address 127.0.0.1 in a non-canonical spelling"},
 		{host: "0177.0.0.1", refusal: "IPv4 address 127.0.0.1 in a non-canonical spelling"},

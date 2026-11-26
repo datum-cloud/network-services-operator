@@ -305,6 +305,18 @@ var catalog = []ReasonInfo{
 		Skill:       SkillBackendNotReachable,
 	},
 	{
+		Reason:        networkingv1alpha.HTTPProxyReasonBackendAddressNotPublic,
+		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
+		Actionability: ActionabilityUser,
+		Scope:         ScopeAllTraffic,
+		Explanation: "An origin on this load balancer resolves to an address that is not public, such as " +
+			"a private, loopback or documentation address. Datum refuses to connect to those, so " +
+			"requests sent to that origin fail.",
+		Remediation: "Point the origin's hostname at a public address. To reach a server on a private " +
+			"network, use a connector instead.",
+		Skill: SkillBackendNotReachable,
+	},
+	{
 		Reason:        networkingv1alpha.HTTPProxyReasonBackendSettingsNotApplied,
 		ConditionType: networkingv1alpha.HTTPProxyConditionProgrammed,
 		Actionability: ActionabilityUser,

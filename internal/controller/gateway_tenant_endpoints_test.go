@@ -49,28 +49,31 @@ func TestTenantEndpointSliceAddressesAreChecked(t *testing.T) {
 		slice      *discoveryv1.EndpointSlice
 		interfaces []client.Object
 		refused    string
+		notPublic  bool
 	}{
-		{name: "loopback", slice: tenantSlice(ipv4, nil, "127.0.0.1"), refused: "127.0.0.1"},
-		{name: "private", slice: tenantSlice(ipv4, nil, "10.1.2.3"), refused: "10.1.2.3"},
-		{name: "link-local", slice: tenantSlice(ipv4, nil, "169.254.169.254"), refused: "169.254.169.254"},
-		{name: "carrier-grade NAT", slice: tenantSlice(ipv4, nil, "100.64.0.1"), refused: "100.64.0.1"},
-		{name: "IPv6 loopback", slice: tenantSlice(ipv6, nil, "::1"), refused: "::1"},
-		{name: "IPv6 unique local", slice: tenantSlice(ipv6, nil, "fd00::1"), refused: "fd00::1"},
-		{name: "IPv4-mapped loopback", slice: tenantSlice(ipv6, nil, "::ffff:127.0.0.1"), refused: "::ffff:127.0.0.1"},
+		{name: "loopback", slice: tenantSlice(ipv4, nil, "127.0.0.1"), refused: "127.0.0.1", notPublic: true},
+		{name: "private", slice: tenantSlice(ipv4, nil, "10.1.2.3"), refused: "10.1.2.3", notPublic: true},
+		{name: "link-local", slice: tenantSlice(ipv4, nil, "169.254.169.254"), refused: "169.254.169.254", notPublic: true},
+		{name: "carrier-grade NAT", slice: tenantSlice(ipv4, nil, "100.64.0.1"), refused: "100.64.0.1", notPublic: true},
+		{name: "IPv6 loopback", slice: tenantSlice(ipv6, nil, "::1"), refused: "::1", notPublic: true},
+		{name: "IPv6 unique local", slice: tenantSlice(ipv6, nil, "fd00::1"), refused: "fd00::1", notPublic: true},
+		{name: "IPv4-mapped loopback", slice: tenantSlice(ipv6, nil, "::ffff:127.0.0.1"), refused: "::ffff:127.0.0.1", notPublic: true},
 		{name: "cluster name", slice: tenantSlice(fqdn, nil, "kubernetes.default.svc.cluster.local"), refused: "kubernetes.default.svc.cluster.local"},
 		{name: "short name", slice: tenantSlice(fqdn, nil, "kubernetes.default"), refused: "kubernetes.default"},
-		{name: "one internal address among public ones", slice: tenantSlice(ipv4, nil, "8.8.8.8", "10.0.0.1"), refused: "10.0.0.1"},
+		{name: "one internal address among public ones", slice: tenantSlice(ipv4, nil, "8.8.8.8", "10.0.0.1"), refused: "10.0.0.1", notPublic: true},
 		{
 			name:       "an address held by an interface in another project",
 			slice:      tenantSlice(ipv6, nil, "fd20:0:2::7"),
 			interfaces: []client.Object{networkInterfaceHolding("other", "vm-1", "fd20:0:2::7")},
 			refused:    "fd20:0:2::7",
+			notPublic:  true,
 		},
 		{
 			name:       "an address held by a released interface",
 			slice:      tenantSlice(ipv6, nil, "fd20:0:2::7"),
 			interfaces: []client.Object{releasedNetworkInterfaceHolding("test", "vm-1", "fd20:0:2::7")},
 			refused:    "fd20:0:2::7",
+			notPublic:  true,
 		},
 		{name: "public address", slice: tenantSlice(ipv4, nil, "8.8.8.8")},
 		{name: "public IPv6 address", slice: tenantSlice(ipv6, nil, "2001:4860:4860::8888")},
@@ -117,7 +120,30 @@ func TestTenantEndpointSliceAddressesAreChecked(t *testing.T) {
 			assert.Equal(t, string(gatewayv1.RouteReasonRefNotPermitted), condition.Reason)
 			assert.Contains(t, condition.Message, "test/tenant")
 			assert.Contains(t, condition.Message, tt.refused)
+
+			detail, notPublic := nonPublicBackendAddressDetail(condition.Message)
+			assert.Equal(t, tt.notPublic, notPublic)
+			programmed := programmedTrue()
+			applyRouteRefNotPermitted(routeWithResolvedRefs(*condition), &programmed)
+			if !tt.notPublic {
+				assert.Equal(t, networkingv1alpha.HTTPProxyReasonProgrammed, programmed.Reason)
+				return
+			}
+			assert.Contains(t, detail, tt.refused)
+			assert.Equal(t, networkingv1alpha.HTTPProxyReasonBackendAddressNotPublic, programmed.Reason)
+			assert.Contains(t, programmed.Message, tt.refused)
+			assert.NotContains(t, programmed.Message, "test/tenant")
+			assert.NotContains(t, programmed.Message, "EndpointSlice")
 		})
+	}
+}
+
+func routeWithResolvedRefs(condition metav1.Condition) *gatewayv1.HTTPRoute {
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Generation: condition.ObservedGeneration},
+		Status: gatewayv1.HTTPRouteStatus{RouteStatus: gatewayv1.RouteStatus{Parents: []gatewayv1.RouteParentStatus{{
+			Conditions: []metav1.Condition{condition},
+		}}}},
 	}
 }
 
@@ -222,6 +248,13 @@ func TestAMalformedTenantIDLabelIsRefused(t *testing.T) {
 			assert.Equal(t, metav1.ConditionFalse, condition.Status)
 			assert.Equal(t, string(gatewayv1.RouteReasonRefNotPermitted), condition.Reason)
 			assert.Contains(t, condition.Message, "test/tenant")
+			assert.Contains(t, condition.Message, "is not a tenant identifier")
+			_, notPublic := nonPublicBackendAddressDetail(condition.Message)
+			assert.False(t, notPublic, "a label refusal is not an address refusal")
+
+			programmed := programmedTrue()
+			applyRouteRefNotPermitted(routeWithResolvedRefs(*condition), &programmed)
+			assert.Equal(t, networkingv1alpha.HTTPProxyReasonProgrammed, programmed.Reason)
 		})
 	}
 }

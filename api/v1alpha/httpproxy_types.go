@@ -839,6 +839,8 @@ const (
 	// attached to the HTTP proxy's route displaces that policy.
 	HTTPProxyReasonBackendSettingsNotApplied = "BackendSettingsNotApplied"
 
+	HTTPProxyReasonBackendAddressNotPublic = "BackendAddressNotPublic"
+
 	// This reason is used with the "Accepted" and "Programmed"
 	// conditions when the status is "Unknown" and no controller has reconciled
 	// the HTTPProxy.

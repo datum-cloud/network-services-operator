@@ -1,9 +1,11 @@
 import {
   backendPortOptions,
   healthPortOptions,
+  ipFamilies,
   nlbCreateSchema,
   SERVING_PORT,
   toNlbCreateErrors,
+  toAddListenerRequests,
   toNlbCreateRequests,
   type NlbCreateValues,
 } from './nlb-create-form';
@@ -162,5 +164,46 @@ describe('toNlbCreateErrors', () => {
       fields: {},
       general: 'boom',
     });
+  });
+});
+
+describe('IPv4 family choice', () => {
+  it('always asks for IPv6, and for IPv4 only when chosen', () => {
+    expect(ipFamilies(undefined)).toEqual(['IPv6']);
+    expect(ipFamilies(false)).toEqual(['IPv6']);
+    expect(ipFamilies(true)).toEqual(['IPv6', 'IPv4']);
+  });
+
+  it('puts the chosen families on the created NLB’s address', () => {
+    expect(toNlbCreateRequests(tcpValues).nlb.spec).toMatchObject({
+      exposure: { addresses: [{ name: 'tcp-5432', families: ['IPv6'] }] },
+    });
+    expect(toNlbCreateRequests({ ...tcpValues, ipv4: true }).nlb.spec).toMatchObject({
+      exposure: { addresses: [{ name: 'tcp-5432', families: ['IPv6', 'IPv4'] }] },
+    });
+  });
+
+  it('puts the chosen families on an added listener’s address', () => {
+    const add = (ipv4: boolean) =>
+      (toAddListenerRequests({ name: 'db' }, { ...tcpValues, ipv4 }).patch[0] as {
+        value: { families: string[] };
+      }).value.families;
+    expect(add(false)).toEqual(['IPv6']);
+    expect(add(true)).toEqual(['IPv6', 'IPv4']);
+  });
+
+  it('reads a checked checkbox as IPv4 chosen', () => {
+    const parsed = nlbCreateSchema.parse({ ...tcpValues, ipv4: true });
+    expect(parsed.ipv4).toBe(true);
+    expect(nlbCreateSchema.parse(tcpValues).ipv4).toBeUndefined();
+  });
+
+  it('marks a quota 403 as a quota refusal, and nothing else', () => {
+    const refused = new ApiError(
+      403,
+      'networkloadbalancers "db" is forbidden: You\'ve reached your quota for this resource type (1/1).'
+    );
+    expect(toNlbCreateErrors(refused, 'nlb')).toMatchObject({ quotaRefused: true });
+    expect(toNlbCreateErrors(new ApiError(403, 'forbidden'), 'nlb').quotaRefused).toBeUndefined();
   });
 });

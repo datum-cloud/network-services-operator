@@ -963,7 +963,7 @@ func TestBuildPolicyIndexFromClient_VPCPodResolution_MissingEndpointSlice_EmptyT
 	// ApplyVPCPodSocketBind skips mutation rather than binding to a
 	// zero-value device name.
 	const (
-		upstreamNS = "test-project"
+		upstreamNS = "missing-slice-project"
 		proxyName  = "my-proxy"
 	)
 	scheme := indexTestScheme(t)
@@ -1950,15 +1950,16 @@ func provenanceNamespace() *corev1.Namespace {
 	}}
 }
 
-func ownerlessTenantSlice(namespace, name, tenantID, address string) *discoveryv1.EndpointSlice {
-	slice := newGalacticEndpointSlice(name, tenantID, address)
-	slice.Namespace = namespace
+const provenanceMember = "fd20:0:2::1:0:0"
+
+func ownerlessTenantSlice(name, tenantID string) *discoveryv1.EndpointSlice {
+	slice := newGalacticEndpointSlice(name, tenantID, provenanceMember)
 	slice.OwnerReferences = nil
 	return slice
 }
 
-func projectedTenantSlice(name, tenantID, address, clusterLabel string) *discoveryv1.EndpointSlice {
-	slice := ownerlessTenantSlice(nsvcTestNS, name, tenantID, address)
+func projectedTenantSlice(name, tenantID, clusterLabel string) *discoveryv1.EndpointSlice {
+	slice := ownerlessTenantSlice(name, tenantID)
 	slice.Labels[VPCEndpointSliceProjectionLabel] = "true"
 	slice.Labels[downstreamclient.UpstreamOwnerClusterNameLabel] = clusterLabel
 	return slice
@@ -1968,7 +1969,7 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 	const (
 		tenantID   = "2wJqT7d-9xKp2Qm"
 		otherID    = "5hLm3Xc-9xKp2Qm"
-		member     = "fd20:0:2::1:0:0"
+		member     = provenanceMember
 		otherNS    = "other-project"
 		instanceID = "pod-slice"
 	)
@@ -1988,23 +1989,23 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 		},
 		{
 			name:        "projected ownerless copy resolves",
-			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, provenanceClusterLabel),
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, provenanceClusterLabel),
 			wantTenant:  tenantID,
 		},
 		{
 			name:        "unattributable label on an ownerless unprojected slice gives no tenant",
-			tenantSlice: ownerlessTenantSlice(nsvcTestNS, "unowned", tenantID, member),
+			tenantSlice: ownerlessTenantSlice("unowned", tenantID),
 			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 		{
 			name:        "projected copy naming another project gives no tenant",
-			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, "cluster-other-project"),
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, "cluster-other-project"),
 			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 		{
 			name: "owner of another kind is not trusted",
 			tenantSlice: func() client.Object {
-				slice := ownerlessTenantSlice(nsvcTestNS, "unowned", tenantID, member)
+				slice := ownerlessTenantSlice("unowned", tenantID)
 				slice.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "cm", UID: "cm"}}
 				return slice
 			}(),
@@ -2026,18 +2027,18 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 			name:        "unowned slice beside a trusted one leaves the trusted tenant",
 			tenantSlice: newGalacticEndpointSlice("vpc-pod-a", tenantID, member),
 			extra: []client.Object{
-				ownerlessTenantSlice(nsvcTestNS, "unowned", otherID, member),
+				ownerlessTenantSlice("unowned", otherID),
 			},
 			wantTenant: tenantID,
 		},
 		{
 			name:        "projected copy with an empty cluster label gives no tenant",
-			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, ""),
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, ""),
 			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 		{
 			name:        "projected copy in a namespace missing the cluster label gives no tenant",
-			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, member, provenanceClusterLabel),
+			tenantSlice: projectedTenantSlice("vpc-us-central-1-pod-a", tenantID, provenanceClusterLabel),
 			namespace:   &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsvcTestNS}},
 			wantRefusal: VPCBindingRefusalUntrusted,
 		},
@@ -2045,7 +2046,7 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 			name:        "two trusted tenants claiming one address conflict",
 			tenantSlice: newGalacticEndpointSlice("vpc-pod-a", tenantID, member),
 			extra: []client.Object{
-				projectedTenantSlice("vpc-us-central-1-pod-b", otherID, member, provenanceClusterLabel),
+				projectedTenantSlice("vpc-us-central-1-pod-b", otherID, provenanceClusterLabel),
 			},
 			wantRefusal: VPCBindingRefusalConflict,
 		},
@@ -2087,12 +2088,12 @@ func TestBuildPolicyIndexFromClient_VPCBindingProvenance(t *testing.T) {
 		},
 		{
 			name:       "projected ownerless instance slice resolves",
-			slice:      projectedTenantSlice(instanceID, tenantID, member, provenanceClusterLabel),
+			slice:      projectedTenantSlice(instanceID, tenantID, provenanceClusterLabel),
 			wantTenant: tenantID,
 		},
 		{
 			name:        "unattributable label on an instance slice gives no tenant",
-			slice:       ownerlessTenantSlice(nsvcTestNS, instanceID, tenantID, member),
+			slice:       ownerlessTenantSlice(instanceID, tenantID),
 			wantRefusal: VPCBindingRefusalUntrusted,
 		},
 	}

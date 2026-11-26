@@ -476,6 +476,13 @@ func claimRefusals() []ReasonInfo {
 		{reasonAddressClassMissing, retained("it holds no address of a class the workload now asks for, such as a public address")},
 		{reasonReclaimPolicyMismatch, retained("its addresses were kept under a different rule for what happens when the instance goes away")},
 		{reasonAttachmentPointMismatch, retained("it is wired to a different switch port, or for a different purpose, from the one the server's claim now names")},
+		{networkingv1alpha.NetworkInterfaceClaimReasonReleaseUnverified, ReasonInfo{
+			Actionability: ActionabilityTransient, Scope: ScopeInstance,
+			Explanation: "This server's network interface is being removed, and the platform is waiting for " +
+				"its address to be returned before it finishes.",
+			Remediation: remediationWait, Skill: SkillInterfaceTriage,
+			ExpectedDuration: windowRemoval,
+		}},
 		{networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported, ReasonInfo{
 			Actionability: ActionabilityPlatform, Scope: ScopeInstance,
 			Explanation: "This server's network interface asks to reach its network through a switch port, " +

@@ -78,6 +78,11 @@ const (
 	// its interface released, so it no longer offers one to a workload.
 	NetworkInterfaceClaimReasonReleasing = "Releasing"
 
+	// NetworkInterfaceClaimReasonReleaseUnverified means a physical claim is
+	// being deleted and IPAM still holds one of its addresses, so the claim
+	// stays until IPAM no longer does.
+	NetworkInterfaceClaimReasonReleaseUnverified = "ReleaseUnverified"
+
 	// NetworkInterfaceClaimReasonProjectNamespaceNotFound means the namespace
 	// addresses are allocated in does not exist in the project's control plane.
 	// The platform provisions it with the project, so its absence says the

@@ -4,6 +4,8 @@ package physicalrealizer
 
 import (
 	"hash/fnv"
+	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -16,7 +18,6 @@ const (
 	simulatedVLANs     = maxVLAN - firstSimulatedVLAN + 1
 )
 
-// recorded is one entry of a hold, and the claim it names if one exists.
 type recorded struct {
 	entry networkingv1alpha.SwitchPortHoldClaimRef
 	boot  bool
@@ -27,8 +28,8 @@ func (r recorded) network() types.NamespacedName {
 	return types.NamespacedName{Namespace: r.entry.Namespace, Name: r.entry.Network}
 }
 
-// networks are every network the port may carry for this entry: the one the
-// hold recorded, and the one a claim of the entry's name names now.
+// An entry left under the claim's name may name an older network, and the port
+// may still carry either.
 func (r recorded) networks() []types.NamespacedName {
 	networks := []types.NamespacedName{r.network()}
 	if r.claim != nil && r.claim.Spec.Network.Name != r.entry.Network {
@@ -47,9 +48,6 @@ func (r recorded) onPort(hold *networkingv1alpha.SwitchPortHold) bool {
 		controllerutil.ContainsFinalizer(claim, networkingv1alpha.NetworkInterfaceClaimDetachFinalizer)
 }
 
-// counts reports whether the port may carry the entry's network: the claim is
-// recorded as it is, still carries the detach finalizer, and is not being
-// deleted.
 func (r recorded) counts(hold *networkingv1alpha.SwitchPortHold) bool {
 	return r.onPort(hold) &&
 		r.claim.DeletionTimestamp.IsZero() &&
@@ -57,8 +55,6 @@ func (r recorded) counts(hold *networkingv1alpha.SwitchPortHold) bool {
 		(r.claim.Spec.Purpose == networkingv1alpha.NetworkInterfacePurposeBoot) == r.boot
 }
 
-// releasing reports whether the claim waits on the realizer to take its
-// network off the port.
 func (r recorded) releasing(hold *networkingv1alpha.SwitchPortHold) bool {
 	return r.onPort(hold) && !r.claim.DeletionTimestamp.IsZero()
 }
@@ -73,13 +69,11 @@ func (r recorded) isolation() networkingv1alpha.NetworkInterfaceIsolation {
 	return networkingv1alpha.NetworkInterfaceIsolationShared
 }
 
-// plan is what a port carries, worked out from its hold.
 type plan struct {
 	boot *recorded
 
-	// networks are the counted network claims and what each would arrive on.
-	// They keep their VLANs while a boot claim holds the port, so a server
-	// being installed can be configured for them.
+	// Network claims keep their VLANs while a boot claim holds the port, so a
+	// server being installed can be configured for them.
 	networks []assigned
 }
 
@@ -90,7 +84,6 @@ type assigned struct {
 
 func planFor(hold *networkingv1alpha.SwitchPortHold, entries []recorded) plan {
 	var p plan
-	used := map[int32]bool{}
 	for i := range entries {
 		entry := entries[i]
 		if !entry.counts(hold) {
@@ -100,11 +93,20 @@ func planFor(hold *networkingv1alpha.SwitchPortHold, entries []recorded) plan {
 			p.boot = &entry
 			continue
 		}
-		membership := Membership{Network: entry.network(), Isolation: entry.isolation()}
-		if len(p.networks) > 0 {
-			membership.VLAN = simulatedVLAN(entry.network(), used)
+		p.networks = append(p.networks, assigned{recorded: entry})
+	}
+
+	slices.SortFunc(p.networks, func(a, b assigned) int {
+		return strings.Compare(a.network().String(), b.network().String())
+	})
+	used := map[int32]bool{}
+	for i := range p.networks {
+		network := p.networks[i].network()
+		p.networks[i].membership = Membership{
+			Network:   network,
+			VLAN:      simulatedVLAN(network, used),
+			Isolation: p.networks[i].isolation(),
 		}
-		p.networks = append(p.networks, assigned{recorded: entry, membership: membership})
 	}
 	return p
 }
@@ -138,8 +140,6 @@ func simulatedVLAN(network types.NamespacedName, used map[int32]bool) int32 {
 	return 0
 }
 
-// changes reports whether moving the port from current to desired adds,
-// removes or alters any network the entry may be carried on.
 func (r recorded) changes(current, desired []Membership) bool {
 	for _, network := range r.networks() {
 		before, wasCarried := membershipOf(current, network)

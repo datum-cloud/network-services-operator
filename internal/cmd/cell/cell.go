@@ -367,6 +367,9 @@ func controllerRegistrations(
 	}
 	if serverConfig.PhysicalRealizer.Enabled {
 		registrations = append(registrations, namedSetup{physicalrealizer.ControllerName, func() (bool, error) {
+			setupLog.Error(nil, "THE PHYSICAL REALIZER IS THE SIMULATED TEST REALIZER: no switch is changed, "+
+				"and every physical claim it reports programmed is fake. Never enable it in a real cell.",
+				"driver", serverConfig.PhysicalRealizer.Driver)
 			return true, (&physicalrealizer.Reconciler{
 				Client:    mgr.GetLocalManager().GetClient(),
 				APIReader: mgr.GetLocalManager().GetAPIReader(),

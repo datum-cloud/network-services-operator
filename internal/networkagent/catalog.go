@@ -595,15 +595,6 @@ func switchPort(kind, prepared, programmed string) []ReasonInfo {
 			Skill:            SkillInterfaceTriage,
 			ExpectedDuration: windowDataPlane,
 		}),
-		entry(kind, programmed, networkingv1alpha.NetworkInterfaceClaimReasonPortUnverified, ReasonInfo{
-			Actionability: ActionabilityTransient,
-			Scope:         ScopeInstance,
-			Explanation: "The platform could not confirm what the switch port this server's network interface " +
-				"is cabled to carries, so it keeps trying and holds the interface's addresses meanwhile.",
-			Remediation:      remediationWait,
-			Skill:            SkillInterfaceTriage,
-			ExpectedDuration: windowDataPlane,
-		}),
 		entry(kind, programmed, networkingv1alpha.NetworkInterfaceClaimReasonBootAttachmentActive, ReasonInfo{
 			Actionability: ActionabilityInformational,
 			Explanation: "This server is being installed, so its switch port carries the install network " +

@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,25 +23,31 @@ import (
 
 const realizedPort = "Ethernet1/12"
 
-// realizedPortRun drives the test realizer for one port of a scenario's switch,
-// and knows which project each scenario namespace belongs to.
 type realizedPortRun struct {
-	s          *scenario
-	sw         *physicalrealizer.SimulatedSwitch
-	realizer   *physicalrealizer.Reconciler
-	projects   map[string]string
-	bootByName map[types.NamespacedName]bool
+	s        *scenario
+	sw       *physicalrealizer.SimulatedSwitch
+	realizer *physicalrealizer.Reconciler
+	projects map[string]string
+	applies  int
+	onApply  func()
 }
 
 func (s *scenario) realizedPort() *realizedPortRun {
 	sw := physicalrealizer.NewSimulatedSwitch()
-	return &realizedPortRun{
-		s:          s,
-		sw:         sw,
-		realizer:   &physicalrealizer.Reconciler{Client: s.client, APIReader: s.client, Driver: sw},
-		projects:   map[string]string{s.namespace: testProject},
-		bootByName: map[types.NamespacedName]bool{},
+	run := &realizedPortRun{
+		s:        s,
+		sw:       sw,
+		realizer: &physicalrealizer.Reconciler{Client: s.client, APIReader: s.client, Driver: sw},
+		projects: map[string]string{s.namespace: testProject},
 	}
+	sw.BeforeApply(func(_ physicalrealizer.Port, desired []physicalrealizer.Membership) {
+		run.applies++
+		run.requireSafe("apply", desired)
+		if run.onApply != nil {
+			run.onApply()
+		}
+	})
+	return run
 }
 
 func (r *realizedPortRun) sibling(project string) *scenario {
@@ -78,8 +85,6 @@ func networkOf(s *scenario) types.NamespacedName {
 	return types.NamespacedName{Namespace: s.namespace, Name: "default"}
 }
 
-// requireConsistent checks that no claim on the port reports Programmed for a
-// network the port does not carry.
 func (r *realizedPortRun) requireConsistent() {
 	r.s.t.Helper()
 	var claims networkingv1alpha.NetworkInterfaceClaimList
@@ -107,23 +112,26 @@ func carries(carried []physicalrealizer.Membership, network types.NamespacedName
 	return false
 }
 
-// requireSafeHistory checks every state the port ever reached: networks of one
-// project at most, and a boot network only ever alone.
-func (r *realizedPortRun) requireSafeHistory(bootNetworks ...types.NamespacedName) {
+func (r *realizedPortRun) requireSafe(what string, carried []physicalrealizer.Membership) {
 	r.s.t.Helper()
-	for i, change := range r.sw.History() {
-		projects := map[string]bool{}
-		for _, m := range change.Carried {
-			project, known := r.projects[m.Network.Namespace]
-			require.Truef(r.s.t, known, "change %d carries %s, which no scenario owns", i, m.Network)
-			projects[project] = true
-			for _, boot := range bootNetworks {
-				if m.Network == boot {
-					require.Lenf(r.s.t, change.Carried, 1, "change %d carries the boot network with others: %v", i, change.Carried)
-				}
-			}
+	projects := map[string]bool{}
+	for _, m := range carried {
+		project, known := r.projects[m.Network.Namespace]
+		require.Truef(r.s.t, known, "%s carries %s, which no scenario owns", what, m.Network)
+		projects[project] = true
+		if project == providerProject {
+			require.Lenf(r.s.t, carried, 1, "%s carries the boot network with others: %v", what, carried)
 		}
-		require.LessOrEqualf(r.s.t, len(projects), 1, "change %d carries two projects' networks: %v", i, change.Carried)
+	}
+	require.LessOrEqualf(r.s.t, len(projects), 1, "%s carries two projects' networks: %v", what, carried)
+}
+
+func (r *realizedPortRun) requireSafeHistory() {
+	r.s.t.Helper()
+	history := r.sw.History()
+	require.GreaterOrEqual(r.s.t, r.applies, len(history), "every change was checked before it was applied")
+	for i, change := range history {
+		r.requireSafe(fmt.Sprintf("change %d", i), change.Carried)
 	}
 }
 
@@ -143,7 +151,6 @@ func requirePrepared(t *testing.T, conditions []metav1.Condition) {
 	require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonAttachmentPointAccepted, prepared.Reason)
 }
 
-// requireReported checks the claim and the interface bound to it agree.
 func (s *scenario) requireReported(name string, status metav1.ConditionStatus, reason string) *networkingv1alpha.NetworkInterfaceClaim {
 	s.t.Helper()
 	claim := s.getClaim(name)
@@ -175,17 +182,31 @@ func (s *scenario) bindPhysical(name string, purpose networkingv1alpha.NetworkIn
 	s.requireBound(name)
 }
 
+func (r *realizedPortRun) requireCarriedOn(s *scenario, name string) int32 {
+	s.t.Helper()
+	claim := s.getClaim(name)
+	require.NotNil(s.t, claim.Status.VLANID, "a network claim's network arrives tagged")
+	network := types.NamespacedName{Namespace: claim.Namespace, Name: claim.Spec.Network.Name}
+	for _, m := range r.carried() {
+		if m.Network == network {
+			require.Equal(s.t, *claim.Status.VLANID, m.VLAN, "the reported VLAN is the one the switch carries")
+			return m.VLAN
+		}
+	}
+	require.Failf(s.t, "not carried", "the port does not carry %s: %v", network, r.carried())
+	return 0
+}
+
 func TestARealizedNetworkClaimIsProgrammed(t *testing.T) {
 	s := newScenario(t, true, ipv4Only)
 	run := s.realizedPort()
 	s.bindPhysical("server-data", "")
 
 	run.mustRealize()
-	require.Equal(t, []physicalrealizer.Membership{{
-		Network: networkOf(s), Isolation: networkingv1alpha.NetworkInterfaceIsolationShared,
-	}}, run.carried())
+	require.Len(t, run.carried(), 1)
+	require.Equal(t, networkingv1alpha.NetworkInterfaceIsolationShared, run.carried()[0].Isolation)
 	claim := s.requireReported("server-data", metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
-	require.Nil(t, claim.Status.VLANID, "the only network arrives untagged")
+	run.requireCarriedOn(s, "server-data")
 
 	s.reconcile(claim)
 	s.requireReady("server-data")
@@ -195,27 +216,30 @@ func TestARealizedNetworkClaimIsProgrammed(t *testing.T) {
 	require.Equal(t, before, run.changes(), "a port that already carries its networks is left alone")
 }
 
-func TestASecondNetworkArrivesTagged(t *testing.T) {
+func TestASurvivingNetworkKeepsItsVLAN(t *testing.T) {
 	s := newScenario(t, true, ipv4Only)
 	run := s.realizedPort()
-	second := run.sibling(testProject)
+	storage := run.sibling(testProject)
+	backup := run.sibling(testProject)
 	s.bindPhysical("server-data", "")
-	second.bindPhysical("server-storage", "")
-
+	storage.bindPhysical("server-storage", "")
+	backup.bindPhysical("server-backup", "")
 	run.mustRealize()
-	require.Nil(t, s.requireReported("server-data", metav1.ConditionTrue,
-		networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork).Status.VLANID)
-	storage := second.requireReported("server-storage", metav1.ConditionTrue,
-		networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
-	require.NotNil(t, storage.Status.VLANID)
 
-	carried := run.carried()
-	require.Len(t, carried, 2)
-	for _, m := range carried {
-		if m.Network == networkOf(second) {
-			require.Equal(t, *storage.Status.VLANID, m.VLAN, "the reported VLAN is the one the switch carries")
-		}
+	vlans := map[string]int32{}
+	for name, owner := range map[string]*scenario{"server-data": s, "server-storage": storage, "server-backup": backup} {
+		owner.requireReported(name, metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
+		vlans[name] = run.requireCarriedOn(owner, name)
 	}
+	require.Len(t, map[int32]bool{vlans["server-data"]: true, vlans["server-storage"]: true, vlans["server-backup"]: true}, 3)
+
+	require.NoError(t, s.client.Delete(s.ctx, s.getClaim("server-data")))
+	s.reconcile(s.getClaim("server-data"))
+	run.mustRealize()
+	require.Len(t, run.carried(), 2)
+	require.Equal(t, vlans["server-storage"], run.requireCarriedOn(storage, "server-storage"), "the first claim leaving re-tags nothing")
+	require.Equal(t, vlans["server-backup"], run.requireCarriedOn(backup, "server-backup"))
+	storage.requireReported("server-storage", metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
 }
 
 func TestAHandoverMovesThePortInOneStep(t *testing.T) {
@@ -233,6 +257,8 @@ func TestAHandoverMovesThePortInOneStep(t *testing.T) {
 	provider.requireReported("install-1-boot", metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
 	data := customer.requireReported("server-data", metav1.ConditionFalse,
 		networkingv1alpha.NetworkInterfaceClaimReasonBootAttachmentActive)
+	require.NotNil(t, data.Status.VLANID, "the server can be configured for its network while it installs")
+	installVLAN := *data.Status.VLANID
 	customer.reconcile(data)
 	data = customer.getClaim("server-data")
 	require.Len(t, data.Status.Addresses, 1, "a network claim under a boot claim keeps its addresses")
@@ -243,7 +269,7 @@ func TestAHandoverMovesThePortInOneStep(t *testing.T) {
 	provider.requireAwaitingDetach("install-1-boot")
 
 	var detachHeldAtApply []bool
-	run.sw.BeforeApply(func(physicalrealizer.Port, []physicalrealizer.Membership) {
+	run.onApply = func() {
 		detachHeldAtApply = append(detachHeldAtApply, provider.hasDetachFinalizer("install-1-boot"))
 		for _, name := range []string{"server-data"} {
 			programmed := conditionOf(customer.getClaim(name), networkingv1alpha.NetworkInterfaceClaimProgrammed)
@@ -252,14 +278,14 @@ func TestAHandoverMovesThePortInOneStep(t *testing.T) {
 		programmed := conditionOf(provider.getClaim("install-1-boot"), networkingv1alpha.NetworkInterfaceClaimProgrammed)
 		require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonPortChanging, programmed.Reason,
 			"the boot claim is withdrawn before the port moves")
-	})
+	}
 	before := run.changes()
 	run.mustRealize()
 
 	require.Equal(t, before+1, run.changes(), "the port moves in one change")
-	require.Equal(t, []physicalrealizer.Membership{{
-		Network: networkOf(customer), Isolation: networkingv1alpha.NetworkInterfaceIsolationShared,
-	}}, run.carried())
+	require.Equal(t, []types.NamespacedName{networkOf(customer)}, networksOf(run.carried()))
+	require.Equal(t, networkingv1alpha.NetworkInterfaceIsolationShared, run.carried()[0].Isolation)
+	require.Equal(t, installVLAN, run.requireCarriedOn(customer, "server-data"), "the network arrives on the VLAN reported during the install")
 	require.Equal(t, []bool{true}, detachHeldAtApply)
 	require.False(t, provider.hasDetachFinalizer("install-1-boot"), "the boot claim is detached once read back")
 	customer.requireReported("server-data", metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
@@ -270,7 +296,7 @@ func TestAHandoverMovesThePortInOneStep(t *testing.T) {
 	customer.reconcile(customer.getClaim("server-data"))
 	customer.requireReady("server-data")
 
-	run.requireSafeHistory(networkOf(provider))
+	run.requireSafeHistory()
 }
 
 func TestReleasingACustomerClaimEmptiesThePort(t *testing.T) {
@@ -316,13 +342,13 @@ func TestAClaimDeletedMidChangeLeavesThePortBeforeItsFinalizer(t *testing.T) {
 
 	applies := 0
 	var storageDetachHeld []bool
-	run.sw.BeforeApply(func(physicalrealizer.Port, []physicalrealizer.Membership) {
+	run.onApply = func() {
 		applies++
 		storageDetachHeld = append(storageDetachHeld, storage.hasDetachFinalizer("server-storage"))
 		if applies == 1 {
 			require.NoError(t, storage.client.Delete(storage.ctx, storage.getClaim("server-storage")))
 		}
-	})
+	}
 	before := len(run.sw.History())
 	require.NoError(t, run.realize(), "one pass changes the port again")
 
@@ -335,7 +361,7 @@ func TestAClaimDeletedMidChangeLeavesThePortBeforeItsFinalizer(t *testing.T) {
 	require.False(t, provider.hasDetachFinalizer("install-1-boot"))
 	customer.requireReported("server-data", metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
 	run.requireConsistent()
-	run.requireSafeHistory(networkOf(provider))
+	run.requireSafeHistory()
 }
 
 func networksOf(memberships []physicalrealizer.Membership) []types.NamespacedName {
@@ -381,7 +407,7 @@ func TestAPartialChangeHoldsFinalizersUntilTheSwitchRecovers(t *testing.T) {
 	require.Equal(t, []types.NamespacedName{networkOf(customer)}, networksOf(run.carried()))
 	require.False(t, provider.hasDetachFinalizer("install-1-boot"))
 	customer.requireReported("server-data", metav1.ConditionTrue, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
-	run.requireSafeHistory(networkOf(provider))
+	run.requireSafeHistory()
 }
 
 func TestASwitchThatCannotBeReadRemovesNoFinalizer(t *testing.T) {
@@ -403,18 +429,17 @@ func TestASwitchThatCannotBeReadRemovesNoFinalizer(t *testing.T) {
 		networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork)
 
 	run.sw.FailReads(false)
-	run.sw.BeforeApply(func(physicalrealizer.Port, []physicalrealizer.Membership) { run.sw.FailReads(true) })
+	run.onApply = func() { run.sw.FailReads(true) }
 	require.ErrorIs(t, run.realize(), physicalrealizer.ErrSwitchUnreachable)
 	require.Empty(t, run.carried(), "the change landed")
 	require.True(t, s.hasDetachFinalizer("server-data"), "a change that cannot be read back proves nothing")
 
-	run.sw.BeforeApply(nil)
+	run.onApply = nil
 	run.sw.FailReads(false)
 	run.mustRealize()
 	require.False(t, s.hasDetachFinalizer("server-data"))
 }
 
-// failingStatus fails every status write to the kind it names.
 type failingStatus struct {
 	client.Client
 	kind client.Object
@@ -527,7 +552,7 @@ func TestAPortNeverCarriesTwoProjectsOrBootWithCustomer(t *testing.T) {
 	require.Equal(t, []types.NamespacedName{networkOf(provider)}, networksOf(run.carried()))
 
 	require.GreaterOrEqual(t, run.changes(), 6)
-	run.requireSafeHistory(networkOf(provider))
+	run.requireSafeHistory()
 }
 
 // claimCacheMissingDeletion answers claim reads the way a cache that has not
@@ -559,4 +584,91 @@ func TestTheRealizerReadsFromTheAPIServer(t *testing.T) {
 	run.mustRealize()
 	require.Empty(t, run.carried(), "a deletion the cache has not seen still takes the network off")
 	require.False(t, s.hasDetachFinalizer("server-data"))
+}
+
+type realizedStatus struct {
+	vlan       *int32
+	prepared   metav1.Condition
+	programmed metav1.Condition
+}
+
+func realizedStatusOf(vlan *int32, conditions []metav1.Condition) realizedStatus {
+	status := realizedStatus{vlan: vlan}
+	if c := apimeta.FindStatusCondition(conditions, networkingv1alpha.NetworkInterfaceClaimPrepared); c != nil {
+		status.prepared = *c
+	}
+	if c := apimeta.FindStatusCondition(conditions, networkingv1alpha.NetworkInterfaceClaimProgrammed); c != nil {
+		status.programmed = *c
+	}
+	return status
+}
+
+func TestTheOperatorKeepsWhatTheRealizerReports(t *testing.T) {
+	s := newScenario(t, true, ipv4Only)
+	run := s.realizedPort()
+	s.bindPhysical("server-data", "")
+	run.mustRealize()
+
+	claim := s.getClaim("server-data")
+	iface, err := s.getInterface("server-data")
+	require.NoError(t, err)
+	wantClaim := realizedStatusOf(claim.Status.VLANID, claim.Status.Conditions)
+	wantInterface := realizedStatusOf(iface.Status.VLANID, iface.Status.Conditions)
+	require.NotNil(t, wantClaim.vlan)
+	require.Equal(t, metav1.ConditionTrue, wantClaim.programmed.Status)
+
+	s.createSubnet("default-v4", s.networkContextName("default"), networkingv1alpha.IPv4Protocol, "192.0.2.0", 24)
+	for range 2 {
+		s.reconcile(s.getClaim("server-data"))
+		s.reconcileInterface("server-data")
+	}
+
+	claim = s.getClaim("server-data")
+	iface, err = s.getInterface("server-data")
+	require.NoError(t, err)
+	require.NotEmpty(t, iface.Spec.Addresses[0].Gateway, "the operator wrote the interface after the realizer")
+	require.Equal(t, wantClaim, realizedStatusOf(claim.Status.VLANID, claim.Status.Conditions))
+	require.Equal(t, wantInterface, realizedStatusOf(iface.Status.VLANID, iface.Status.Conditions))
+	s.requireReady("server-data")
+}
+
+func TestAPortWhoseHoldAnOperatorDeletesIsCleared(t *testing.T) {
+	s := newScenario(t, true, ipv4Only)
+	run := s.realizedPort()
+	s.bindPhysical("server-data", "")
+	run.mustRealize()
+	require.Len(t, run.carried(), 1)
+
+	require.NoError(t, s.client.Delete(s.ctx, s.requireHold(realizedPort)))
+	run.mustRealize()
+	require.Empty(t, run.carried(), "a port no hold names carries nothing")
+	requireProgrammed(t, s.getClaim("server-data").Status.Conditions, metav1.ConditionFalse,
+		networkingv1alpha.NetworkInterfaceClaimReasonPortChanging)
+
+	s.reconcile(s.getClaim("server-data"))
+	s.requireHold(realizedPort)
+	run.mustRealize()
+	run.requireCarriedOn(s, "server-data")
+}
+
+func TestAPortReleasedByBreakGlassIsCleared(t *testing.T) {
+	s := newScenario(t, true, ipv4Only)
+	run := s.realizedPort()
+	s.bindPhysical("server-data", "")
+	run.mustRealize()
+
+	s.detach("server-data")
+	require.NoError(t, s.client.Delete(s.ctx, s.getClaim("server-data")))
+	s.reconcile(s.getClaim("server-data"))
+	require.True(t, s.claimGone("server-data"))
+	_, err := s.getHold(realizedPort)
+	require.True(t, apierrors.IsNotFound(err))
+	require.Len(t, run.carried(), 1, "the realizer has not seen the release yet")
+
+	run.mustRealize()
+	require.Empty(t, run.carried())
+
+	_, err = run.realizer.Reconcile(s.ctx, physicalrealizer.SweepRequest)
+	require.NoError(t, err)
+	require.Empty(t, run.carried())
 }

@@ -106,12 +106,6 @@ const (
 	// its addresses meanwhile.
 	NetworkInterfaceClaimReasonBootAttachmentActive = "BootAttachmentActive"
 
-	// NetworkInterfaceClaimReasonPortUnverified means the physical realizer
-	// could not confirm what the claim's switch port carries, because the
-	// switch failed, only partly applied a change, or could not be read. It
-	// keeps retrying.
-	NetworkInterfaceClaimReasonPortUnverified = "PortUnverified"
-
 	// NetworkInterfaceClaimReasonPortCarriesNetwork means the switch port
 	// carries the claim's network, as read back from the switch.
 	NetworkInterfaceClaimReasonPortCarriesNetwork = "PortCarriesNetwork"

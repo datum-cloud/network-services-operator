@@ -331,6 +331,18 @@ func TestProjectedInterfaceReportsDNSSettings(t *testing.T) {
 	require.Equal(t, "fd53::53", source.Status.DNS.Nameservers[0], "the projection must own its DNS settings")
 }
 
+func TestProjectedInterfaceReportsTheVLANItsNetworkArrivesOn(t *testing.T) {
+	vlan := int32(100)
+	source := &networkingv1alpha.NetworkInterface{Status: networkingv1alpha.NetworkInterfaceStatus{VLANID: &vlan}}
+
+	projection := projectedInterface(source, "ord-1")
+	require.Equal(t, &vlan, projection.Status.VLANID, "a tagged network must not read as untagged on the copy")
+	*projection.Status.VLANID = 200
+	require.Equal(t, int32(100), vlan, "the projection must own its VLAN")
+
+	require.Nil(t, projectedInterface(&networkingv1alpha.NetworkInterface{}, "ord-1").Status.VLANID)
+}
+
 func TestCopyDropsWhatOnlyMeansSomethingOnTheCell(t *testing.T) {
 	v := newVisibility(t)
 	v.interfaceOnCell()

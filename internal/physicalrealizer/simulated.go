@@ -7,22 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 )
 
 const maxVLAN = 4094
 
-// ErrSwitchUnreachable is what a simulated switch told to fail returns.
 var ErrSwitchUnreachable = errors.New("simulated switch is unreachable")
 
-// Change is one state a simulated port reached.
 type Change struct {
 	Port    Port
 	Carried []Membership
 }
 
-// SimulatedSwitch is an in-memory Driver. Its hooks make a change fail, apply
-// only partly, or make reads fail, and it records every state a port reaches.
+// SimulatedSwitch is an in-memory Driver that records every state a port
+// reaches, with hooks to fail or partly apply changes and to fail reads.
 type SimulatedSwitch struct {
 	mu             sync.Mutex
 	ports          map[Port][]Membership
@@ -39,7 +38,6 @@ func NewSimulatedSwitch() *SimulatedSwitch {
 	return &SimulatedSwitch{ports: map[Port][]Membership{}}
 }
 
-// FailApplies makes the next n changes fail without touching the port.
 func (s *SimulatedSwitch) FailApplies(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -54,28 +52,24 @@ func (s *SimulatedSwitch) PartlyApply(n int) {
 	s.partialApplies = n
 }
 
-// FailReads makes every read fail until it is called with false.
 func (s *SimulatedSwitch) FailReads(fail bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failReads = fail
 }
 
-// BeforeApply runs hook at the start of every change, before the port moves.
 func (s *SimulatedSwitch) BeforeApply(hook func(Port, []Membership)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.beforeApply = hook
 }
 
-// Carried reports what port carries, without the read hooks.
 func (s *SimulatedSwitch) Carried(port Port) []Membership {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.ports[port])
 }
 
-// History returns every state any port reached, in order.
 func (s *SimulatedSwitch) History() []Change {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,6 +120,22 @@ func (s *SimulatedSwitch) Read(_ context.Context, port Port) ([]Membership, erro
 		return nil, fmt.Errorf("reading %s %s: %w", port.Switch, port.Name, ErrSwitchUnreachable)
 	}
 	return slices.Clone(s.ports[port]), nil
+}
+
+func (s *SimulatedSwitch) Ports(_ context.Context) ([]Port, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failReads {
+		return nil, fmt.Errorf("listing ports: %w", ErrSwitchUnreachable)
+	}
+	ports := make([]Port, 0, len(s.ports))
+	for port := range s.ports {
+		ports = append(ports, port)
+	}
+	slices.SortFunc(ports, func(a, b Port) int {
+		return strings.Compare(a.Switch+"\x00"+a.Name, b.Switch+"\x00"+b.Name)
+	})
+	return ports, nil
 }
 
 func validMemberships(memberships []Membership) error {

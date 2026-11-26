@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package physicalrealizer is a test realizer for physical network interfaces.
-// It programs switch ports from SwitchPortHolds through a Driver, and follows
-// the same contract a production realizer must.
+// Package physicalrealizer is a test realizer that programs a simulated switch.
 package physicalrealizer
 
 import (
@@ -15,26 +13,25 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-// Port is one switch port, in the names network operations uses for it.
 type Port struct {
 	Switch string
 	Name   string
 }
 
-// Membership is one network a port carries. A VLAN of zero means the network
-// arrives untagged.
+// Membership is one network a port carries. A VLAN of zero is untagged.
 type Membership struct {
 	Network   types.NamespacedName
 	VLAN      int32
 	Isolation networkingv1alpha.NetworkInterfaceIsolation
 }
 
-// Driver changes and reads one switch port at a time. Apply replaces
-// everything the port carries in one change. Read reports what the port
-// carries now, which is the only proof a change took effect.
+// Driver changes one switch port at a time. Apply replaces everything a port
+// carries in one change, and only Read proves it took effect. Ports lists every
+// port that carries anything.
 type Driver interface {
 	Apply(ctx context.Context, port Port, desired []Membership) error
 	Read(ctx context.Context, port Port) ([]Membership, error)
+	Ports(ctx context.Context) ([]Port, error)
 }
 
 func sortedMemberships(memberships []Membership) []Membership {

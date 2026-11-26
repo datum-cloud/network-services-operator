@@ -77,7 +77,6 @@ type CellControllerManager struct {
 	PhysicalRealizer PhysicalRealizerConfig `json:"physicalRealizer,omitempty"`
 }
 
-// PhysicalRealizerDriverSimulated programs an in-memory switch.
 const PhysicalRealizerDriverSimulated = "simulated"
 
 // +k8s:deepcopy-gen=true

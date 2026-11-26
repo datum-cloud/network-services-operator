@@ -4,6 +4,7 @@ package physicalrealizer
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -66,23 +67,31 @@ func TestABootClaimCarriesItsNetworkAloneAndUntagged(t *testing.T) {
 		Network: network("ns-provider-example", "boot"), Isolation: networkingv1alpha.NetworkInterfaceIsolationPrivate,
 	}}, p.carried())
 	require.Len(t, p.networks, 2, "network claims keep their VLANs while the boot claim holds the port")
-	require.Zero(t, p.networks[0].membership.VLAN)
+	require.NotZero(t, p.networks[0].membership.VLAN)
 	require.NotZero(t, p.networks[1].membership.VLAN)
 }
 
-func TestNetworkClaimsAreOneUntaggedAndTheRestTagged(t *testing.T) {
-	names := []string{"app", "storage", "backup", "metrics"}
+func customerEntries(names ...string) []recorded {
 	entries := make([]recorded, 0, len(names))
 	for _, name := range names {
 		entries = append(entries, entryFor(physicalClaim("ns-customer-example", "server-"+name, name, ""), false))
 	}
+	return entries
+}
 
-	carried := planFor(testHold(), entries).carried()
+func vlansOf(carried []Membership) map[types.NamespacedName]int32 {
+	vlans := map[types.NamespacedName]int32{}
+	for _, m := range carried {
+		vlans[m.Network] = m.VLAN
+	}
+	return vlans
+}
+
+func TestEveryNetworkClaimArrivesTagged(t *testing.T) {
+	carried := planFor(testHold(), customerEntries("app", "storage", "backup", "metrics")).carried()
 	require.Len(t, carried, 4)
-	require.Equal(t, network("ns-customer-example", "app"), carried[0].Network)
-	require.Zero(t, carried[0].VLAN, "the first network claim recorded arrives untagged")
 	seen := map[int32]bool{}
-	for _, m := range carried[1:] {
+	for _, m := range carried {
 		require.GreaterOrEqual(t, m.VLAN, int32(firstSimulatedVLAN))
 		require.LessOrEqual(t, m.VLAN, int32(maxVLAN))
 		require.False(t, seen[m.VLAN], "VLAN %d is used twice", m.VLAN)
@@ -90,7 +99,46 @@ func TestNetworkClaimsAreOneUntaggedAndTheRestTagged(t *testing.T) {
 		require.Equal(t, networkingv1alpha.NetworkInterfaceIsolationShared, m.Isolation)
 	}
 	require.NoError(t, validMemberships(carried))
-	require.Equal(t, carried, planFor(testHold(), entries).carried(), "the VLANs are deterministic")
+	require.Len(t, planFor(testHold(), customerEntries("app")).carried(), 1)
+	require.NotZero(t, planFor(testHold(), customerEntries("app")).carried()[0].VLAN, "even a lone network is tagged")
+}
+
+func TestASurvivingNetworkKeepsItsVLAN(t *testing.T) {
+	names := []string{"app", "storage", "backup", "metrics"}
+	all := vlansOf(planFor(testHold(), customerEntries(names...)).carried())
+	reversed := vlansOf(planFor(testHold(), customerEntries("metrics", "backup", "storage", "app")).carried())
+	require.Equal(t, all, reversed, "the order claims were recorded in does not matter")
+
+	for i := range names {
+		survivors := slices.Delete(slices.Clone(names), i, i+1)
+		for network, vlan := range vlansOf(planFor(testHold(), customerEntries(survivors...)).carried()) {
+			require.Equal(t, all[network], vlan, "%s changed VLAN when %s left", network, names[i])
+		}
+	}
+}
+
+func TestCollidingNetworksAreTaggedInNameOrder(t *testing.T) {
+	slot := func(name string) int32 {
+		return simulatedVLAN(network("ns-customer-example", name), map[int32]bool{})
+	}
+	seen := map[int32]string{}
+	var first, second string
+	for i := 0; first == ""; i++ {
+		name := fmt.Sprintf("net-%d", i)
+		if other, ok := seen[slot(name)]; ok {
+			first, second = other, name
+		}
+		seen[slot(name)] = name
+	}
+	if second < first {
+		first, second = second, first
+	}
+
+	forward := vlansOf(planFor(testHold(), customerEntries(first, second)).carried())
+	backward := vlansOf(planFor(testHold(), customerEntries(second, first)).carried())
+	require.Equal(t, forward, backward)
+	require.Equal(t, slot(first), forward[network("ns-customer-example", first)], "the name sorted first takes its own VLAN")
+	require.NotEqual(t, forward[network("ns-customer-example", first)], forward[network("ns-customer-example", second)])
 }
 
 func TestSimulatedVLANsProbePastACollision(t *testing.T) {

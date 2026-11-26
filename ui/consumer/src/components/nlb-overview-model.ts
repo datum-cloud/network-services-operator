@@ -1,6 +1,9 @@
+import { isIpv4QuotaRefusal } from '../lib/ipv4-quota';
 import type {
   BadgeType,
   NetworkLoadBalancer,
+  NetworkLoadBalancerAddressStatus,
+  NetworkLoadBalancerEndpoint,
   NetworkLoadBalancerListener,
   NetworkLoadBalancerRoute,
   NetworkService,
@@ -21,6 +24,10 @@ export interface ListenerRow {
   /** The hostname for that same location's address, once one is generated. */
   hostname?: string;
   locations: number;
+  ipv6Address?: string;
+  ipv4Address?: string;
+  ipv4Requested?: boolean;
+  ipv4?: Ipv4RowState;
   route?: NetworkLoadBalancerRoute;
   backend?: NetworkLoadBalancerRoute['backends'][number];
   service?: NetworkService;
@@ -114,17 +121,101 @@ function listenerStatus(
   return { label: 'Serving', type: 'success' };
 }
 
+export type Ipv4RowState = 'none' | 'pending' | 'allocated' | 'refused' | 'failed';
+
+export interface Ipv4Failure {
+  location: string;
+  message?: string;
+}
+
+export interface Ipv4Issues {
+  refused: string[];
+  failed: Ipv4Failure[];
+}
+
+function addressStatuses(endpoint: NetworkLoadBalancerEndpoint): NetworkLoadBalancerAddressStatus[] {
+  return endpoint.addressStatuses ?? endpoint.addresses.map((a) => ({ ...a, conditions: [] }));
+}
+
+function valueOf(endpoint: NetworkLoadBalancerEndpoint, family: string): string | undefined {
+  return addressStatuses(endpoint).find((a) => a.family === family && a.value)?.value;
+}
+
+export function cleanConditionMessage(message: string | undefined): string | undefined {
+  const cleaned = message?.replace(/^.*?\bis forbidden:\s*/, '').trim();
+  return cleaned || undefined;
+}
+
+type Ipv4Outcome = { kind: 'allocated' | 'pending' | 'refused' } | { kind: 'failed'; message?: string };
+
+function ipv4Outcome(address: NetworkLoadBalancerAddressStatus): Ipv4Outcome {
+  if (address.value) return { kind: 'allocated' };
+  if (isIpv4QuotaRefusal(address)) return { kind: 'refused' };
+  const allocated = address.conditions.find((c) => c.type === 'Allocated');
+  if (allocated?.status === 'False' && allocated.reason === 'AllocationFailed') {
+    return { kind: 'failed', message: cleanConditionMessage(allocated.message) };
+  }
+  return { kind: 'pending' };
+}
+
+function ipv4Entries(endpoints: NetworkLoadBalancerEndpoint[]) {
+  return endpoints.flatMap((endpoint) =>
+    addressStatuses(endpoint)
+      .filter((a) => a.family === 'IPv4')
+      .map((a) => ({ location: endpoint.location, outcome: ipv4Outcome(a) }))
+  );
+}
+
+/** Locations whose IPv4 address was refused on quota or failed for another reason. */
+export function ipv4Issues(nlb: NetworkLoadBalancer): Ipv4Issues {
+  const entries = ipv4Entries(nlb.endpoints);
+  const refused = [
+    ...new Set(entries.filter((e) => e.outcome.kind === 'refused').map((e) => e.location)),
+  ].sort();
+  const failed = new Map<string, Ipv4Failure>();
+  for (const { location, outcome } of entries) {
+    if (outcome.kind === 'failed' && !failed.has(location)) {
+      failed.set(location, { location, message: outcome.message });
+    }
+  }
+  return {
+    refused,
+    failed: [...failed.values()].sort((a, b) => a.location.localeCompare(b.location)),
+  };
+}
+
+function rowIpv4State(requested: boolean, endpoints: NetworkLoadBalancerEndpoint[]): Ipv4RowState {
+  const kinds = new Set(ipv4Entries(endpoints).map((e) => e.outcome.kind));
+  if (kinds.has('refused')) return 'refused';
+  if (kinds.has('failed')) return 'failed';
+  if (kinds.has('allocated')) return 'allocated';
+  return kinds.size > 0 || requested ? 'pending' : 'none';
+}
+
+/** The worst IPv4 state across an NLB's listeners, for the list. */
+export function nlbIpv4State(nlb: NetworkLoadBalancer): Ipv4RowState {
+  const requested = Object.values(nlb.addressFamilies ?? {}).some((f) => f.includes('IPv4'));
+  return rowIpv4State(requested, nlb.endpoints);
+}
+
 export function toListenerRows(
   nlb: NetworkLoadBalancer,
   routes: NetworkLoadBalancerRoute[],
   services: NetworkService[]
 ): ListenerRow[] {
   return nlb.listeners.map((listener) => {
-    const endpoints = nlb.endpoints.filter(
-      (e) => e.requestName === listener.addressRef && e.addresses.length > 0
-    );
-    const address = endpoints[0]?.addresses[0]?.value;
-    const hostname = endpoints[0]?.hostname;
+    const requestEndpoints = nlb.endpoints.filter((e) => e.requestName === listener.addressRef);
+    const endpoints = requestEndpoints.filter((e) => e.addresses.length > 0);
+    const primary = endpoints.find((e) => valueOf(e, 'IPv6')) ?? endpoints[0];
+    const ipv6Address = primary && valueOf(primary, 'IPv6');
+    const ipv4Source = primary && valueOf(primary, 'IPv4') ? primary : endpoints.find((e) => valueOf(e, 'IPv4'));
+    const ipv4Address = ipv4Source && valueOf(ipv4Source, 'IPv4');
+    const address = ipv6Address ?? primary?.addresses[0]?.value;
+    const hostname = primary?.hostname;
+    const ipv4Requested =
+      (listener.addressRef !== undefined &&
+        !!nlb.addressFamilies?.[listener.addressRef]?.includes('IPv4')) ||
+      requestEndpoints.some((e) => addressStatuses(e).some((a) => a.family === 'IPv4'));
     const match = routeFor(nlb.name, listener, routes);
     const backend = match?.route.backends[0];
     const service = services.find((s) => s.name === backend?.name);
@@ -134,6 +225,10 @@ export function toListenerRows(
       address,
       hostname,
       locations: endpoints.length,
+      ipv6Address,
+      ipv4Address,
+      ipv4Requested,
+      ipv4: rowIpv4State(ipv4Requested, requestEndpoints),
       route: match?.route,
       backend,
       service,

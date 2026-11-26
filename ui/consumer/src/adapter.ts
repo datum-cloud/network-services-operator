@@ -419,7 +419,7 @@ interface RawNetworkLoadBalancerListener {
 
 interface RawNetworkLoadBalancerSpec {
   networkRef?: { name?: string };
-  exposure?: { addresses?: { name?: string }[] };
+  exposure?: { addresses?: { name?: string; families?: string[] }[] };
   listeners?: RawNetworkLoadBalancerListener[];
 }
 
@@ -427,7 +427,7 @@ interface RawNetworkLoadBalancerEndpointStatus {
   requestName?: string;
   location?: string;
   canonicalHostname?: string;
-  addresses?: { family?: string; value?: string }[];
+  addresses?: { family?: string; value?: string; conditions?: RawCondition[] }[];
 }
 
 interface RawNetworkLoadBalancerStatus {
@@ -477,6 +477,12 @@ export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadB
     networkName: raw.spec?.networkRef?.name,
     listeners: toNetworkLoadBalancerListeners(raw.spec?.listeners),
     addressNames: (raw.spec?.exposure?.addresses ?? []).map((a) => a.name ?? ''),
+    addressFamilies: Object.fromEntries(
+      (raw.spec?.exposure?.addresses ?? []).map((a) => [
+        a.name ?? '',
+        (a.families ?? []).filter((f): f is 'IPv4' | 'IPv6' => f === 'IPv4' || f === 'IPv6'),
+      ])
+    ),
     endpoints: (raw.status?.endpoints ?? []).map((e) => ({
       requestName: e.requestName ?? '',
       location: e.location ?? '',
@@ -484,6 +490,16 @@ export function toNetworkLoadBalancer(raw: RawNetworkLoadBalancer): NetworkLoadB
       addresses: (e.addresses ?? []).flatMap((a) =>
         a.value ? [{ family: a.family ?? '', value: a.value }] : []
       ),
+      addressStatuses: (e.addresses ?? []).map((a) => ({
+        family: a.family ?? '',
+        value: a.value || undefined,
+        conditions: (a.conditions ?? []).map((c) => ({
+          type: c.type ?? '',
+          status: c.status ?? 'Unknown',
+          reason: c.reason,
+          message: c.message,
+        })),
+      })),
     })),
     readyStatus,
     readyReason: ready?.reason,

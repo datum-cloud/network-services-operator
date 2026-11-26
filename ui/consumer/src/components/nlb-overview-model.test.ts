@@ -1,4 +1,10 @@
-import { overviewSummary, toListenerRows } from './nlb-overview-model';
+import {
+  cleanConditionMessage,
+  ipv4Issues,
+  nlbIpv4State,
+  overviewSummary,
+  toListenerRows,
+} from './nlb-overview-model';
 import type { NetworkLoadBalancer, NetworkLoadBalancerRoute, NetworkService } from '../schema';
 import { describe, expect, it } from 'vitest';
 
@@ -160,5 +166,101 @@ describe('listener status while the data plane catches up', () => {
   it('spells out a reason it has no copy for', () => {
     const route = makeRoute('r', [parent({ status: 'False', reason: 'SomethingNewBroke' })]);
     expect(toListenerRows(makeNlb(), [route], [])[0].status.label).toBe('Something new broke');
+  });
+});
+
+const QUOTA_MESSAGE =
+  'ipclaims.ipam.miloapis.com "c" is forbidden: You\'ve reached your quota for this resource type (1/1).';
+
+type AddressStatus = NonNullable<NetworkLoadBalancer['endpoints'][number]['addressStatuses']>[number];
+
+function v4(overrides: Partial<AddressStatus> = {}): AddressStatus {
+  return { family: 'IPv4', conditions: [], ...overrides };
+}
+
+function failed(message: string): AddressStatus {
+  return v4({ conditions: [{ type: 'Allocated', status: 'False', reason: 'AllocationFailed', message }] });
+}
+
+function dualStack(iad: AddressStatus, lhr: AddressStatus): NetworkLoadBalancer {
+  const ep = (location: string, v6: string, ipv4: AddressStatus) => ({
+    requestName: 'udp-7777',
+    location,
+    addresses: [
+      ...(ipv4.value ? [{ family: 'IPv4', value: ipv4.value }] : []),
+      { family: 'IPv6', value: v6 },
+    ],
+    addressStatuses: [ipv4, { family: 'IPv6', value: v6, conditions: [] }],
+  });
+  return makeNlb({
+    addressFamilies: { 'udp-7777': ['IPv6', 'IPv4'] },
+    endpoints: [ep('iad', '2001:db8::3', iad), ep('lhr', '2001:db8::4', lhr)],
+  });
+}
+
+describe('IPv4 on listener rows', () => {
+  it('picks each address by family, whatever order the status lists them in', () => {
+    const [row] = toListenerRows(dualStack(v4({ value: '203.0.113.7' }), v4({ value: '203.0.113.8' })), [], []);
+    expect(row).toMatchObject({
+      address: '2001:db8::3',
+      ipv6Address: '2001:db8::3',
+      ipv4Address: '203.0.113.7',
+      ipv4Requested: true,
+      ipv4: 'allocated',
+    });
+  });
+
+  it('is pending when IPv4 is requested and not yet allocated', () => {
+    const [row] = toListenerRows(makeNlb({ addressFamilies: { 'udp-7777': ['IPv6', 'IPv4'] } }), [], []);
+    expect(row).toMatchObject({ ipv4Requested: true, ipv4: 'pending', ipv4Address: undefined });
+  });
+
+  it('is pending while Allocated is still Unknown', () => {
+    const allocating = v4({ conditions: [{ type: 'Allocated', status: 'Unknown', reason: 'Pending' }] });
+    expect(toListenerRows(dualStack(allocating, allocating), [], [])[0].ipv4).toBe('pending');
+  });
+
+  it('marks a quota refusal, keeping the address another location got', () => {
+    const [row] = toListenerRows(dualStack(v4({ value: '203.0.113.7' }), failed(QUOTA_MESSAGE)), [], []);
+    expect(row).toMatchObject({ ipv4: 'refused', ipv4Address: '203.0.113.7' });
+  });
+
+  it('marks an allocation failure that is not about quota', () => {
+    const [row] = toListenerRows(dualStack(failed('pool exhausted'), failed('pool exhausted')), [], []);
+    expect(row.ipv4).toBe('failed');
+  });
+
+  it('leaves an IPv6-only listener as it was', () => {
+    const [row] = toListenerRows(makeNlb(), [], []);
+    expect(row).toMatchObject({ address: '2001:db8::3', ipv4Requested: false, ipv4: 'none' });
+    expect(nlbIpv4State(makeNlb())).toBe('none');
+  });
+});
+
+describe('ipv4Issues', () => {
+  it('lists refused locations and non-quota failures with their cleaned message', () => {
+    const nlb = dualStack(
+      failed('ipclaims.ipam.miloapis.com "c" is forbidden: pool exhausted'),
+      failed(QUOTA_MESSAGE)
+    );
+    expect(ipv4Issues(nlb)).toEqual({
+      refused: ['lhr'],
+      failed: [{ location: 'iad', message: 'pool exhausted' }],
+    });
+    expect(nlbIpv4State(nlb)).toBe('refused');
+  });
+
+  it('is empty when every IPv4 address is allocated', () => {
+    const nlb = dualStack(v4({ value: '203.0.113.7' }), v4({ value: '203.0.113.8' }));
+    expect(ipv4Issues(nlb)).toEqual({ refused: [], failed: [] });
+    expect(nlbIpv4State(nlb)).toBe('allocated');
+  });
+});
+
+describe('cleanConditionMessage', () => {
+  it('drops the API refusal lead and keeps plain messages', () => {
+    expect(cleanConditionMessage('x "y" is forbidden: no')).toBe('no');
+    expect(cleanConditionMessage('plain words')).toBe('plain words');
+    expect(cleanConditionMessage('  ')).toBeUndefined();
   });
 });

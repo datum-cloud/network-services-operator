@@ -318,6 +318,9 @@ spec:
 The new fields have no server-side defaults. A writer that compares the claim it
 reads back with the claim it wrote, as Fleet does, sees no field it did not set.
 
+The attachment point is read only from these typed fields. NSO ignores any
+annotation that names a MAC address, switch or port.
+
 ### Boot claims and network claims
 
 A physical claim is one of two kinds:
@@ -618,6 +621,13 @@ then is refused as already existing, and the writer retries once the old claim
 is gone. Naming a boot claim from its operation means a new operation never
 needs an old operation's name.
 
+The claim's absence is the whole contract for a release. A provider confirms an
+address is free by finding the claim gone, not by reading IPAM itself. The
+names NSO gives its IPAM claims are internal. An address can already be held
+under either of two names, one of them specific to the location, and NSO may
+change how it names them. NSO checks every name an address can be held under
+before it lets the claim go.
+
 The verified release in step 4 applies to physical claims only. Today, for
 every mode, NSO finds each IPAM claim, deletes it, and removes its own
 finalizer without reading the IPAM claim again. Extending step 4 to compute's
@@ -671,7 +681,10 @@ there.
 
 - **Addresses.** A boot claim's address comes from IPAM through NSO, like any
   claim's. The provider chooses the boot network's address families. Firmware
-  usually needs IPv4.
+  usually needs IPv4. Once bound, the claim reports the address in
+  `status.addresses`, one entry per family, each with its `family`, `address`
+  and `gateway`. A reader picks the entry by `family: IPv4`, not by its place
+  in the list, because the list's order is not part of the contract.
 - **Lifetime.** The provider names a boot claim from the operation it serves,
   creates it before the operation starts and deletes it when the operation ends.
   NSO adds no lifetime of its own.
@@ -824,10 +837,8 @@ not an agreed contract.
 
 Where the design differs, NSO's model points somewhere better:
 
-- **Knowing a boot claim.** If NSO took precedence from the network a claim
-  names, it would need a way to mark a network as a boot network, and any
-  project can write its own networks. `purpose: Boot` sits on a claim that only
-  providers can write, in a namespace only providers may use for it.
+- **Knowing a boot claim.** See
+  [the API shapes Fleet's boot attachment work assumes](#the-api-shapes-fleets-boot-attachment-work-assumes).
 - **The boot address.** NSO allocates through IPAM for every claim, so a boot
   claim without an address would be a special case in NSO that Fleet would drop
   again. Both pieces of NSO land together, so there is no time when NSO attaches
@@ -840,6 +851,49 @@ Where the design differs, NSO's model points somewhere better:
 - **The VLAN a network arrives on.** A port carrying two customer networks
   delivers at least one of them tagged. Without the tag, the installer cannot
   configure that interface.
+
+### The API shapes Fleet's boot attachment work assumes
+
+Fleet's boot attachment work, built against a test realizer and off by
+default, assumes six NSO API shapes. None of them is an agreed contract.
+
+| Fleet assumes | This design | Verdict |
+|---|---|---|
+| 1. A `Physical` attachment mode for a bare-metal server | [The Physical attachment mode](#the-physical-attachment-mode) | Adopted as is |
+| 2. The NIC's MAC address, switch and port on the claim, passed as annotations today | Typed, validated, immutable fields in `spec.attachmentPoint`. Annotations are ignored. | Adopted, with typed fields replacing the annotations |
+| 3. A boot attachment claim on a provider-owned boot network, isolated between servers, that puts the port on the boot network while it exists and reports `Programmed` | A physical claim with `purpose: Boot`, private by default, accepted only in a provider project | Changed. NSO knows a boot claim from `purpose: Boot`, not from the network it names. |
+| 4. The bound provisioning address in the claim's status, read as the first IPv4 entry | `status.addresses`, one entry per family | Changed. Read the entry whose `family` is IPv4, not the first entry. |
+| 5. NSO keeps the claim until the port is detached, then releases the address, with a stable link from the claim to its IPAM claim so Fleet can confirm the address is free | [Releasing a physical claim, and proving it](#releasing-a-physical-claim-and-proving-it) | Release adopted. The IPAM link is rejected. The claim's absence is the confirmation. |
+| 6. A port's membership follows its claims. A boot claim puts the port on the boot network only, with customer claims prepared but not programmed. Otherwise the port carries the customer networks. Each change is one step. | [What a port carries](#what-a-port-carries) and [the realizer's rules](#the-physical-realizer) | Adopted, with the realizer's safety rules added |
+
+The reasons for each change and rejection:
+
+- **Typed fields, not annotations.** A field can be validated, required for
+  `Physical`, frozen once written and kept out of the customer's copy of the
+  interface. An annotation can be none of those. Admission also limits who may
+  write the typed fields, and it cannot do the same for an annotation key
+  without matching every write to every claim.
+- **Knowing a boot claim by its purpose.** Taking boot precedence from the
+  network a claim names would need a way to mark a network as a boot network,
+  and any project can write its own networks. `purpose: Boot` sits on a claim
+  only providers can write, in a namespace only providers may use for it.
+  Isolation follows the purpose, so Fleet gets an isolated boot claim without
+  setting anything else.
+- **Picking the address by family.** NSO publishes one address per family and
+  promises nothing about their order. Reading the first entry works for a
+  claim that asks only for IPv4 and breaks quietly the day a boot network also
+  carries IPv6.
+- **No IPAM link.** If Fleet also verified IPAM, two components would decide
+  when an address is free, and a change in NSO's naming would break Fleet
+  without a single NSO field changing. NSO already holds the claim until every
+  IPAM claim it could have used is gone and no IPAM allocation names one, so
+  the claim's absence already proves what the link was meant to prove. The
+  link would also have to name a resource in IPAM's own API, which is a
+  contract IPAM would have to agree to.
+- **Safety rules on the handover.** Fleet's model of what a port carries is
+  NSO's. The realizer adds the steps that keep it honest when a switch
+  misbehaves: it withdraws `Programmed` before a change, reads the port back,
+  and keeps every detach finalizer until the read-back matches.
 
 ## Failure and recovery
 
@@ -907,6 +961,13 @@ tests for concurrency, authorization, lifecycle and recovery.
 - **A port NSO cannot release.** This design proposes a break-glass group that
   may remove a detach finalizer after confirming the port on the switch. Who is
   in it, and who confirms the port, needs an owner.
+- **Fleet relies on the claim's absence to confirm a release.** Fleet's boot
+  attachment work reads NSO's IPAM claim names to confirm an address is free.
+  This design keeps those names internal and makes the claim's absence the
+  confirmation. Fleet must agree to drop its IPAM check for NSO claims.
+- **Fleet moves the attachment point from annotations to typed fields, and
+  reads the IPv4 address by family.** Both are changes to Fleet's boot
+  attachment work.
 - **Boot addresses from the first delivery.** Fleet plans an address-less boot
   claim and a separate IPAM claim at first. This design gives every boot claim
   its address from the start. Fleet must agree to skip the interim step, or ask

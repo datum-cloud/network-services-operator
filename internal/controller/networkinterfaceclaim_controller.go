@@ -66,6 +66,10 @@ const (
 	// Nothing watches the network, the namespace or IPAM, so a rejected claim
 	// needs its own way back.
 	rejectedClaimRetryInterval = time.Minute
+
+	// IPAM sends no event when it finishes releasing, so a physical claim
+	// waiting on it looks again.
+	unverifiedReleaseRetryInterval = 10 * time.Second
 )
 
 // NetworkInterfaceClaimReconciler binds a NetworkInterfaceClaim to a
@@ -131,7 +135,7 @@ func (r *NetworkInterfaceClaimReconciler) reconcileClaim(
 	}
 
 	if !claim.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.release(ctx, cl, &claim)
+		return r.release(ctx, cl, &claim)
 	}
 
 	if controllerutil.AddFinalizer(&claim, networkInterfaceClaimFinalizer) {
@@ -1496,71 +1500,84 @@ func (r *NetworkInterfaceClaimReconciler) release(
 	ctx context.Context,
 	cl client.Client,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
-) error {
+) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(claim, networkInterfaceClaimFinalizer) {
-		return nil
+		return ctrl.Result{}, nil
 	}
 
 	if err := markReleasing(ctx, cl, claim); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 
 	var iface networkingv1alpha.NetworkInterface
 	interfaceKey := client.ObjectKey{Namespace: claim.Namespace, Name: interfaceNameForClaim(claim)}
 	err := cl.Get(ctx, interfaceKey, &iface)
 	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed fetching network interface: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed fetching network interface: %w", err)
 	}
 
 	interfaceExists := err == nil
 	held := interfaceExists && iface.Spec.ClaimRef != nil &&
 		iface.Spec.ClaimRef.Name == claim.Name
 	retain := claim.Spec.ReclaimPolicy == networkingv1alpha.NetworkInterfaceReclaimPolicyRetain
+	verify := claim.Spec.AttachmentMode == networkingv1alpha.NetworkInterfaceAttachmentModePhysical && !retain
 
 	switch {
 	case held && retain:
 		iface.Spec.ClaimRef = nil
 		if err := cl.Update(ctx, &iface); err != nil {
-			return fmt.Errorf("failed unbinding network interface: %w", err)
+			return ctrl.Result{}, fmt.Errorf("failed unbinding network interface: %w", err)
 		}
 		if err := markInterfaceAvailable(ctx, cl, &iface); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 
 	case held:
 		if err := r.releaseAddresses(ctx, cl, claim.Namespace, &iface); err != nil {
-			return err
+			return ctrl.Result{}, err
+		}
+		// The interface records which names the addresses were allocated
+		// under, so it is kept until IPAM confirms none of them is held.
+		if verify {
+			if result, err := r.awaitRelease(ctx, cl, claim, allocationClaimName(&iface), allocationEntries(&iface)); err != nil || !result.IsZero() {
+				return result, err
+			}
 		}
 		if controllerutil.RemoveFinalizer(&iface, networkInterfaceFinalizer) {
 			if err := cl.Update(ctx, &iface); err != nil {
-				return fmt.Errorf("failed clearing network interface finalizer: %w", err)
+				return ctrl.Result{}, fmt.Errorf("failed clearing network interface finalizer: %w", err)
 			}
 		}
 		if err := cl.Delete(ctx, &iface); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed deleting network interface: %w", err)
+			return ctrl.Result{}, fmt.Errorf("failed deleting network interface: %w", err)
 		}
 
 	case interfaceExists && iface.Spec.ClaimRef == nil && retain:
 		// A previous attempt unbound the interface and failed before recording
 		// it. Nothing else writes phase for an unbound interface.
 		if err := markInterfaceAvailable(ctx, cl, &iface); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 
 	case !retain:
 		// The interface is gone, or never named this claim. Either way the
 		// addresses this claim allocated are named after it.
 		if err := r.releaseClaimAllocations(ctx, cl, claim); err != nil {
-			return err
+			return ctrl.Result{}, err
+		}
+		if verify && claim.Status.NetworkInterfaceRef != nil {
+			if result, err := r.awaitRelease(ctx, cl, claim, claim.Name, claimEntries(claim)); err != nil || !result.IsZero() {
+				return result, err
+			}
 		}
 	}
 
 	location, err := r.location(ctx)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	if err := r.syncNetworkContextHold(ctx, cl, claim.Namespace, claim.Spec.Network.Name, location); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 
 	controllerutil.RemoveFinalizer(claim, networkInterfaceClaimFinalizer)
@@ -1568,11 +1585,124 @@ func (r *NetworkInterfaceClaimReconciler) release(
 		// Deletion can complete after the initial read but before this finalizer
 		// write. The object being gone means the release is already complete.
 		if apierrors.IsNotFound(err) {
-			return nil
+			return ctrl.Result{}, nil
 		}
-		return fmt.Errorf("failed removing finalizer: %w", err)
+		return ctrl.Result{}, fmt.Errorf("failed removing finalizer: %w", err)
 	}
-	return nil
+	return ctrl.Result{}, nil
+}
+
+// awaitRelease holds a physical claim until IPAM no longer holds any of its
+// addresses here, under any name they could carry. A provider reads the
+// claim's absence as proof the address is free, and IPAM finishes a delete on
+// its own schedule.
+func (r *NetworkInterfaceClaimReconciler) awaitRelease(
+	ctx context.Context,
+	cl client.Client,
+	claim *networkingv1alpha.NetworkInterfaceClaim,
+	owner string,
+	entries []allocationEntry,
+) (ctrl.Result, error) {
+	address, err := r.addressStillHeld(ctx, cl, claim.Namespace, owner, entries)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if address == "" {
+		return ctrl.Result{}, nil
+	}
+
+	if apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha.NetworkInterfaceClaimReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             networkingv1alpha.NetworkInterfaceClaimReasonReleaseUnverified,
+		ObservedGeneration: claim.Generation,
+		Message:            fmt.Sprintf("IPAM still holds address %s, so the claim is kept until it is released", address),
+	}) {
+		if err := cl.Status().Update(ctx, claim); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed reporting an unverified release: %w", err)
+		}
+	}
+	return ctrl.Result{RequeueAfter: unverifiedReleaseRetryInterval}, nil
+}
+
+// addressStillHeld returns an address IPAM still holds for the claim in this
+// location, or nothing once every IPClaim the addresses could be named by is
+// gone and no IPAllocation names one. An IPClaim another location holds under
+// the same name is that location's, and does not count.
+func (r *NetworkInterfaceClaimReconciler) addressStillHeld(
+	ctx context.Context,
+	cl client.Client,
+	namespace string,
+	owner string,
+	entries []allocationEntry,
+) (string, error) {
+	if len(entries) == 0 {
+		return "", nil
+	}
+
+	routing, err := r.resolveProject(ctx, cl, namespace)
+	if err != nil {
+		return "", fmt.Errorf("cannot verify the release of addresses claimed by %q: %w", owner, err)
+	}
+	location, err := r.location(ctx)
+	if err != nil {
+		return "", fmt.Errorf("cannot verify the release of addresses claimed by %q: %w", owner, err)
+	}
+	ipamClient, err := r.IPAM.ClientForProject(routing.project)
+	if err != nil {
+		return "", fmt.Errorf("failed building IPAM client: %w", err)
+	}
+
+	names := map[string]allocationEntry{}
+	for _, entry := range entries {
+		for _, name := range ipClaimNames(owner, entry.discriminator, location) {
+			names[name] = entry
+		}
+	}
+
+	for name, entry := range names {
+		ipClaim := &ipamv1alpha1.IPClaim{}
+		err := ipamClient.Get(ctx, client.ObjectKey{Namespace: routing.projectNamespace, Name: name}, ipClaim)
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("failed reading IPClaim %q: %w", name, err)
+		}
+		if allocationServesLocation(ipClaim, location) {
+			return heldAddress(entry.address, ipClaim.Status.AllocatedCIDR), nil
+		}
+	}
+
+	var allocations ipamv1alpha1.IPAllocationList
+	if err := ipamClient.List(ctx, &allocations, client.InNamespace(routing.projectNamespace)); err != nil {
+		return "", fmt.Errorf("failed listing IPAllocations: %w", err)
+	}
+	for i := range allocations.Items {
+		allocation := &allocations.Items[i]
+		if allocation.Spec.ClaimRef == nil {
+			continue
+		}
+		entry, named := names[allocation.Spec.ClaimRef.Name]
+		if !named {
+			continue
+		}
+		if held := allocation.Spec.Scope[ipamScopeRoleLocation].Name; held != "" && held != location.Name {
+			continue
+		}
+		return heldAddress(entry.address, allocation.Status.AllocatedCIDR), nil
+	}
+	return "", nil
+}
+
+func heldAddress(recorded, allocated string) string {
+	if recorded != "" {
+		return recorded
+	}
+	if allocated != "" {
+		return allocated
+	}
+	return "an address"
 }
 
 // markReleasing withdraws Prepared and Ready from a claim being deleted, before
@@ -1584,6 +1714,13 @@ func markReleasing(ctx context.Context, cl client.Client, claim *networkingv1alp
 		networkingv1alpha.NetworkInterfaceClaimPrepared,
 		networkingv1alpha.NetworkInterfaceClaimReady,
 	} {
+		// A later step of the release names what it waits on in Ready, and
+		// restating Releasing would hide it.
+		if current := apimeta.FindStatusCondition(claim.Status.Conditions, conditionType); current != nil &&
+			current.Status == metav1.ConditionFalse &&
+			current.Reason == networkingv1alpha.NetworkInterfaceClaimReasonReleaseUnverified {
+			continue
+		}
 		changed = apimeta.SetStatusCondition(&claim.Status.Conditions, metav1.Condition{
 			Type:               conditionType,
 			Status:             metav1.ConditionFalse,

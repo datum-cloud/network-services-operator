@@ -532,6 +532,16 @@ spec:
                 - Available
                 - Bound
                 type: string
+              vlanID:
+                description: |-
+                  vlanID is the VLAN a Physical interface's network arrives on at its
+                  switch port. The physical realizer reports it no later than Prepared, so
+                  once Prepared is true an absent vlanID means the network arrives
+                  untagged.
+                format: int32
+                maximum: 4094
+                minimum: 1
+                type: integer
               vpc:
                 description: |-
                   vpc is the base62 identifier of the VPC backing this network in this

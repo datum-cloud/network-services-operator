@@ -45,11 +45,20 @@ func projectedInterface(source *networkingv1alpha.NetworkInterface, location str
 		Status: networkingv1alpha.NetworkInterfaceStatus{
 			DNS:        source.Status.DNS.DeepCopy(),
 			Phase:      source.Status.Phase,
+			VLANID:     copyVLANID(source.Status.VLANID),
 			Conditions: append([]metav1.Condition(nil), source.Status.Conditions...),
 		},
 	}
 
 	return projection
+}
+
+func copyVLANID(vlan *int32) *int32 {
+	if vlan == nil {
+		return nil
+	}
+	copied := *vlan
+	return &copied
 }
 
 func projectionLabels(source *networkingv1alpha.NetworkInterface, location string) map[string]string {

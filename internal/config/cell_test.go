@@ -123,6 +123,25 @@ func TestCellControllerManager_Validate(t *testing.T) {
 			},
 			wantSub: "networkLoadBalancer.ipv4VIPs needs networkLoadBalancer.enabled",
 		},
+		{
+			name: "simulated physical realizer",
+			mutate: func(c *CellControllerManager) {
+				c.PhysicalRealizer = PhysicalRealizerConfig{Enabled: true, Driver: PhysicalRealizerDriverSimulated}
+			},
+		},
+		{
+			name: "physical realizer without a driver",
+			mutate: func(c *CellControllerManager) {
+				c.PhysicalRealizer.Enabled = true
+			},
+			wantSub: "physicalRealizer.driver must be simulated",
+		},
+		{
+			name: "physical realizer driver while disabled",
+			mutate: func(c *CellControllerManager) {
+				c.PhysicalRealizer.Driver = "switch-example"
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +188,33 @@ location:
 	}
 	if cfg.Federation.KubeconfigPath != "/etc/kubernetes/federation/auth/kubeconfig" {
 		t.Errorf("expected the federation hub to decode, got %q", cfg.Federation.KubeconfigPath)
+	}
+}
+
+func TestThePhysicalRealizerIsOffUnlessConfigured(t *testing.T) {
+	base := `apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: CellControllerManager
+ipam:
+  kubeconfigPath: /etc/ipam-cluster/kubeconfig
+federation:
+  kubeconfigPath: /etc/kubernetes/federation/auth/kubeconfig
+`
+	var cfg CellControllerManager
+	decodeInto(t, []byte(base), &cfg)
+	if cfg.PhysicalRealizer.Enabled {
+		t.Fatal("the physical realizer is enabled by default")
+	}
+
+	var enabled CellControllerManager
+	decodeInto(t, []byte(base+`physicalRealizer:
+  enabled: true
+  driver: simulated
+`), &enabled)
+	if err := enabled.Validate(); err != nil {
+		t.Fatalf("expected the config to validate, got %v", err)
+	}
+	if !enabled.PhysicalRealizer.Enabled || enabled.PhysicalRealizer.Driver != PhysicalRealizerDriverSimulated {
+		t.Errorf("expected the physical realizer to decode, got %+v", enabled.PhysicalRealizer)
 	}
 }
 

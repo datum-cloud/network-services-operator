@@ -70,6 +70,22 @@ type CellControllerManager struct {
 	// cell's Galactic gateways. It is disabled unless explicitly enabled, and
 	// needs galactic.enabled.
 	NetworkLoadBalancer NetworkLoadBalancerCellConfig `json:"networkLoadBalancer,omitempty"`
+
+	// PhysicalRealizer runs the test realizer for physical interfaces, which
+	// programs a simulated switch from the cell's switch port holds. It is
+	// for tests only and is disabled unless explicitly enabled.
+	PhysicalRealizer PhysicalRealizerConfig `json:"physicalRealizer,omitempty"`
+}
+
+const PhysicalRealizerDriverSimulated = "simulated"
+
+// +k8s:deepcopy-gen=true
+
+type PhysicalRealizerConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Driver is the switch the realizer programs. Only simulated exists.
+	Driver string `json:"driver,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -153,6 +169,9 @@ func (c *CellControllerManager) Validate() error {
 	}
 	if err := validateHostOnlyPorts(c.Galactic.HypervisorHostOnlyPorts); err != nil {
 		return fmt.Errorf("galactic.hypervisorHostOnlyPorts: %w", err)
+	}
+	if c.PhysicalRealizer.Enabled && c.PhysicalRealizer.Driver != PhysicalRealizerDriverSimulated {
+		return fmt.Errorf("physicalRealizer.driver must be %s", PhysicalRealizerDriverSimulated)
 	}
 	return nil
 }

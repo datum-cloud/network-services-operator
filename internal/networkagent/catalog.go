@@ -580,8 +580,36 @@ func internetAccess(kind string) []ReasonInfo {
 	}
 }
 
+func switchPort(kind, prepared, programmed string) []ReasonInfo {
+	return []ReasonInfo{
+		entry(kind, prepared, networkingv1alpha.NetworkInterfaceClaimReasonAttachmentPointAccepted,
+			healthy("The switch port this server's network interface is cabled to can be set up for its network.")),
+		entry(kind, programmed, networkingv1alpha.NetworkInterfaceClaimReasonPortCarriesNetwork,
+			healthy("The switch port this server's network interface is cabled to carries its network.")),
+		entry(kind, programmed, networkingv1alpha.NetworkInterfaceClaimReasonPortChanging, ReasonInfo{
+			Actionability: ActionabilityTransient,
+			Scope:         ScopeInstance,
+			Explanation: "The switch port this server's network interface is cabled to is being changed, so " +
+				"its network is not counted as carried until the change is confirmed.",
+			Remediation:      remediationWait,
+			Skill:            SkillInterfaceTriage,
+			ExpectedDuration: windowDataPlane,
+		}),
+		entry(kind, programmed, networkingv1alpha.NetworkInterfaceClaimReasonBootAttachmentActive, ReasonInfo{
+			Actionability: ActionabilityInformational,
+			Explanation: "This server is being installed, so its switch port carries the install network " +
+				"instead of this network. The interface keeps its addresses, and the port moves to this " +
+				"network once the install finishes.",
+		}),
+	}
+}
+
 var interfaceCatalog = slices.Concat(
 	claimRefusals(),
+	switchPort(KindNetworkInterfaceClaim, networkingv1alpha.NetworkInterfaceClaimPrepared,
+		networkingv1alpha.NetworkInterfaceClaimProgrammed),
+	switchPort(KindNetworkInterface, networkingv1alpha.NetworkInterfacePrepared,
+		networkingv1alpha.NetworkInterfaceProgrammed),
 	internetAccess(KindNetworkInterface),
 	internetAccess(KindNetworkInterfaceClaim),
 	interfaceProgress(KindNetworkInterfaceClaim, networkingv1alpha.NetworkInterfaceClaimAllocated,

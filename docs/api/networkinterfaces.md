@@ -609,6 +609,20 @@ addresses with no claim bound.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>vlanID</b></td>
+        <td>integer</td>
+        <td>
+          vlanID is the VLAN a Physical interface's network arrives on at its
+switch port. The physical realizer reports it no later than Prepared, so
+once Prepared is true an absent vlanID means the network arrives
+untagged.<br/>
+          <br/>
+            <i>Format</i>: int32<br/>
+            <i>Minimum</i>: 1<br/>
+            <i>Maximum</i>: 4094<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>vpc</b></td>
         <td>string</td>
         <td>

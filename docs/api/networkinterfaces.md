@@ -135,8 +135,17 @@ microVM guest needs. HypervisorDeclared also hands it to a hypervisor, and
 additionally has the realizer state the device to that hypervisor instead
 of letting it discover the device from the node.<br/>
           <br/>
-            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared<br/>
+            <i>Enum</i>: Netns, Hypervisor, HypervisorDeclared, Physical<br/>
             <i>Default</i>: Netns<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b><a href="#networkinterfacespecattachmentpoint">attachmentPoint</a></b></td>
+        <td>object</td>
+        <td>
+          attachmentPoint is the physical NIC and switch port a Physical interface
+reaches its network through. It comes from the claim and is absent for
+every other mode.<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -186,6 +195,17 @@ operating system, such as eth0 or eth1. It comes from the claim.<br/>
         </td>
         <td>false</td>
       </tr><tr>
+        <td><b>isolation</b></td>
+        <td>enum</td>
+        <td>
+          isolation is whether a Physical interface's port shares its network's
+segment. It comes from the claim. Left unset, a boot interface is private
+and any other is shared.<br/>
+          <br/>
+            <i>Enum</i>: Private, Shared<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>mtu</b></td>
         <td>integer</td>
         <td>
@@ -196,6 +216,15 @@ configure the NIC.<br/>
             <i>Format</i>: int32<br/>
             <i>Minimum</i>: 1300<br/>
             <i>Maximum</i>: 8856<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
+        <td><b>purpose</b></td>
+        <td>enum</td>
+        <td>
+          purpose is what a Physical interface is for. It comes from the claim.<br/>
+          <br/>
+            <i>Enum</i>: Boot<br/>
         </td>
         <td>false</td>
       </tr><tr>
@@ -312,6 +341,53 @@ family. It is the address of the first family the claim listed in
 spec.ipFamilies.<br/>
         </td>
         <td>false</td>
+      </tr></tbody>
+</table>
+
+
+### NetworkInterface.spec.attachmentPoint
+<sup><sup>[↩ Parent](#networkinterfacespec)</sup></sup>
+
+
+
+attachmentPoint is the physical NIC and switch port a Physical interface
+reaches its network through. It comes from the claim and is absent for
+every other mode.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>macAddress</b></td>
+        <td>string</td>
+        <td>
+          macAddress is the NIC's MAC address, as six colon-separated hexadecimal
+pairs.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>port</b></td>
+        <td>string</td>
+        <td>
+          port is the switch port the NIC is cabled to, in the name network
+operations uses for it. It may hold characters a Kubernetes name cannot,
+such as the slash in Ethernet1/12.<br/>
+        </td>
+        <td>true</td>
+      </tr><tr>
+        <td><b>switch</b></td>
+        <td>string</td>
+        <td>
+          switch is the switch the NIC is cabled to, in the name network operations
+uses for it.<br/>
+        </td>
+        <td>true</td>
       </tr></tbody>
 </table>
 

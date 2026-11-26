@@ -157,7 +157,40 @@ spec:
                 - Netns
                 - Hypervisor
                 - HypervisorDeclared
+                - Physical
                 type: string
+              attachmentPoint:
+                description: |-
+                  attachmentPoint is the physical NIC and switch port a Physical interface
+                  reaches its network through. It comes from the claim and is absent for
+                  every other mode.
+                properties:
+                  macAddress:
+                    description: |-
+                      macAddress is the NIC's MAC address, as six colon-separated hexadecimal
+                      pairs.
+                    pattern: ^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$
+                    type: string
+                  port:
+                    description: |-
+                      port is the switch port the NIC is cabled to, in the name network
+                      operations uses for it. It may hold characters a Kubernetes name cannot,
+                      such as the slash in Ethernet1/12.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  switch:
+                    description: |-
+                      switch is the switch the NIC is cabled to, in the name network operations
+                      uses for it.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - macAddress
+                - port
+                - switch
+                type: object
               claimRef:
                 description: |-
                   claimRef is the claim currently holding this interface. It is empty while a
@@ -261,6 +294,15 @@ spec:
                 maxLength: 15
                 minLength: 1
                 type: string
+              isolation:
+                description: |-
+                  isolation is whether a Physical interface's port shares its network's
+                  segment. It comes from the claim. Left unset, a boot interface is private
+                  and any other is shared.
+                enum:
+                - Private
+                - Shared
+                type: string
               mtu:
                 description: |-
                   mtu is the MTU, in bytes, the interface must be configured with. It is
@@ -284,6 +326,12 @@ spec:
                 x-kubernetes-validations:
                 - message: network is immutable and cannot be changed after creation
                   rule: self == oldSelf
+              purpose:
+                description: purpose is what a Physical interface is for. It comes
+                  from the claim.
+                enum:
+                - Boot
+                type: string
               reclaimPolicy:
                 default: Delete
                 description: |-

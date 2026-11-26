@@ -2575,3 +2575,125 @@ func TestFindAllocationPrefersTheNameHoldingTheAddress(t *testing.T) {
 	require.Equal(t, qualified, found.Name,
 		"with both names held here, the one carrying the interface's address is the interface's")
 }
+
+func physicalAttachmentPoint(port string) *networkingv1alpha.NetworkInterfaceAttachmentPoint {
+	return &networkingv1alpha.NetworkInterfaceAttachmentPoint{
+		MACAddress: "00:00:5e:00:53:01",
+		Switch:     "rack-a1-tor-1",
+		Port:       port,
+	}
+}
+
+// Nothing yet decides which project holds a switch port or detaches it before
+// release, so a physical claim must not reach IPAM or produce an interface a
+// realizer could act on.
+func TestPhysicalClaimIsRefusedWithoutAllocating(t *testing.T) {
+	s := newScenario(t, true, []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol})
+
+	claim := s.createClaim("server-data", networkingv1alpha.NetworkInterfaceClaimSpec{
+		InterfaceName:   "data",
+		AttachmentMode:  networkingv1alpha.NetworkInterfaceAttachmentModePhysical,
+		AttachmentPoint: physicalAttachmentPoint("Ethernet1/12"),
+		IPFamilies:      []networkingv1alpha.IPFamily{networkingv1alpha.IPv4Protocol},
+		ReclaimPolicy:   networkingv1alpha.NetworkInterfaceReclaimPolicyDelete,
+	})
+	s.reconcile(claim)
+	s.reconcile(claim)
+
+	require.Zero(t, s.ipam.createdAnywhere())
+	_, err := s.getInterface("server-data")
+	require.True(t, apierrors.IsNotFound(err), "no interface may exist for a refused physical claim")
+
+	refused := s.getClaim("server-data")
+	for _, conditionType := range []string{
+		networkingv1alpha.NetworkInterfaceClaimBound,
+		networkingv1alpha.NetworkInterfaceClaimAllocated,
+		networkingv1alpha.NetworkInterfaceClaimReady,
+	} {
+		condition := conditionOf(refused, conditionType)
+		require.NotNil(t, condition, conditionType)
+		require.Equal(t, metav1.ConditionFalse, condition.Status, conditionType)
+		require.Equal(t, networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported, condition.Reason, conditionType)
+	}
+
+	s.deleteClaim(refused)
+	require.Zero(t, s.ipam.createdAnywhere())
+	var gone networkingv1alpha.NetworkInterfaceClaim
+	require.True(t, apierrors.IsNotFound(s.client.Get(s.ctx, client.ObjectKeyFromObject(claim), &gone)),
+		"a refused physical claim allocated nothing and must delete at once")
+}
+
+func TestAdoptionRefusesADifferentAttachment(t *testing.T) {
+	physical := networkingv1alpha.NetworkInterfaceAttachmentModePhysical
+	netns := networkingv1alpha.NetworkInterfaceAttachmentModeNetns
+
+	iface := func(mode networkingv1alpha.NetworkInterfaceAttachmentMode, point *networkingv1alpha.NetworkInterfaceAttachmentPoint,
+		purpose networkingv1alpha.NetworkInterfacePurpose, isolation networkingv1alpha.NetworkInterfaceIsolation,
+	) *networkingv1alpha.NetworkInterface {
+		return &networkingv1alpha.NetworkInterface{
+			ObjectMeta: metav1.ObjectMeta{Name: "nic"},
+			Spec: networkingv1alpha.NetworkInterfaceSpec{
+				Network:         networkingv1alpha.LocalNetworkRef{Name: "default"},
+				InterfaceName:   "data",
+				AttachmentMode:  mode,
+				AttachmentPoint: point,
+				Purpose:         purpose,
+				Isolation:       isolation,
+				ReclaimPolicy:   networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+			},
+		}
+	}
+	claim := func(mode networkingv1alpha.NetworkInterfaceAttachmentMode, point *networkingv1alpha.NetworkInterfaceAttachmentPoint,
+		purpose networkingv1alpha.NetworkInterfacePurpose, isolation networkingv1alpha.NetworkInterfaceIsolation,
+	) *networkingv1alpha.NetworkInterfaceClaim {
+		return &networkingv1alpha.NetworkInterfaceClaim{Spec: networkingv1alpha.NetworkInterfaceClaimSpec{
+			Network:         networkingv1alpha.LocalNetworkRef{Name: "default"},
+			InterfaceName:   "data",
+			AttachmentMode:  mode,
+			AttachmentPoint: point,
+			Purpose:         purpose,
+			Isolation:       isolation,
+			ReclaimPolicy:   networkingv1alpha.NetworkInterfaceReclaimPolicyRetain,
+		}}
+	}
+
+	portA := physicalAttachmentPoint("Ethernet1/12")
+	portB := physicalAttachmentPoint("Ethernet1/13")
+	boot := networkingv1alpha.NetworkInterfacePurposeBoot
+	private := networkingv1alpha.NetworkInterfaceIsolationPrivate
+
+	tests := []struct {
+		name  string
+		iface *networkingv1alpha.NetworkInterface
+		claim *networkingv1alpha.NetworkInterfaceClaim
+		ok    bool
+	}{
+		{name: "same port", ok: true,
+			iface: iface(physical, portA, boot, private), claim: claim(physical, portA, boot, private)},
+		{name: "virtual modes are untouched", ok: true,
+			iface: iface(netns, nil, "", ""), claim: claim(networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor, nil, "", "")},
+		{name: "another port",
+			iface: iface(physical, portA, "", ""), claim: claim(physical, portB, "", "")},
+		{name: "physical interface for a virtual claim",
+			iface: iface(physical, portA, "", ""), claim: claim(netns, nil, "", "")},
+		{name: "virtual interface for a physical claim",
+			iface: iface(netns, nil, "", ""), claim: claim(physical, portA, "", "")},
+		{name: "another purpose",
+			iface: iface(physical, portA, boot, ""), claim: claim(physical, portA, "", "")},
+		{name: "another isolation",
+			iface: iface(physical, portA, "", private), claim: claim(physical, portA, "", "")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := interfaceSatisfies(tt.iface, tt.claim)
+			if tt.ok {
+				require.NoError(t, err)
+				return
+			}
+			var refused *bindingRefused
+			require.ErrorAs(t, err, &refused)
+			require.Equal(t, "AttachmentPointMismatch", refused.reason)
+		})
+	}
+}

@@ -146,6 +146,11 @@ func (r *NetworkInterfaceReconciler) reconcile(ctx context.Context, req ctrl.Req
 	if !networkInterface.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
+	// A physical NIC reaches its network through a switch port, which galactic
+	// does not program.
+	if networkInterface.Spec.AttachmentMode == networkingv1alpha.NetworkInterfaceAttachmentModePhysical {
+		return ctrl.Result{}, nil
+	}
 	if !claimFulfilled(&networkInterface) {
 		return ctrl.Result{}, r.clearConsumerLabels(ctx, &networkInterface)
 	}

@@ -149,6 +149,12 @@ func (r *NetworkInterfaceClaimReconciler) fulfill(
 	recorder events.EventRecorder,
 	claim *networkingv1alpha.NetworkInterfaceClaim,
 ) (ctrl.Result, error) {
+	if claim.Spec.AttachmentMode == networkingv1alpha.NetworkInterfaceAttachmentModePhysical {
+		return r.reject(ctx, cl, claim,
+			networkingv1alpha.NetworkInterfaceClaimReasonPhysicalAttachmentUnsupported,
+			"Physical attachment is not available yet, so no address is allocated for this claim")
+	}
+
 	location, err := r.location(ctx)
 	if err != nil {
 		var unresolved *locationidentity.LocationUnresolved
@@ -499,6 +505,22 @@ func interfaceSatisfies(
 		}
 	}
 
+	// A physical interface is wired to one port. Handing it to a claim for
+	// another port, or for no port, would attach the wrong server.
+	physical := networkingv1alpha.NetworkInterfaceAttachmentModePhysical
+	if (iface.Spec.AttachmentMode == physical || claim.Spec.AttachmentMode == physical) &&
+		(iface.Spec.AttachmentMode != claim.Spec.AttachmentMode ||
+			!apiequality.Semantic.DeepEqual(iface.Spec.AttachmentPoint, claim.Spec.AttachmentPoint) ||
+			iface.Spec.Purpose != claim.Spec.Purpose ||
+			iface.Spec.Isolation != claim.Spec.Isolation) {
+		return &bindingRefused{
+			reason: "AttachmentPointMismatch",
+			message: fmt.Sprintf(
+				"Network interface %q is attached differently from what this claim asks for, so it cannot be bound",
+				iface.Name),
+		}
+	}
+
 	for _, family := range claim.Spec.IPFamilies {
 		if !slices.ContainsFunc(iface.Spec.Addresses, func(a networkingv1alpha.NetworkInterfaceAddress) bool {
 			return a.Family == family
@@ -594,13 +616,16 @@ func (r *NetworkInterfaceClaimReconciler) bindInterface(
 	iface.Labels = propagatedInterfaceLabels(claim, location)
 	iface.Finalizers = []string{networkInterfaceFinalizer}
 	iface.Spec = networkingv1alpha.NetworkInterfaceSpec{
-		Network:        networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
-		ClaimRef:       &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
-		InterfaceName:  claim.Spec.InterfaceName,
-		AttachmentMode: claim.Spec.AttachmentMode,
-		MTU:            networkContext.Spec.MTU,
-		ReclaimPolicy:  claim.Spec.ReclaimPolicy,
-		Egress:         interfaceEgressFromClaim(claim),
+		Network:         networkingv1alpha.LocalNetworkRef{Name: networkContext.Spec.Network.Name},
+		ClaimRef:        &networkingv1alpha.NetworkInterfaceClaimRef{Name: claim.Name},
+		InterfaceName:   claim.Spec.InterfaceName,
+		AttachmentMode:  claim.Spec.AttachmentMode,
+		AttachmentPoint: claim.Spec.AttachmentPoint.DeepCopy(),
+		Purpose:         claim.Spec.Purpose,
+		Isolation:       claim.Spec.Isolation,
+		MTU:             networkContext.Spec.MTU,
+		ReclaimPolicy:   claim.Spec.ReclaimPolicy,
+		Egress:          interfaceEgressFromClaim(claim),
 	}
 
 	for _, entry := range allocated {

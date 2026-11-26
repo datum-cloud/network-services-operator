@@ -4,8 +4,10 @@ import {
   checkBackend,
   FieldApiError,
   HealthPortField,
+  QuotaRefusedNote,
   StepHeading,
 } from './create-nlb-dialog';
+import { IpFamilyField, isChecked } from './ip-family-field';
 import {
   nlbListenerName,
   nlbListenerSchema,
@@ -15,7 +17,14 @@ import {
   type NlbCreateErrors,
   type NlbListenerValues,
 } from './nlb-create-form';
-import { routeOnlyServes, toEditListenerPatch, toRouteBackendPatch } from './nlb-listener-changes';
+import {
+  ipv4Locations,
+  listenerHasIpv4,
+  routeOnlyServes,
+  toAddressFamiliesPatch,
+  toEditListenerPatch,
+  toRouteBackendPatch,
+} from './nlb-listener-changes';
 import type { ListenerRow } from './nlb-overview-model';
 import {
   createNetworkLoadBalancerRoute,
@@ -24,8 +33,10 @@ import {
   PLUGIN_ID,
   useNetworkServices,
 } from '../lib/api';
-import type { NetworkLoadBalancer } from '../schema';
-import { Form } from '@datum-cloud/datum-ui/form';
+import { useIpv4Availability, useRequestIpv4 } from '../lib/ipv4-quota';
+import type { NetworkLoadBalancer, NetworkService } from '../schema';
+import { Button } from '@datum-cloud/datum-ui/button';
+import { Form, useField, useWatch } from '@datum-cloud/datum-ui/form';
 import { ConformAdapter } from '@datum-cloud/datum-ui/form/adapters/conform';
 import { toast } from '@datum-cloud/datum-ui/toast';
 import { useQueryClient } from '@tanstack/react-query';
@@ -33,6 +44,14 @@ import { useRef, useState } from 'react';
 
 const NO_ERRORS: NlbCreateErrors = { fields: {} };
 const MAX_LISTENERS = 16;
+
+export function releaseIpv4Message(locations: string[]): string {
+  const where =
+    locations.length > 0
+      ? `its public IPv4 ${locations.length === 1 ? 'address' : 'addresses'} in ${locations.join(', ')}`
+      : 'its public IPv4 address';
+  return `Saving releases ${where}. The same address can’t be kept, and isn’t guaranteed back if you add IPv4 again later. Its IPv6 address isn’t affected.`;
+}
 
 /**
  * Checks a new or edited listener against the NLB's others. Listeners on
@@ -87,7 +106,12 @@ export function AddListenerDialog({
   const [errors, setErrors] = useState<NlbCreateErrors>(NO_ERRORS);
   // Set once the listener is saved on the NLB but its route isn't, so a retry only does the route.
   const [added, setAdded] = useState<Pick<NlbListenerValues, 'protocol' | 'port'>>();
+  const [confirmRelease, setConfirmRelease] = useState(false);
+  const [ipv4ResetKey, setIpv4ResetKey] = useState(0);
+  const releaseConfirmed = useRef(false);
   const keepOpen = useRef(false);
+  const requestIpv4 = useRequestIpv4();
+  const hasIpv4 = editing ? listenerHasIpv4(nlb, editing.listener) : false;
 
   const refresh = () => {
     void queryClient.invalidateQueries({
@@ -109,11 +133,14 @@ export function AddListenerDialog({
     if (!next) {
       setErrors(NO_ERRORS);
       setAdded(undefined);
+      setConfirmRelease(false);
+      releaseConfirmed.current = false;
     }
     onOpenChange(next);
   };
 
   const fail = (next: NlbCreateErrors) => {
+    releaseConfirmed.current = false;
     setErrors(next);
     keepOpen.current = true;
   };
@@ -129,10 +156,23 @@ export function AddListenerDialog({
         general: `Route ${row.route.name} also serves other listeners, so its backend can’t be changed here.`,
       });
     }
+    const ipv4 = !!values.ipv4;
+    if (!added && hasIpv4 && !ipv4 && !releaseConfirmed.current) {
+      setConfirmRelease(true);
+      keepOpen.current = true;
+      return;
+    }
+    releaseConfirmed.current = false;
+    setConfirmRelease(false);
     setPending(true);
     setErrors(NO_ERRORS);
     try {
-      const patch = added ? [] : toEditListenerPatch(nlb, row.listener, values);
+      const patch = added
+        ? []
+        : [
+            ...toEditListenerPatch(nlb, row.listener, values),
+            ...toAddressFamiliesPatch(nlb, row.listener, ipv4),
+          ];
       if (patch.length > 0) {
         try {
           await patchNetworkLoadBalancer(projectId as string, nlb.name, patch);
@@ -145,7 +185,8 @@ export function AddListenerDialog({
               general: `${nlb.name} changed while you were editing. Try again.`,
             });
           }
-          return fail(toNlbCreateErrors(error, 'nlb'));
+          const next = toNlbCreateErrors(error, 'nlb');
+          return fail({ ...next, quotaRefused: next.quotaRefused && ipv4 && !hasIpv4 });
         }
         refresh();
       }
@@ -203,7 +244,8 @@ export function AddListenerDialog({
               general: `${nlb.name} changed while you were adding this listener. Try again.`,
             });
           }
-          return fail(toNlbCreateErrors(error, 'nlb'));
+          const next = toNlbCreateErrors(error, 'nlb');
+          return fail({ ...next, quotaRefused: next.quotaRefused && !!values.ipv4 });
         }
         refresh();
       }
@@ -232,7 +274,9 @@ export function AddListenerDialog({
         description="Accepts one protocol and port on its own public address, and forwards every connection to one backend."
         schema={nlbListenerSchema}
         defaultValues={
-          editing ? editDefaults(editing) : { protocol: 'TCP', healthPort: SERVING_PORT }
+          editing
+            ? { ...editDefaults(editing), ipv4: hasIpv4 }
+            : { protocol: 'TCP', healthPort: SERVING_PORT, ipv4: false }
         }
         onSubmit={handleSubmit}
         loading={pending}
@@ -252,8 +296,25 @@ export function AddListenerDialog({
                   {editing ? 'update' : 'attach'} its backend. Fix the backend and retry.
                 </p>
               )}
-              {errors.general && <p>{errors.general}</p>}
+              {errors.quotaRefused ? (
+                <QuotaRefusedNote onRequest={() => requestIpv4(nlb.name)} />
+              ) : (
+                errors.general && <p>{errors.general}</p>
+              )}
             </div>
+          )}
+
+          {confirmRelease && editing && (
+            <ReleaseIpv4Confirm
+              locations={ipv4Locations(nlb, editing.listener)}
+              onConfirm={() => {
+                releaseConfirmed.current = true;
+              }}
+              onKeep={() => {
+                setConfirmRelease(false);
+                setIpv4ResetKey((k) => k + 1);
+              }}
+            />
           )}
 
           <div className="flex flex-col gap-4">
@@ -290,6 +351,14 @@ export function AddListenerDialog({
                 </div>
               </div>
             )}
+            {!added && (
+              <ListenerIpFamilyField
+                services={services}
+                nlbName={nlb.name}
+                hasIpv4={hasIpv4}
+                resetKey={ipv4ResetKey}
+              />
+            )}
           </div>
 
           <div className="flex flex-col gap-4">
@@ -316,6 +385,70 @@ export function AddListenerDialog({
         </div>
       </Form.Dialog>
     </ConformAdapter>
+  );
+}
+
+function ListenerIpFamilyField({
+  services,
+  nlbName,
+  hasIpv4,
+  resetKey,
+}: {
+  services: NetworkService[];
+  nlbName: string;
+  hasIpv4: boolean;
+  resetKey: number;
+}) {
+  const availability = useIpv4Availability();
+  const requestIpv4 = useRequestIpv4();
+  const backend = useWatch('backend') as string | undefined;
+  const service = services.find((s) => s.name === backend);
+  return (
+    <IpFamilyField
+      availability={availability}
+      onRequest={() => requestIpv4(nlbName)}
+      locations={service?.summary.locations}
+      hasIpv4={hasIpv4}
+      resetKey={resetKey}
+    />
+  );
+}
+
+function ReleaseIpv4Confirm({
+  locations,
+  onConfirm,
+  onKeep,
+}: {
+  locations: string[];
+  onConfirm: () => void;
+  onKeep: () => void;
+}) {
+  const { control } = useField('ipv4');
+  const checked = isChecked(useWatch('ipv4'));
+  if (checked) return null;
+  return (
+    <div
+      role="alert"
+      aria-label="Release IPv4"
+      className="flex flex-col gap-3 rounded-md bg-amber-500/10 px-4 py-3 text-xs font-medium text-amber-800 dark:text-amber-300">
+      <p>{releaseIpv4Message(locations)}</p>
+      <div className="flex gap-2">
+        <Button type="danger" theme="solid" size="small" htmlType="submit" onClick={onConfirm}>
+          Release IPv4 and save
+        </Button>
+        <Button
+          type="quaternary"
+          theme="borderless"
+          size="small"
+          htmlType="button"
+          onClick={() => {
+            control.change(true);
+            onKeep();
+          }}>
+          Keep IPv4
+        </Button>
+      </div>
+    </div>
   );
 }
 

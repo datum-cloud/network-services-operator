@@ -592,7 +592,7 @@ tasks:
         done
 
   ipam-bundle:
-    desc: "Fetch the published IPAM manifest bundle from ghcr.io and assemble the composed deployment in a staging directory. Pinned by digest, and verified to carry the commit go.mod pins, so a rebuild of that commit cannot silently change what is deployed. Anonymous pull — CI needs no registry credentials."
+    desc: "Fetch the published IPAM manifest bundle from ghcr.io and assemble the composed deployment in a staging directory. Pinned by digest, and verified to carry IPAM_COMMIT, so a rebuild of that commit cannot silently change what is deployed. Anonymous pull — CI needs no registry credentials."
     cmds:
       - |
         set -e

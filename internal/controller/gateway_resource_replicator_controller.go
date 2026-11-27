@@ -42,6 +42,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	downstreamclient "go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/util/finalizer"
 	"go.datum.net/network-services-operator/internal/util/status"
@@ -120,6 +121,8 @@ type replicationResourceConfig struct {
 	// annotations only once they match the access DNS accepted for the
 	// object's network. Otherwise the downstream copy keeps the ones it has.
 	verifyInternalDNSIntent bool
+
+	stampConnectorKeyBinding bool
 }
 
 type replicationResource struct {
@@ -198,6 +201,7 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	configs[gvkKey(connectorGVK)] = replicationResourceConfig{
 		mirrorStatusToAnnotation: true,
 		skipUpstreamStatusSync:   true,
+		stampConnectorKeyBinding: true,
 	}
 
 	// A network's presence in a location, and the range that location is
@@ -304,6 +308,9 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	upstreamObj.SetGroupVersionKind(req.GVK)
 	if err := upstreamClient.Get(ctx, req.NamespacedName, upstreamObj); err != nil {
 		if apierrors.IsNotFound(err) {
+			if resourceCfg.replicationResourceConfig.stampConnectorKeyBinding {
+				connectorKeyBindings.forget(req.ClusterName, req.NamespacedName)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -315,6 +322,9 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
+		if resourceCfg.replicationResourceConfig.stampConnectorKeyBinding {
+			connectorKeyBindings.forget(req.ClusterName, req.NamespacedName)
+		}
 		return r.finalizeResource(ctx, resourceCfg, upstreamCluster, upstreamObj, downstreamStrategy)
 	}
 
@@ -406,6 +416,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 	}
 
 	decision, upstreamErr, verifyErr := r.annotationsVerified(ctx, resource, upstreamClient, upstreamObj)
+	var keyBinding connectorbinding.Verdict
+	if resource.replicationResourceConfig.stampConnectorKeyBinding {
+		keyBinding = upstreamConnectorKeyBinding(upstreamObj)
+	}
 	var result ctrl.Result
 
 	downstreamObj := &unstructured.Unstructured{}
@@ -485,6 +499,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			}
 		}
 
+		if resource.replicationResourceConfig.stampConnectorKeyBinding {
+			setConnectorKeyBindingAnnotation(downstreamObj, keyBinding)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -496,6 +514,12 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 		}
 		syncOutcome = syncOutcomeError
 		return ctrl.Result{}, fmt.Errorf("failed to ensure downstream resource %s/%s: %w", downstreamObj.GetNamespace(), downstreamObj.GetName(), err)
+	}
+
+	if resource.replicationResourceConfig.stampConnectorKeyBinding {
+		if clusterName, ok := mccontext.ClusterFrom(ctx); ok {
+			recordConnectorKeyBinding(ctx, clusterName, upstreamObj, keyBinding)
+		}
 	}
 
 	if operation != controllerutil.OperationResultNone {
@@ -1079,6 +1103,10 @@ func (r *GatewayResourceReplicatorReconciler) SetupWithManager(mgr mcmanager.Man
 	}
 
 	r.resources = resources
+
+	if err := mgr.Add(connectorKeyBindings); err != nil {
+		return fmt.Errorf("failed to add connector key binding tracker: %w", err)
+	}
 
 	return builder.Named(gatewayResourceReplicatorControllerName).Complete(r)
 }

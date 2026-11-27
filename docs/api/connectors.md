@@ -482,6 +482,14 @@ Must be a valid URL<br/>
         </td>
         <td>true</td>
       </tr><tr>
+        <td><b><a href="#connectorstatusconnectiondetailspublickeybinding">binding</a></b></td>
+        <td>object</td>
+        <td>
+          Binding proves the agent publishing this Connector holds the private
+key for Id.<br/>
+        </td>
+        <td>false</td>
+      </tr><tr>
         <td><b>discoveryMode</b></td>
         <td>enum</td>
         <td>
@@ -538,6 +546,36 @@ PublicKeyConnectorAddress defines an address and port for a connector.
             <i>Maximum</i>: 65535<br/>
         </td>
         <td>true</td>
+      </tr></tbody>
+</table>
+
+
+### Connector.status.connectionDetails.publicKey.binding
+<sup><sup>[↩ Parent](#connectorstatusconnectiondetailspublickey)</sup></sup>
+
+
+
+Binding proves the agent publishing this Connector holds the private
+key for Id.
+
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Required</th>
+        </tr>
+    </thead>
+    <tbody><tr>
+        <td><b>signature</b></td>
+        <td>string</td>
+        <td>
+          Signature is the standard base64 encoding of the ed25519 signature,
+made with the endpoint's private key, over the message
+"datum-connector-binding/v1\n<metadata.uid>\n<publicKey.id>".<br/>
+        </td>
+        <td>false</td>
       </tr></tbody>
 </table>
 

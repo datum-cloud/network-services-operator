@@ -18,6 +18,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
@@ -32,7 +33,7 @@ import (
 //
 // baseDirectives are the RouteBaseDirectives from the operator config;
 // they are prepended to every policy's per-rule directive list.
-func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string) (*PolicyIndex, error) {
+func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirectives []string, opts ...IndexOption) (*PolicyIndex, error) {
 	idx := &PolicyIndex{
 		DStoUS:           make(map[string]string),
 		TenantNamespaces: make(map[string]struct{}),
@@ -42,6 +43,9 @@ func BuildPolicyIndexFromClient(ctx context.Context, cl client.Client, baseDirec
 		Connectors:       make(map[ConnectorKey]ConnectorInfo),
 		VPCPods:          make(map[VPCPodKey]VPCPodInfo),
 		VPCPodBackends:   make(map[VPCPodBackendKey]VPCPodInfo),
+	}
+	for _, opt := range opts {
+		opt(idx)
 	}
 	if err := populateFromClient(ctx, cl, idx, baseDirectives); err != nil {
 		return nil, err
@@ -184,7 +188,7 @@ func populateFromClient(ctx context.Context, cl client.Client, idx *PolicyIndex,
 						continue
 					}
 
-					online, nodeID := connectorLiveness(&connector)
+					online, nodeID := ConnectorLiveness(&connector, idx.connectorKeyBinding)
 
 					idx.Connectors[key] = ConnectorInfo{
 						Online:     online,
@@ -468,8 +472,26 @@ func connectorLiveness(connector *networkingv1alpha1.Connector) (online bool, no
 // node id, using the same annotation-first classification the extension server
 // applies when programming routes. It is exported so callers can detect liveness
 // changes consistently with what the hook will program.
-func ConnectorLiveness(connector *networkingv1alpha1.Connector) (online bool, nodeID string) {
+func ConnectorLiveness(connector *networkingv1alpha1.Connector, keyBinding connectorbinding.Mode) (online bool, nodeID string) {
+	if keyBinding.Enforcing() && !connectorKeyBindingVerified(connector) {
+		return false, ""
+	}
 	return connectorLiveness(connector)
+}
+
+func connectorKeyBindingVerified(connector *networkingv1alpha1.Connector) bool {
+	return connector.Annotations[networkingv1alpha1.ConnectorKeyBindingAnnotation] == string(connectorbinding.Verified)
+}
+
+// IndexOption configures BuildPolicyIndexFromClient.
+type IndexOption func(*PolicyIndex)
+
+// WithConnectorKeyBinding sets how a Connector's key binding affects whether
+// it is routed to.
+func WithConnectorKeyBinding(mode connectorbinding.Mode) IndexOption {
+	return func(idx *PolicyIndex) {
+		idx.connectorKeyBinding = mode
+	}
 }
 
 // connectorStatusLiveness derives the (online, nodeID) classification from a

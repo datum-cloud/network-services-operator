@@ -254,6 +254,19 @@ spec:
                           type: object
                         maxItems: 16
                         type: array
+                      binding:
+                        description: |-
+                          Binding proves the agent publishing this Connector holds the private
+                          key for Id.
+                        properties:
+                          signature:
+                            description: |-
+                              Signature is the standard base64 encoding of the ed25519 signature,
+                              made with the endpoint's private key, over the message
+                              "datum-connector-binding/v1\n<metadata.uid>\n<publicKey.id>".
+                            maxLength: 128
+                            type: string
+                        type: object
                       discoveryMode:
                         default: DNS
                         description: The mode used to discover the public key

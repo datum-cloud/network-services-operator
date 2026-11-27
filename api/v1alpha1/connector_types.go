@@ -97,6 +97,22 @@ type ConnectorConnectionDetailsPublicKey struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MaxItems=16
 	Addresses []PublicKeyConnectorAddress `json:"addresses,omitempty"`
+
+	// Binding proves the agent publishing this Connector holds the private
+	// key for Id.
+	//
+	// +kubebuilder:validation:Optional
+	Binding *ConnectorKeyBinding `json:"binding,omitempty"`
+}
+
+// ConnectorKeyBinding binds a Connector to its endpoint key.
+type ConnectorKeyBinding struct {
+	// Signature is the standard base64 encoding of the ed25519 signature,
+	// made with the endpoint's private key, over the message
+	// "datum-connector-binding/v1\n<metadata.uid>\n<publicKey.id>".
+	//
+	// +kubebuilder:validation:MaxLength=128
+	Signature string `json:"signature,omitempty"`
 }
 
 type ConnectorConnectionType string

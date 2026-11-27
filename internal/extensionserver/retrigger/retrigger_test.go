@@ -20,6 +20,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 )
 
 const (
@@ -177,7 +178,7 @@ func TestReconcile_UnrelatedProxy_NotTouched(t *testing.T) {
 // changes that affect the (online, nodeID) the extension server keys on — not
 // on unrelated status churn (e.g. heartbeat lastTransitionTime updates).
 func TestLivenessChangedPredicate(t *testing.T) {
-	p := livenessChangedPredicate()
+	p := livenessChangedPredicate(connectorbinding.Observe)
 
 	offline := connectorWithUpstreamStatus(t, false, "")
 	onlineA := connectorWithUpstreamStatus(t, true, "node-a")
@@ -194,4 +195,47 @@ func TestLivenessChangedPredicate(t *testing.T) {
 		"nodeID change must reconcile")
 	assert.False(t, p.Update(event.UpdateEvent{ObjectOld: onlineA, ObjectNew: onlineA.DeepCopy()}),
 		"no liveness change must NOT reconcile")
+}
+
+func withKeyBinding(c *networkingv1alpha1.Connector, verdict connectorbinding.Verdict) *networkingv1alpha1.Connector {
+	c.Annotations[networkingv1alpha1.ConnectorKeyBindingAnnotation] = string(verdict)
+	return c
+}
+
+func TestReconcile_EnforceKeyBinding(t *testing.T) {
+	tests := []struct {
+		name      string
+		connector *networkingv1alpha1.Connector
+		mode      connectorbinding.Mode
+		want      string
+	}{
+		{name: "enforce verified", connector: withKeyBinding(connectorWithUpstreamStatus(t, true, "node-abc"), connectorbinding.Verified), mode: connectorbinding.Enforce, want: "true/node-abc"},
+		{name: "enforce missing", connector: withKeyBinding(connectorWithUpstreamStatus(t, true, "node-abc"), connectorbinding.Missing), mode: connectorbinding.Enforce, want: "false/"},
+		{name: "enforce invalid", connector: withKeyBinding(connectorWithUpstreamStatus(t, true, "node-abc"), connectorbinding.Invalid), mode: connectorbinding.Enforce, want: "false/"},
+		{name: "enforce unstamped", connector: connectorWithUpstreamStatus(t, true, "node-abc"), mode: connectorbinding.Enforce, want: "false/"},
+		{name: "observe invalid", connector: withKeyBinding(connectorWithUpstreamStatus(t, true, "node-abc"), connectorbinding.Invalid), mode: connectorbinding.Observe, want: "true/node-abc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(testScheme(t)).
+				WithObjects(tt.connector, proxyRefersConnector(), gateway()).
+				Build()
+			r := &Reconciler{Client: cl, ConnectorKeyBinding: tt.mode}
+			_, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: client.ObjectKey{Namespace: testNS, Name: testConnector},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, gatewayLiveness(t, cl))
+		})
+	}
+}
+
+func TestLivenessChangedPredicate_KeyBindingFlip(t *testing.T) {
+	missing := withKeyBinding(connectorWithUpstreamStatus(t, true, "node-a"), connectorbinding.Missing)
+	verified := withKeyBinding(connectorWithUpstreamStatus(t, true, "node-a"), connectorbinding.Verified)
+
+	assert.True(t, livenessChangedPredicate(connectorbinding.Enforce).Update(event.UpdateEvent{ObjectOld: missing, ObjectNew: verified}),
+		"in enforce mode a binding verdict change must reconcile")
+	assert.False(t, livenessChangedPredicate(connectorbinding.Observe).Update(event.UpdateEvent{ObjectOld: missing, ObjectNew: verified}),
+		"in observe mode a binding verdict change does not affect routing")
 }

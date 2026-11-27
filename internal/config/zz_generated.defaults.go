@@ -317,6 +317,9 @@ func SetObjectDefaults_NetworkServicesOperator(in *NetworkServicesOperator) {
 	if in.Connector.Iroh.TTLSeconds == 0 {
 		in.Connector.Iroh.TTLSeconds = 5
 	}
+	if in.Connector.KeyBinding == "" {
+		in.Connector.KeyBinding = "observe"
+	}
 	SetDefaults_DiscoveryConfig(&in.Discovery)
 	if in.DownstreamResourceManagement.EventOwnership == "" {
 		in.DownstreamResourceManagement.EventOwnership = "Disabled"

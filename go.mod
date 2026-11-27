@@ -5,6 +5,7 @@ go 1.26.10
 toolchain go1.27.4
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/cert-manager/cert-manager v1.17.4
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2
@@ -86,7 +87,6 @@ require (
 require (
 	cel.dev/expr v0.25.3 // indirect
 	dario.cat/mergo v1.0.2 // indirect
-	filippo.io/edwards25519 v1.2.0 // indirect
 	fortio.org/cli v1.12.3 // indirect
 	fortio.org/dflag v1.9.3 // indirect
 	fortio.org/duration v1.0.4 // indirect

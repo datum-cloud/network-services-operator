@@ -15,6 +15,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 )
 
 func TestInternalDNSDefaultsRemainDisabled(t *testing.T) {
@@ -331,6 +332,26 @@ func TestNetworkServicesOperator_Validate_IrohDisabled(t *testing.T) {
 	cfg := &NetworkServicesOperator{}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected nil, got %v", err)
+	}
+}
+
+func TestConnectorKeyBindingConfig(t *testing.T) {
+	cfg := &NetworkServicesOperator{}
+	SetObjectDefaults_NetworkServicesOperator(cfg)
+	if cfg.Connector.KeyBinding != connectorbinding.Observe {
+		t.Fatalf("connector.keyBinding must default to observe, got %q", cfg.Connector.KeyBinding)
+	}
+
+	for _, mode := range []connectorbinding.Mode{"", connectorbinding.Observe, connectorbinding.Enforce} {
+		cfg := &NetworkServicesOperator{Connector: ConnectorConfig{KeyBinding: mode}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("mode %q: expected nil, got %v", mode, err)
+		}
+	}
+
+	cfg = &NetworkServicesOperator{Connector: ConnectorConfig{KeyBinding: "strict"}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "connector.keyBinding") {
+		t.Fatalf("expected a connector.keyBinding error, got %v", err)
 	}
 }
 

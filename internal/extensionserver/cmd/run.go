@@ -38,6 +38,7 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	extassets "go.datum.net/network-services-operator/internal/extensionserver/assets"
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 	extmetrics "go.datum.net/network-services-operator/internal/extensionserver/metrics"
@@ -71,6 +72,7 @@ func envBool(key string, def bool) bool {
 //	--server-config=/config/config.yaml  (optional; provides Coraza WAF config)
 //	--enable-programmed-set=false         (default off; test environments set true)
 //	--upstream-address-guard=false
+//	--connector-key-binding=observe
 type options struct {
 	grpcAddr             string
 	healthAddr           string
@@ -80,6 +82,7 @@ type options struct {
 	serverCfgFile        string
 	enableProgrammedSet  bool
 	upstreamAddressGuard bool
+	connectorKeyBinding  string
 }
 
 // NewCommand returns the "extension-server" subcommand.
@@ -108,6 +111,8 @@ func NewCommand() *cobra.Command {
 		"Serve the read-only /debug/programmed-set endpoint used by the parity test (test environments only)")
 	fs.BoolVar(&o.upstreamAddressGuard, "upstream-address-guard", false,
 		"Refuse requests from tenant clusters that resolve names when the selected address is not public unicast")
+	fs.StringVar(&o.connectorKeyBinding, "connector-key-binding", string(connectorbinding.Observe),
+		"observe routes to Connectors as before; enforce treats a Connector not bound to its endpoint key as offline")
 
 	cmd := &cobra.Command{
 		Use:   "envoy-gateway-extension-server",
@@ -214,6 +219,13 @@ func run(o options) {
 	tlsClientCA := o.tlsClientCA
 	serverCfgFile := o.serverCfgFile
 
+	keyBinding, err := connectorbinding.ParseMode(o.connectorKeyBinding)
+	if err != nil {
+		log.Error("parse --connector-key-binding", "err", err)
+		os.Exit(1)
+	}
+	log.Info("connector key binding", "mode", keyBinding)
+
 	// --- OTel tracing (optional, default off) ---
 	// Enable by setting OTEL_TRACES_ENABLED=true. Non-fatal: the server continues
 	// without tracing if the OTLP backend is unreachable. When disabled, the
@@ -280,7 +292,7 @@ func run(o options) {
 	// --- Edge re-translation controllers ---
 	// Makes Envoy Gateway re-translate when a Connector's liveness changes, so
 	// the hook re-runs against fresh liveness. See the retrigger package doc.
-	if err := (&retrigger.Reconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+	if err := (&retrigger.Reconciler{Client: mgr.GetClient(), ConnectorKeyBinding: keyBinding}).SetupWithManager(mgr); err != nil {
 		log.Error("set up connector re-translation controller", "err", err)
 		os.Exit(1)
 	}
@@ -317,6 +329,7 @@ func run(o options) {
 		// stays off in production unless --enable-programmed-set is passed.
 		EnableProgrammedSet:  o.enableProgrammedSet,
 		UpstreamAddressGuard: o.upstreamAddressGuard,
+		ConnectorKeyBinding:  keyBinding,
 	}
 
 	// --- gRPC panic recovery interceptor ---

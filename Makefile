@@ -279,7 +279,7 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
 GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # renovate: datasource=go depName=github.com/cert-manager/cert-manager
-CERTMANAGER_VERSION ?= 1.17.1
+CERTMANAGER_VERSION ?= 1.17.4
 
 # renovate: datasource=go depName=fybrik.io/crdoc
 CRDOC_VERSION ?= v0.6.4

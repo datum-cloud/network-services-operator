@@ -36,6 +36,7 @@ import (
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	"go.datum.net/network-services-operator/internal/registrydata"
 )
 
@@ -821,6 +822,14 @@ type ConnectorConfig struct {
 
 	// Iroh contains configuration specific to iroh-tunneled connectors.
 	Iroh IrohConnectorConfig `json:"iroh,omitempty"`
+
+	// KeyBinding sets what a Connector not bound to its endpoint key may do.
+	// In observe, Connectors are counted by verdict and otherwise behave as
+	// before. In enforce, only a Connector bound to its endpoint key may
+	// publish that endpoint's iroh DNS record.
+	//
+	// +default="observe"
+	KeyBinding connectorbinding.Mode `json:"keyBinding,omitempty"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -2158,6 +2167,9 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 func (c *NetworkServicesOperator) Validate() error {
 	if err := c.Connector.Iroh.validate(); err != nil {
 		return fmt.Errorf("connector.iroh: %w", err)
+	}
+	if _, err := connectorbinding.ParseMode(string(c.Connector.KeyBinding)); err != nil {
+		return fmt.Errorf("connector.keyBinding: %w", err)
 	}
 	if err := c.Gateway.validate(); err != nil {
 		return fmt.Errorf("gateway: %w", err)

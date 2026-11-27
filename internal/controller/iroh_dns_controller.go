@@ -34,6 +34,7 @@ import (
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/config"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 	"go.datum.net/network-services-operator/internal/iroh"
 )
@@ -50,6 +51,7 @@ const (
 	irohDNSConnectorClusterLabel   = "networking.datumapis.com/iroh-dns-connector-cluster"
 	irohDNSConnectorNamespaceLabel = "networking.datumapis.com/iroh-dns-connector-namespace"
 	irohDNSConnectorNameLabel      = "networking.datumapis.com/iroh-dns-connector-name"
+	irohDNSKeyBindingLabel         = "networking.datumapis.com/iroh-dns-key-binding"
 
 	// Connector status condition surfacing whether *this* Connector is the
 	// one publishing the iroh DNS record for its endpoint id.
@@ -58,8 +60,10 @@ const (
 	connectorReasonIrohOwner           = "Owner"
 	connectorReasonIrohDeferredToOwner = "DeferredToOwner"
 	connectorReasonIrohPending         = "Pending"
+	connectorReasonIrohKeyUnbound      = "KeyBindingNotVerified"
 
 	irohDeferredToOwnerMessage = "This endpoint ID is already published by another connector."
+	irohKeyUnboundMessage      = "Connector status does not carry a verified binding to its endpoint key."
 )
 
 // allowedIrohControllerNames is the set of ConnectorClass.spec.controllerName
@@ -127,6 +131,14 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
+	verdict := connectorbinding.VerifyStatus(string(connector.UID), &connector.Status)
+	if r.Config.Connector.KeyBinding.Enforcing() && verdict != connectorbinding.Verified {
+		if err := r.releaseIfOwner(ctx, &connector); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.setPublishedCondition(ctx, cl, &connector, metav1.ConditionFalse, connectorReasonIrohKeyUnbound, irohKeyUnboundMessage)
+	}
+
 	desired, ok, err := r.buildDesiredRecordSet(string(req.ClusterName), &connector)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -140,6 +152,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, r.setPublishedCondition(ctx, cl, &connector, metav1.ConditionFalse, connectorReasonIrohPending, "Connector status does not yet carry connection details.")
 	}
 
+	desired.Labels[irohDNSKeyBindingLabel] = string(verdict)
 	return ctrl.Result{}, r.applyClaim(ctx, cl, &connector, desired)
 }
 
@@ -149,7 +162,9 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 //     us; we re-fetch and continue.
 //   - Found, our claim → SSA refresh content.
 //   - Found, foreign claim → defer (no write) and surface a status
-//     condition that does not identify the owner.
+//     condition that does not identify the owner. In enforce mode a
+//     Connector bound to its endpoint key takes over a claim whose holder
+//     is not.
 func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, desired *dnsv1alpha1.DNSRecordSet) error {
 	key := client.ObjectKeyFromObject(desired)
 	var existing dnsv1alpha1.DNSRecordSet
@@ -172,6 +187,17 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 	}
 
 	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
+	if currentClaim != string(connector.UID) && r.displacesClaim(desired, &existing) {
+		log.FromContext(ctx).Info("taking over iroh DNS record from a Connector not bound to its endpoint key",
+			"dnsRecordSet", key.String(),
+			"ownerCluster", decodeIrohClusterLabel(existing.Labels[irohDNSConnectorClusterLabel]),
+			"ownerNamespace", existing.Labels[irohDNSConnectorNamespaceLabel],
+			"ownerName", existing.Labels[irohDNSConnectorNameLabel],
+			"ownerUID", currentClaim,
+		)
+		desired.ResourceVersion = existing.ResourceVersion
+		currentClaim = string(connector.UID)
+	}
 	if currentClaim != string(connector.UID) {
 		prior := apimeta.FindStatusCondition(connector.Status.Conditions, connectorConditionIrohDNSPublished)
 		if prior == nil || prior.Status != metav1.ConditionFalse || prior.Reason != connectorReasonIrohDeferredToOwner {
@@ -194,6 +220,12 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 		return fmt.Errorf("apply DNSRecordSet: %w", err)
 	}
 	return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
+}
+
+func (r *IrohDNSReconciler) displacesClaim(desired, existing *dnsv1alpha1.DNSRecordSet) bool {
+	return r.Config.Connector.KeyBinding.Enforcing() &&
+		desired.Labels[irohDNSKeyBindingLabel] == string(connectorbinding.Verified) &&
+		existing.Labels[irohDNSKeyBindingLabel] != string(connectorbinding.Verified)
 }
 
 // handleDeletion releases the claim (if held) and removes the finalizer.

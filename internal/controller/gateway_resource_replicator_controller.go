@@ -1160,7 +1160,7 @@ func typedEnqueueRequestForGVK(
 ) mchandler.TypedEventHandlerFunc[client.Object, GVKRequest] {
 	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
-			if selector != nil && !selector.Matches(labels.Set(obj.GetLabels())) {
+			if selector != nil && !selector.Matches(labels.Set(obj.GetLabels())) && !isTerminatingWithReplicatorFinalizer(obj) {
 				return nil
 			}
 
@@ -1180,6 +1180,10 @@ func typedEnqueueRequestForGVK(
 			}
 		})
 	}
+}
+
+func isTerminatingWithReplicatorFinalizer(obj client.Object) bool {
+	return !obj.GetDeletionTimestamp().IsZero() && controllerutil.ContainsFinalizer(obj, gatewayResourceReplicatorFinalizer)
 }
 
 func gvkKey(gvk schema.GroupVersionKind) string {

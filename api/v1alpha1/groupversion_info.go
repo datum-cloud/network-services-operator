@@ -38,6 +38,12 @@ var (
 // resource-agnostic and carries no bespoke schema.
 const UpstreamStatusAnnotation = "networking.datumapis.com/upstream-status"
 
+// ConnectorKeyBindingAnnotation records, on a Connector's downstream copy,
+// whether the upstream Connector's status carries a valid signature binding
+// it to its endpoint key. The value is verified, missing or invalid. Only the
+// replicator writes it.
+const ConnectorKeyBindingAnnotation = "networking.datumapis.com/connector-key-binding"
+
 // UpstreamGenerationAnnotation carries a resource's upstream metadata.generation
 // to its downstream copy, written in the same update as the spec it belongs to.
 //

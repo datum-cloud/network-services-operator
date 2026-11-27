@@ -75,6 +75,9 @@ func (t *connectorKeyBindingTracker) Engage(ctx context.Context, name multiclust
 func (t *connectorKeyBindingTracker) record(clusterName multicluster.ClusterName, key types.NamespacedName, verdict connectorbinding.Verdict) (previous connectorbinding.Verdict, changed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if _, ok := t.engaged[clusterName]; !ok {
+		return "", false
+	}
 	connectors := t.verdicts[clusterName]
 	if connectors == nil {
 		connectors = map[types.NamespacedName]connectorbinding.Verdict{}

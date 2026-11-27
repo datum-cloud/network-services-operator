@@ -187,6 +187,9 @@ func TestReplicatorRecordsKeyBindingOnlyAfterDownstreamWrite(t *testing.T) {
 	id := testBindingEndpointID()
 	const uid = "connector-uid-write-fails"
 	f := newKeyBindingReplicatorFixture(t, "connector-write-fails", uid, nil, connectorStatusWithBinding(id, testBindingSignature(uid, id)))
+	engageCtx, disengage := context.WithCancel(context.Background())
+	t.Cleanup(disengage)
+	require.NoError(t, connectorKeyBindings.Engage(engageCtx, f.req.ClusterName, &replicatorFakeCluster{}))
 	f.reconcile(t, 1)
 
 	failing := interceptor.Funcs{
@@ -228,6 +231,10 @@ func TestConnectorKeyBindingTrackerCountsConnectorsByVerdict(t *testing.T) {
 	}
 	a := types.NamespacedName{Namespace: "default", Name: "a"}
 	b := types.NamespacedName{Namespace: "default", Name: "b"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, tracker.Engage(ctx, "p1", &replicatorFakeCluster{}))
+	require.NoError(t, tracker.Engage(ctx, "p2", &replicatorFakeCluster{}))
 
 	for _, v := range connectorbinding.Verdicts {
 		assert.Zero(t, count(v))
@@ -251,6 +258,8 @@ func TestConnectorKeyBindingTrackerCountsConnectorsByVerdict(t *testing.T) {
 	tracker.forget("p1", b)
 	tracker.forget("p1", b)
 	tracker.forget("p3", a)
+	_, changed = tracker.record("p3", a, connectorbinding.Invalid)
+	assert.False(t, changed, "a cluster that was never engaged is not counted")
 	assert.Zero(t, count(connectorbinding.Invalid))
 	assert.Equal(t, 1.0, count(connectorbinding.Verified))
 	assert.Equal(t, 1.0, count(connectorbinding.Missing))
@@ -290,4 +299,33 @@ func TestConnectorKeyBindingTrackerForgetsDisengagedCluster(t *testing.T) {
 		"an earlier engagement ending must not forget a cluster engaged again")
 	disengageAgain()
 	require.Eventually(t, func() bool { return count(connectorbinding.Invalid) == 0 }, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestConnectorKeyBindingTrackerIgnoresRecordAfterDisengage(t *testing.T) {
+	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_connector_key_binding_late"}, []string{metricLabelVerdict})
+	tracker := newConnectorKeyBindingTracker(gauge)
+	a := types.NamespacedName{Namespace: "default", Name: "a"}
+
+	ctx, disengage := context.WithCancel(context.Background())
+	require.NoError(t, tracker.Engage(ctx, "p1", &replicatorFakeCluster{}))
+	tracker.record("p1", a, connectorbinding.Missing)
+
+	disengage()
+	require.Eventually(t, func() bool {
+		tracker.mu.Lock()
+		defer tracker.mu.Unlock()
+		_, engaged := tracker.engaged["p1"]
+		return !engaged
+	}, 5*time.Second, 10*time.Millisecond)
+
+	_, changed := tracker.record("p1", a, connectorbinding.Verified)
+	assert.False(t, changed, "a reconcile finishing after its cluster disengaged must not be counted")
+
+	tracker.mu.Lock()
+	_, leaked := tracker.verdicts["p1"]
+	tracker.mu.Unlock()
+	assert.False(t, leaked)
+	for _, v := range connectorbinding.Verdicts {
+		assert.Zero(t, testutil.ToFloat64(gauge.WithLabelValues(string(v))), "verdict %s", v)
+	}
 }

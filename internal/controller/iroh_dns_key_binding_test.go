@@ -15,17 +15,20 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/config"
 	"go.datum.net/network-services-operator/internal/connectorbinding"
 )
 
@@ -75,6 +78,7 @@ func newIrohBindingFixture(t *testing.T, mode connectorbinding.Mode, signedUID s
 
 	r := newReconciler()
 	r.Config.Connector.KeyBinding = mode
+	r.displaced = make(chan event.TypedGenericEvent[mcreconcile.Request], 1)
 	desired, ok, err := r.buildDesiredRecordSet(bindingTestProject, connector)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -133,6 +137,18 @@ func (f *irohBindingFixture) record(t *testing.T) (*dnsv1alpha1.DNSRecordSet, bo
 	}
 	require.NoError(t, err)
 	return &drs, true
+}
+
+func (f *irohBindingFixture) enqueued() []mcreconcile.Request {
+	var reqs []mcreconcile.Request
+	for {
+		select {
+		case e := <-f.r.displaced:
+			reqs = append(reqs, e.Object)
+		default:
+			return reqs
+		}
+	}
 }
 
 func (f *irohBindingFixture) published(t *testing.T) *metav1.Condition {
@@ -205,6 +221,10 @@ func TestIrohDNSKeyBinding_VerifiedDisplacesUnverifiedHolder(t *testing.T) {
 				assert.NotEqual(t, "held", entry.Name, "the previous holder's records must be replaced")
 			}
 			assert.Equal(t, connectorReasonIrohOwner, f.published(t).Reason)
+			assert.Equal(t, []mcreconcile.Request{{
+				ClusterName: "other-project",
+				Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "other"}},
+			}}, f.enqueued(), "the displaced Connector must be reconciled to update its condition")
 		})
 	}
 }
@@ -220,6 +240,7 @@ func TestIrohDNSKeyBinding_VerifiedDefersToVerifiedHolder(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, holderUID, drs.Labels[irohDNSClaimedByUIDLabel])
 	assert.Equal(t, connectorReasonIrohDeferredToOwner, f.published(t).Reason)
+	assert.Empty(t, f.enqueued())
 }
 
 func TestIrohDNSKeyBinding_ObserveLeavesClaimsAlone(t *testing.T) {
@@ -245,10 +266,13 @@ func TestIrohDNSKeyBinding_ObserveLeavesClaimsAlone(t *testing.T) {
 		require.True(t, exists)
 		assert.Equal(t, holderUID, drs.Labels[irohDNSClaimedByUIDLabel])
 		assert.Equal(t, connectorReasonIrohDeferredToOwner, f.published(t).Reason)
+		assert.Empty(t, f.enqueued())
 	})
 
 	t.Run("default mode is observe", func(t *testing.T) {
-		f := newIrohBindingFixture(t, "", "", nil)
+		var defaults config.NetworkServicesOperator
+		config.SetObjectDefaults_NetworkServicesOperator(&defaults)
+		f := newIrohBindingFixture(t, defaults.Connector.KeyBinding, "", nil)
 		f.reconcile(t)
 
 		_, exists := f.record(t)

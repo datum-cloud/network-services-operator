@@ -17,12 +17,15 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -42,6 +45,8 @@ import (
 const (
 	irohDNSFinalizer    = "networking.datumapis.com/iroh-dns-cleanup"
 	irohDNSFieldManager = "network-services-operator/iroh-dns"
+
+	irohDisplacedQueueSize = 64
 
 	// labels stamped on every DNSRecordSet we manage. Used both for
 	// observability and (more importantly) so the downstream watch
@@ -86,6 +91,8 @@ type IrohDNSReconciler struct {
 	mgr        mcmanager.Manager
 	Config     config.NetworkServicesOperator
 	Downstream cluster.Cluster
+
+	displaced chan event.TypedGenericEvent[mcreconcile.Request]
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=connectors,verbs=get;list;watch;update;patch
@@ -162,9 +169,7 @@ func (r *IrohDNSReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 //     us; we re-fetch and continue.
 //   - Found, our claim → SSA refresh content.
 //   - Found, foreign claim → defer (no write) and surface a status
-//     condition that does not identify the owner. In enforce mode a
-//     Connector bound to its endpoint key takes over a claim whose holder
-//     is not.
+//     condition that does not identify the owner.
 func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, connector *networkingv1alpha1.Connector, desired *dnsv1alpha1.DNSRecordSet) error {
 	key := client.ObjectKeyFromObject(desired)
 	var existing dnsv1alpha1.DNSRecordSet
@@ -187,6 +192,7 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 	}
 
 	currentClaim := existing.Labels[irohDNSClaimedByUIDLabel]
+	var displaced *dnsv1alpha1.DNSRecordSet
 	if currentClaim != string(connector.UID) && r.displacesClaim(desired, &existing) {
 		log.FromContext(ctx).Info("taking over iroh DNS record from a Connector not bound to its endpoint key",
 			"dnsRecordSet", key.String(),
@@ -196,6 +202,7 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 			"ownerUID", currentClaim,
 		)
 		desired.ResourceVersion = existing.ResourceVersion
+		displaced = &existing
 		currentClaim = string(connector.UID)
 	}
 	if currentClaim != string(connector.UID) {
@@ -219,7 +226,26 @@ func (r *IrohDNSReconciler) applyClaim(ctx context.Context, cl cluster.Cluster, 
 	if err := r.Downstream.GetClient().Patch(ctx, desired, client.Apply, client.FieldOwner(irohDNSFieldManager), client.ForceOwnership); err != nil { //nolint:staticcheck // SA1019: see comment above
 		return fmt.Errorf("apply DNSRecordSet: %w", err)
 	}
+	if displaced != nil {
+		r.enqueueDisplaced(ctx, displaced)
+	}
 	return r.setPublishedCondition(ctx, cl, connector, metav1.ConditionTrue, connectorReasonIrohOwner, "Owns iroh DNS record.")
+}
+
+func (r *IrohDNSReconciler) enqueueDisplaced(ctx context.Context, previous *dnsv1alpha1.DNSRecordSet) {
+	name := previous.Labels[irohDNSConnectorNameLabel]
+	namespace := previous.Labels[irohDNSConnectorNamespaceLabel]
+	if r.displaced == nil || name == "" || namespace == "" {
+		return
+	}
+	req := mcreconcile.Request{
+		ClusterName: multicluster.ClusterName(decodeIrohClusterLabel(previous.Labels[irohDNSConnectorClusterLabel])),
+		Request:     ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}},
+	}
+	select {
+	case r.displaced <- event.TypedGenericEvent[mcreconcile.Request]{Object: req}:
+	case <-ctx.Done():
+	}
 }
 
 func (r *IrohDNSReconciler) displacesClaim(desired, existing *dnsv1alpha1.DNSRecordSet) bool {
@@ -476,6 +502,15 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	)
 	downstreamClusterSource, _, _ := downstreamSource.ForCluster("", r.Downstream)
 
+	if r.displaced == nil {
+		r.displaced = make(chan event.TypedGenericEvent[mcreconcile.Request], irohDisplacedQueueSize)
+	}
+	displacedSource := source.TypedChannel(r.displaced, handler.TypedFuncs[mcreconcile.Request, mcreconcile.Request]{
+		GenericFunc: func(_ context.Context, e event.TypedGenericEvent[mcreconcile.Request], q workqueue.TypedRateLimitingInterface[mcreconcile.Request]) {
+			q.Add(e.Object)
+		},
+	})
+
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&networkingv1alpha1.Connector{}).
 		Watches(
@@ -513,6 +548,7 @@ func (r *IrohDNSReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 			onlyClustersServingLeases(),
 		).
 		WatchesRawSource(downstreamClusterSource).
+		WatchesRawSource(displacedSource).
 		Named("iroh-dns").
 		Complete(r)
 }

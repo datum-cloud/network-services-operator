@@ -472,9 +472,6 @@ func connectorLiveness(connector *networkingv1alpha1.Connector) (online bool, no
 // node id, using the same annotation-first classification the extension server
 // applies when programming routes. It is exported so callers can detect liveness
 // changes consistently with what the hook will program.
-//
-// In enforce mode a Connector whose downstream copy is not stamped as bound to
-// its endpoint key is offline.
 func ConnectorLiveness(connector *networkingv1alpha1.Connector, keyBinding connectorbinding.Mode) (online bool, nodeID string) {
 	if keyBinding.Enforcing() && !connectorKeyBindingVerified(connector) {
 		return false, ""

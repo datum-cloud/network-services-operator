@@ -7,7 +7,9 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -21,7 +23,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
@@ -179,34 +183,111 @@ func TestReplicatorRestampsConnectorKeyBindingWhenStatusChanges(t *testing.T) {
 	assert.Equal(t, string(connectorbinding.Invalid), got)
 }
 
+func TestReplicatorRecordsKeyBindingOnlyAfterDownstreamWrite(t *testing.T) {
+	id := testBindingEndpointID()
+	const uid = "connector-uid-write-fails"
+	f := newKeyBindingReplicatorFixture(t, "connector-write-fails", uid, nil, connectorStatusWithBinding(id, testBindingSignature(uid, id)))
+	f.reconcile(t, 1)
+
+	failing := interceptor.Funcs{
+		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+			return errors.New("downstream unavailable")
+		},
+		Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+			return errors.New("downstream unavailable")
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	f.reconciler.DownstreamCluster = &replicatorFakeCluster{scheme: scheme, c: fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(failing).Build()}
+
+	_, err := f.reconciler.Reconcile(context.Background(), f.req)
+	require.Error(t, err)
+	_, tracked := trackedVerdict(f.req.ClusterName, f.req.NamespacedName)
+	assert.False(t, tracked, "a verdict must not be counted until the downstream copy carries it")
+
+	f.reconciler.DownstreamCluster = &replicatorFakeCluster{scheme: scheme, c: f.downstream}
+	f.reconcile(t, 1)
+	verdict, tracked := trackedVerdict(f.req.ClusterName, f.req.NamespacedName)
+	assert.True(t, tracked)
+	assert.Equal(t, connectorbinding.Verified, verdict)
+}
+
+func trackedVerdict(clusterName multicluster.ClusterName, key types.NamespacedName) (connectorbinding.Verdict, bool) {
+	connectorKeyBindings.mu.Lock()
+	defer connectorKeyBindings.mu.Unlock()
+	v, ok := connectorKeyBindings.verdicts[clusterName][key]
+	return v, ok
+}
+
 func TestConnectorKeyBindingTrackerCountsConnectorsByVerdict(t *testing.T) {
 	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_connector_key_binding"}, []string{metricLabelVerdict})
 	tracker := newConnectorKeyBindingTracker(gauge)
 	count := func(v connectorbinding.Verdict) float64 {
 		return testutil.ToFloat64(gauge.WithLabelValues(string(v)))
 	}
+	a := types.NamespacedName{Namespace: "default", Name: "a"}
+	b := types.NamespacedName{Namespace: "default", Name: "b"}
 
 	for _, v := range connectorbinding.Verdicts {
 		assert.Zero(t, count(v))
 	}
 
-	_, changed := tracker.record("a", connectorbinding.Missing)
+	_, changed := tracker.record("p1", a, connectorbinding.Missing)
 	assert.True(t, changed)
-	_, changed = tracker.record("a", connectorbinding.Missing)
+	_, changed = tracker.record("p1", a, connectorbinding.Missing)
 	assert.False(t, changed)
-	tracker.record("b", connectorbinding.Invalid)
-	assert.Equal(t, 1.0, count(connectorbinding.Missing))
+	tracker.record("p1", b, connectorbinding.Invalid)
+	tracker.record("p2", a, connectorbinding.Missing)
+	assert.Equal(t, 2.0, count(connectorbinding.Missing))
 	assert.Equal(t, 1.0, count(connectorbinding.Invalid))
 
-	prev, changed := tracker.record("a", connectorbinding.Verified)
+	prev, changed := tracker.record("p1", a, connectorbinding.Verified)
 	assert.True(t, changed)
 	assert.Equal(t, connectorbinding.Missing, prev)
-	assert.Zero(t, count(connectorbinding.Missing))
+	assert.Equal(t, 1.0, count(connectorbinding.Missing))
 	assert.Equal(t, 1.0, count(connectorbinding.Verified))
 
-	tracker.forget("b")
-	tracker.forget("b")
-	tracker.forget("unknown")
+	tracker.forget("p1", b)
+	tracker.forget("p1", b)
+	tracker.forget("p3", a)
 	assert.Zero(t, count(connectorbinding.Invalid))
 	assert.Equal(t, 1.0, count(connectorbinding.Verified))
+	assert.Equal(t, 1.0, count(connectorbinding.Missing))
+}
+
+func TestConnectorKeyBindingTrackerForgetsDisengagedCluster(t *testing.T) {
+	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_connector_key_binding_engage"}, []string{metricLabelVerdict})
+	tracker := newConnectorKeyBindingTracker(gauge)
+	count := func(v connectorbinding.Verdict) float64 {
+		return testutil.ToFloat64(gauge.WithLabelValues(string(v)))
+	}
+	a := types.NamespacedName{Namespace: "default", Name: "a"}
+	b := types.NamespacedName{Namespace: "default", Name: "b"}
+
+	p1Ctx, disengageP1 := context.WithCancel(context.Background())
+	p2Ctx, disengageP2 := context.WithCancel(context.Background())
+	defer disengageP2()
+	require.NoError(t, tracker.Engage(p1Ctx, "p1", &replicatorFakeCluster{}))
+	require.NoError(t, tracker.Engage(p2Ctx, "p2", &replicatorFakeCluster{}))
+
+	tracker.record("p1", a, connectorbinding.Verified)
+	tracker.record("p1", b, connectorbinding.Missing)
+	tracker.record("p2", a, connectorbinding.Missing)
+
+	disengageP1()
+	require.Eventually(t, func() bool { return count(connectorbinding.Verified) == 0 }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, 1.0, count(connectorbinding.Missing), "only the disengaged cluster's Connectors are forgotten")
+
+	reengagedCtx, disengageAgain := context.WithCancel(context.Background())
+	staleCtx, cancelStale := context.WithCancel(context.Background())
+	stale := &replicatorFakeCluster{}
+	require.NoError(t, tracker.Engage(staleCtx, "p3", stale))
+	require.NoError(t, tracker.Engage(reengagedCtx, "p3", &replicatorFakeCluster{}))
+	tracker.record("p3", a, connectorbinding.Invalid)
+	cancelStale()
+	assert.Never(t, func() bool { return count(connectorbinding.Invalid) == 0 }, 200*time.Millisecond, 10*time.Millisecond,
+		"an earlier engagement ending must not forget a cluster engaged again")
+	disengageAgain()
+	require.Eventually(t, func() bool { return count(connectorbinding.Invalid) == 0 }, 5*time.Second, 10*time.Millisecond)
 }

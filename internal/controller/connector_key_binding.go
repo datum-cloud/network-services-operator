@@ -10,8 +10,10 @@ import (
 	"go.miloapis.com/instrumentation/metrics"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 	"go.datum.net/network-services-operator/internal/connectorbinding"
@@ -32,44 +34,80 @@ var connectorKeyBindings = newConnectorKeyBindingTracker(connectorKeyBindingConn
 type connectorKeyBindingTracker struct {
 	mu       sync.Mutex
 	gauge    *prometheus.GaugeVec
-	verdicts map[string]connectorbinding.Verdict
+	engaged  map[multicluster.ClusterName]cluster.Cluster
+	verdicts map[multicluster.ClusterName]map[types.NamespacedName]connectorbinding.Verdict
 }
 
 func newConnectorKeyBindingTracker(gauge *prometheus.GaugeVec) *connectorKeyBindingTracker {
 	for _, v := range connectorbinding.Verdicts {
 		gauge.WithLabelValues(string(v)).Set(0)
 	}
-	return &connectorKeyBindingTracker{gauge: gauge, verdicts: map[string]connectorbinding.Verdict{}}
+	return &connectorKeyBindingTracker{
+		gauge:    gauge,
+		engaged:  map[multicluster.ClusterName]cluster.Cluster{},
+		verdicts: map[multicluster.ClusterName]map[types.NamespacedName]connectorbinding.Verdict{},
+	}
 }
 
-func (t *connectorKeyBindingTracker) record(key string, verdict connectorbinding.Verdict) (previous connectorbinding.Verdict, changed bool) {
+func (t *connectorKeyBindingTracker) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (t *connectorKeyBindingTracker) Engage(ctx context.Context, name multicluster.ClusterName, cl cluster.Cluster) error {
+	t.mu.Lock()
+	t.engaged[name] = cl
+	t.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.engaged[name] != cl {
+			return
+		}
+		delete(t.engaged, name)
+		t.forgetClusterLocked(name)
+	}()
+	return nil
+}
+
+func (t *connectorKeyBindingTracker) record(clusterName multicluster.ClusterName, key types.NamespacedName, verdict connectorbinding.Verdict) (previous connectorbinding.Verdict, changed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	previous, known := t.verdicts[key]
+	connectors := t.verdicts[clusterName]
+	if connectors == nil {
+		connectors = map[types.NamespacedName]connectorbinding.Verdict{}
+		t.verdicts[clusterName] = connectors
+	}
+	previous, known := connectors[key]
 	if known && previous == verdict {
 		return previous, false
 	}
 	if known {
 		t.gauge.WithLabelValues(string(previous)).Dec()
 	}
-	t.verdicts[key] = verdict
+	connectors[key] = verdict
 	t.gauge.WithLabelValues(string(verdict)).Inc()
 	return previous, true
 }
 
-func (t *connectorKeyBindingTracker) forget(key string) {
+func (t *connectorKeyBindingTracker) forget(clusterName multicluster.ClusterName, key types.NamespacedName) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	previous, known := t.verdicts[key]
+	previous, known := t.verdicts[clusterName][key]
 	if !known {
 		return
 	}
-	delete(t.verdicts, key)
+	delete(t.verdicts[clusterName], key)
 	t.gauge.WithLabelValues(string(previous)).Dec()
 }
 
-func connectorKeyBindingKey(cluster, namespace, name string) string {
-	return cluster + "/" + namespace + "/" + name
+func (t *connectorKeyBindingTracker) forgetClusterLocked(clusterName multicluster.ClusterName) {
+	for _, verdict := range t.verdicts[clusterName] {
+		t.gauge.WithLabelValues(string(verdict)).Dec()
+	}
+	delete(t.verdicts, clusterName)
 }
 
 func upstreamConnectorKeyBinding(upstreamObj *unstructured.Unstructured) connectorbinding.Verdict {
@@ -84,23 +122,18 @@ func upstreamConnectorKeyBinding(upstreamObj *unstructured.Unstructured) connect
 	return connectorbinding.VerifyStatus(string(upstreamObj.GetUID()), &status)
 }
 
-func stampConnectorKeyBinding(ctx context.Context, downstreamObj, upstreamObj *unstructured.Unstructured) {
-	verdict := upstreamConnectorKeyBinding(upstreamObj)
-
+func setConnectorKeyBindingAnnotation(downstreamObj *unstructured.Unstructured, verdict connectorbinding.Verdict) {
 	annotations := downstreamObj.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string, 1)
 	}
 	annotations[networkingv1alpha1.ConnectorKeyBindingAnnotation] = string(verdict)
 	downstreamObj.SetAnnotations(annotations)
-
-	cluster, _ := mccontext.ClusterFrom(ctx)
-	key := connectorKeyBindingKey(string(cluster), upstreamObj.GetNamespace(), upstreamObj.GetName())
-	if _, changed := connectorKeyBindings.record(key, verdict); changed && verdict == connectorbinding.Invalid {
-		log.FromContext(ctx).Info("connector status carries an endpoint key binding that does not verify")
-	}
 }
 
-func forgetConnectorKeyBinding(cluster, namespace, name string) {
-	connectorKeyBindings.forget(connectorKeyBindingKey(cluster, namespace, name))
+func recordConnectorKeyBinding(ctx context.Context, clusterName multicluster.ClusterName, upstreamObj *unstructured.Unstructured, verdict connectorbinding.Verdict) {
+	key := types.NamespacedName{Namespace: upstreamObj.GetNamespace(), Name: upstreamObj.GetName()}
+	if _, changed := connectorKeyBindings.record(clusterName, key, verdict); changed && verdict == connectorbinding.Invalid {
+		log.FromContext(ctx).Info("connector status carries an endpoint key binding that does not verify")
+	}
 }

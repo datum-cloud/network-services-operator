@@ -16,5 +16,5 @@ helmCharts:
   - name: cert-manager-csi-driver
     namespace: cert-manager
     releaseName: cert-manager-csi-driver
-    version: v0.10.1
+    version: v0.10.4
     repo: https://charts.jetstack.io

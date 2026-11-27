@@ -56,6 +56,9 @@ spec:
     min: 96
     max: 96
   reclaimPolicy: Delete
+  # A claim may override Delete with Retain. IPAM admits that override only
+  # when a lease gives the kept address an end.
+  retentionLease: 720h
   routing:
     internal: Host
 ---
@@ -75,6 +78,9 @@ spec:
     min: 32
     max: 32
   reclaimPolicy: Delete
+  # A claim may override Delete with Retain. IPAM admits that override only
+  # when a lease gives the kept address an end.
+  retentionLease: 720h
   routing:
     internal: Host
 ---
@@ -90,6 +96,9 @@ spec:
     min: 32
     max: 32
   reclaimPolicy: Delete
+  # A claim may override Delete with Retain. IPAM admits that override only
+  # when a lease gives the kept address an end.
+  retentionLease: 720h
   routing:
     internal: Host
     external: Aggregate

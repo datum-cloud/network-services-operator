@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"filippo.io/edwards25519"
+
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
 )
 
@@ -56,7 +58,7 @@ func Verify(uid, endpointID, signature string) Verdict {
 		return Missing
 	}
 	key, err := hex.DecodeString(endpointID)
-	if err != nil || len(key) != ed25519.PublicKeySize {
+	if err != nil || len(key) != ed25519.PublicKeySize || smallOrder(key) {
 		return Invalid
 	}
 	sig, err := base64.StdEncoding.DecodeString(signature)
@@ -67,6 +69,14 @@ func Verify(uid, endpointID, signature string) Verdict {
 		return Invalid
 	}
 	return Verified
+}
+
+func smallOrder(key []byte) bool {
+	point, err := new(edwards25519.Point).SetBytes(key)
+	if err != nil {
+		return true
+	}
+	return new(edwards25519.Point).MultByCofactor(point).Equal(edwards25519.NewIdentityPoint()) == 1
 }
 
 func VerifyStatus(uid string, status *networkingv1alpha1.ConnectorStatus) Verdict {

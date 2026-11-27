@@ -136,3 +136,43 @@ func TestVerifySharedVector(t *testing.T) {
 		assert.Equal(t, Invalid, Verify(other, id, signature), "uid %q", other)
 	}
 }
+
+func TestVerifyRejectsSmallOrderKeys(t *testing.T) {
+	smallOrderKeys := map[string]string{
+		"all zero":            "0000000000000000000000000000000000000000000000000000000000000000",
+		"identity":            "0100000000000000000000000000000000000000000000000000000000000000",
+		"order 2":             "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"order 4":             "0000000000000000000000000000000000000000000000000000000000000080",
+		"order 8":             "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+		"order 8 negated":     "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+		"order 8 other":       "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+		"non-canonical ident": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+	}
+	identityR := append([]byte{1}, make([]byte, 31)...)
+	forged := base64.StdEncoding.EncodeToString(append(identityR, make([]byte, 32)...))
+
+	identityKey, err := hex.DecodeString(smallOrderKeys["identity"])
+	require.NoError(t, err)
+	require.True(t, ed25519.Verify(ed25519.PublicKey(identityKey), Message("uid", smallOrderKeys["identity"]), mustDecode(t, forged)),
+		"the forged signature must verify under plain ed25519 for this test to mean anything")
+
+	vectorKey, err := hex.DecodeString("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+	require.NoError(t, err)
+	assert.False(t, smallOrder(vectorKey))
+
+	for name, id := range smallOrderKeys {
+		t.Run(name, func(t *testing.T) {
+			key, err := hex.DecodeString(id)
+			require.NoError(t, err)
+			assert.True(t, smallOrder(key))
+			assert.Equal(t, Invalid, Verify("uid", id, forged))
+		})
+	}
+}
+
+func mustDecode(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(s)
+	require.NoError(t, err)
+	return b
+}

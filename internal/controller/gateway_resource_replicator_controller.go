@@ -120,6 +120,10 @@ type replicationResourceConfig struct {
 	// annotations only once they match the access DNS accepted for the
 	// object's network. Otherwise the downstream copy keeps the ones it has.
 	verifyInternalDNSIntent bool
+
+	// stampConnectorKeyBinding, when true, records on the downstream copy
+	// whether the upstream Connector's status is bound to its endpoint key.
+	stampConnectorKeyBinding bool
 }
 
 type replicationResource struct {
@@ -198,6 +202,7 @@ func initReplicationResourceConfigs() map[string]replicationResourceConfig {
 	configs[gvkKey(connectorGVK)] = replicationResourceConfig{
 		mirrorStatusToAnnotation: true,
 		skipUpstreamStatusSync:   true,
+		stampConnectorKeyBinding: true,
 	}
 
 	// A network's presence in a location, and the range that location is
@@ -304,6 +309,9 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	upstreamObj.SetGroupVersionKind(req.GVK)
 	if err := upstreamClient.Get(ctx, req.NamespacedName, upstreamObj); err != nil {
 		if apierrors.IsNotFound(err) {
+			if resourceCfg.replicationResourceConfig.stampConnectorKeyBinding {
+				forgetConnectorKeyBinding(string(req.ClusterName), req.Namespace, req.Name)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -315,6 +323,9 @@ func (r *GatewayResourceReplicatorReconciler) Reconcile(ctx context.Context, req
 	downstreamStrategy := downstreamclient.NewMappedNamespaceResourceStrategy(string(req.ClusterName), upstreamClient, r.DownstreamCluster.GetClient())
 
 	if !upstreamObj.GetDeletionTimestamp().IsZero() {
+		if resourceCfg.replicationResourceConfig.stampConnectorKeyBinding {
+			forgetConnectorKeyBinding(string(req.ClusterName), req.Namespace, req.Name)
+		}
 		return r.finalizeResource(ctx, resourceCfg, upstreamCluster, upstreamObj, downstreamStrategy)
 	}
 
@@ -483,6 +494,10 @@ func (r *GatewayResourceReplicatorReconciler) ensureDownstreamResource(
 			if err := setUpstreamStatusAnnotation(downstreamObj, upstreamObj); err != nil {
 				return err
 			}
+		}
+
+		if resource.replicationResourceConfig.stampConnectorKeyBinding {
+			stampConnectorKeyBinding(ctx, downstreamObj, upstreamObj)
 		}
 
 		return nil

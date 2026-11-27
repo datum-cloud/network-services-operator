@@ -6,6 +6,7 @@ package cache
 
 import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	"go.datum.net/network-services-operator/internal/galactic/identifier"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
@@ -77,6 +78,8 @@ type PolicyIndex struct {
 	VPCPods map[VPCPodKey]VPCPodInfo
 
 	VPCPodBackends map[VPCPodBackendKey]VPCPodInfo
+
+	connectorKeyBinding connectorbinding.Mode
 }
 
 type HTTPProxyKey struct {

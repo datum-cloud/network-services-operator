@@ -34,6 +34,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 )
 
@@ -45,7 +46,8 @@ const ConnectorReadyAnnotationKey = "networking.datumapis.com/connector-ready-ge
 // Reconciler touches the owning Gateway annotation whenever an edge Connector's
 // liveness changes, forcing EG to re-translate and re-run the extension hook.
 type Reconciler struct {
-	Client client.Client
+	Client              client.Client
+	ConnectorKeyBinding connectorbinding.Mode
 }
 
 // Reconcile resolves the connector's current liveness and stamps it onto every
@@ -61,7 +63,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	online, nodeID := extcache.ConnectorLiveness(&connector)
+	online, nodeID := extcache.ConnectorLiveness(&connector, r.ConnectorKeyBinding)
 	value := livenessValue(online, nodeID)
 
 	// The Connector, HTTPProxy, and Gateway share a namespace, and the Gateway is
@@ -125,7 +127,7 @@ func livenessValue(online bool, nodeID string) string {
 // changes, so heartbeat status churn that does not affect routing is ignored.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha1.Connector{}, builder.WithPredicates(livenessChangedPredicate())).
+		For(&networkingv1alpha1.Connector{}, builder.WithPredicates(livenessChangedPredicate(r.ConnectorKeyBinding))).
 		Named("extension-server-gateway-retrigger").
 		Complete(r)
 }
@@ -134,7 +136,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 // controller starts get their Gateways stamped) and updates that change the
 // (online, nodeID) classification. Deletes are ignored: removing a Connector
 // tears down its HTTPProxy/Gateway/HTTPRoute, which EG re-translates on its own.
-func livenessChangedPredicate() predicate.Predicate {
+func livenessChangedPredicate(keyBinding connectorbinding.Mode) predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(event.CreateEvent) bool { return true },
 		DeleteFunc: func(event.DeleteEvent) bool { return false },
@@ -144,8 +146,8 @@ func livenessChangedPredicate() predicate.Predicate {
 			if !ok1 || !ok2 {
 				return true
 			}
-			oOnline, oNode := extcache.ConnectorLiveness(oldC)
-			nOnline, nNode := extcache.ConnectorLiveness(newC)
+			oOnline, oNode := extcache.ConnectorLiveness(oldC, keyBinding)
+			nOnline, nNode := extcache.ConnectorLiveness(newC, keyBinding)
 			return oOnline != nOnline || oNode != nNode
 		},
 	}

@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	extcache "go.datum.net/network-services-operator/internal/extensionserver/cache"
 	extmetrics "go.datum.net/network-services-operator/internal/extensionserver/metrics"
 	"go.datum.net/network-services-operator/internal/extensionserver/mutate"
@@ -45,6 +46,8 @@ type ServerConfig struct {
 	EnableProgrammedSet bool
 
 	UpstreamAddressGuard bool
+
+	ConnectorKeyBinding connectorbinding.Mode
 }
 
 // Server implements pb.EnvoyGatewayExtensionServer for the NSO production
@@ -155,7 +158,7 @@ func (s *Server) PostTranslateModify(
 	// protobuf template construction is attributable independently.
 	ibStart := time.Now()
 	ctx, ibspan := tr.Start(ctx, "index_build")
-	idx, err := extcache.BuildPolicyIndexFromClient(ctx, s.client, s.cfg.CorazaRouteBaseDirectives)
+	idx, err := extcache.BuildPolicyIndexFromClient(ctx, s.client, s.cfg.CorazaRouteBaseDirectives, extcache.WithConnectorKeyBinding(s.cfg.ConnectorKeyBinding))
 	ibspan.End()
 	extmetrics.PhaseDuration.WithLabelValues("index_build").Observe(time.Since(ibStart).Seconds())
 	if err != nil {

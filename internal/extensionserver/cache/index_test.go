@@ -21,6 +21,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	networkingv1alpha1 "go.datum.net/network-services-operator/api/v1alpha1"
+	"go.datum.net/network-services-operator/internal/connectorbinding"
 	"go.datum.net/network-services-operator/internal/downstreamclient"
 )
 
@@ -1271,6 +1272,53 @@ func TestBuildPolicyIndexFromClient_ConnectorResolution_AnnotationDrivesOnline(t
 	assert.Equal(t, "backend.example.com", info.TargetHost,
 		"TargetHost still derives from the HTTPProxy backend endpoint, not the annotation")
 	assert.Equal(t, 9000, info.TargetPort)
+}
+
+func TestBuildPolicyIndexFromClient_ConnectorKeyBinding(t *testing.T) {
+	const (
+		upstreamNS    = "test-project"
+		proxyName     = "my-proxy"
+		connectorName = "my-connector"
+		nodeID        = "node-from-annotation"
+	)
+	tests := []struct {
+		name       string
+		verdict    string
+		opts       []IndexOption
+		wantOnline bool
+	}{
+		{name: "default mode routes an unbound connector", verdict: "", wantOnline: true},
+		{name: "observe routes an invalid binding", verdict: string(connectorbinding.Invalid), opts: []IndexOption{WithConnectorKeyBinding(connectorbinding.Observe)}, wantOnline: true},
+		{name: "enforce routes a verified binding", verdict: string(connectorbinding.Verified), opts: []IndexOption{WithConnectorKeyBinding(connectorbinding.Enforce)}, wantOnline: true},
+		{name: "enforce drops a missing binding", verdict: string(connectorbinding.Missing), opts: []IndexOption{WithConnectorKeyBinding(connectorbinding.Enforce)}, wantOnline: false},
+		{name: "enforce drops an invalid binding", verdict: string(connectorbinding.Invalid), opts: []IndexOption{WithConnectorKeyBinding(connectorbinding.Enforce)}, wantOnline: false},
+		{name: "enforce drops an unstamped connector", verdict: "", opts: []IndexOption{WithConnectorKeyBinding(connectorbinding.Enforce)}, wantOnline: false},
+		{name: "enforce drops an unknown verdict", verdict: "Verified", opts: []IndexOption{WithConnectorKeyBinding(connectorbinding.Enforce)}, wantOnline: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := newHTTPProxy(upstreamNS, "http://backend.example.com:9000", connectorName)
+			connector := newConnectorWithStatusAnnotation(upstreamNS, connectorName,
+				connectorStatus(true, publicKeyDetails(nodeID)))
+			if tt.verdict != "" {
+				connector.Annotations[networkingv1alpha1.ConnectorKeyBindingAnnotation] = tt.verdict
+			}
+			cl := fake.NewClientBuilder().WithScheme(indexTestScheme(t)).WithObjects(proxy, connector).Build()
+
+			idx, err := BuildPolicyIndexFromClient(context.Background(), cl, nil, tt.opts...)
+			require.NoError(t, err)
+
+			info, ok := idx.Connectors[ConnectorKey{Namespace: upstreamNS, HTTPProxyName: proxyName, RuleIndex: 0}]
+			require.True(t, ok)
+			assert.Equal(t, tt.wantOnline, info.Online)
+			if tt.wantOnline {
+				assert.Equal(t, nodeID, info.NodeID)
+			} else {
+				assert.Empty(t, info.NodeID)
+			}
+			assert.Equal(t, "backend.example.com", info.TargetHost)
+		})
+	}
 }
 
 // =============================================================================

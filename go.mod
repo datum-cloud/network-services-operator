@@ -12,7 +12,7 @@ require (
 	github.com/domainr/whois v0.1.0
 	github.com/envoyproxy/gateway v1.8.6
 	github.com/envoyproxy/gateway/test v0.0.0-20260617000843-7e4492d9a99e
-	github.com/envoyproxy/go-control-plane/contrib v1.36.1-0.20260409050421-3f47accd6e14
+	github.com/envoyproxy/go-control-plane/contrib 151ca724d3b8
 	github.com/envoyproxy/go-control-plane/envoy v1.39.1-0.20260819172001-e6e3fd93e4be
 	github.com/go-logr/logr v1.4.4
 	github.com/go-redis/redis/v7 v7.4.1
@@ -53,7 +53,7 @@ require (
 	sigs.k8s.io/controller-runtime v0.25.3
 	sigs.k8s.io/gateway-api v1.5.1
 	sigs.k8s.io/gateway-api/conformance v1.5.1
-	sigs.k8s.io/multicluster-runtime v0.25.3-0.20261116153018-6d88a2667465
+	sigs.k8s.io/multicluster-runtime 578adb951462
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -347,4 +347,4 @@ require (
 )
 
 // The fork provides Manager.Owns and overrides the version other modules require.
-replace sigs.k8s.io/multicluster-runtime => github.com/datum-cloud/multicluster-runtime v0.24.2-0.20261008054817-748176e5c835
+replace sigs.k8s.io/multicluster-runtime => github.com/datum-cloud/multicluster-runtime 6202e09d7ef4

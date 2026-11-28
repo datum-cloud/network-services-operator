@@ -10,7 +10,7 @@ helmCharts:
     releaseName: envoy-datum-downstream-gateway
     # The production edge version. Pulled from the OCI repo so this dir needs
     # no vendored chart.
-    version: v1.9.2
+    version: 1.9.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
       # The CRDs come from eg-crds. From v1.8.1 the chart also renders its

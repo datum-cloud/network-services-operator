@@ -45,8 +45,8 @@ components:
 images:
   - name: ghcr.io/milo-os/ipam
     newName: ghcr.io/milo-os/ipam
-    # tag v0.0.0-2f31bea
-    digest: sha256:9811093733ccc8e0e56ab86ba959dda73d8035a08a6feb7d3a91c5cd10011a3e
+    # tag v0.0.0-21a89a4
+    digest: sha256:d622363f850523e7417e7077ad753aecc58fda1f49aae7dde6b8e0fc43b733b8
 
 patches:
   - path: patches/deployment-patch.yaml

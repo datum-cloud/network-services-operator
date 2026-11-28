@@ -6,7 +6,7 @@ helmCharts:
     includeCRDs: false
     namespace: datum-downstream-gateway
     releaseName: envoy-datum-downstream-gateway
-    version: v1.9.2
+    version: 1.9.4
     repo: oci://docker.io/envoyproxy
     valuesInline:
       config:

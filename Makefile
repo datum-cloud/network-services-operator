@@ -279,19 +279,19 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
 GOLANGCI_LINT_VERSION ?= v2.15.0
 
 # renovate: datasource=go depName=github.com/cert-manager/cert-manager
-CERTMANAGER_VERSION ?= 1.17.4
+CERTMANAGER_VERSION ?= 1.21.3
 
 # renovate: datasource=go depName=fybrik.io/crdoc
 CRDOC_VERSION ?= v0.6.4
 
 # renovate: datasource=go depName=sigs.k8s.io/kind
-KIND_VERSION ?= v0.32.0
+KIND_VERSION ?= v0.33.0
 
 # renovate: datasource=go depName=github.com/kyverno/chainsaw
 CHAINSAW_VERSION ?= v0.2.15
 
 # renovate: datasource=go depName=github.com/cert-manager/cmctl/v2
-CMCTL_VERSION ?= v2.1.1
+CMCTL_VERSION ?= v2.6.2
 
 # renovate: datasource=go depName=github.com/google/go-licenses
 GO_LICENSES_VERSION ?= v1.6.0

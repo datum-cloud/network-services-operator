@@ -35,9 +35,9 @@ if [ ! -x "$target" ]; then
         asset="cert-manager/cmctl/releases/download/$version/cmctl_linux_amd64"
         digest=41d96165d5654f6988c48681deabd9cb1622a0d0ebd049f1a459e7e8877afea3
         ;;
-      sigs.k8s.io/kustomize/kustomize/v5@v5.5.0)
+      sigs.k8s.io/kustomize/kustomize/v5@v5.8.3)
         asset="kubernetes-sigs/kustomize/releases/download/kustomize/$version/kustomize_${version}_linux_amd64.tar.gz"
-        digest=6703a3a70a0c47cf0b37694030b54f1175a9dfeb17b3818b623ed58b9dbc2a77
+        digest=cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
         ;;
       sigs.k8s.io/kind@v0.32.0)
         asset="kubernetes-sigs/kind/releases/download/$version/kind-linux-amd64"
